@@ -34,10 +34,12 @@ def bundle_dir() -> Path:
 
 @dataclass
 class ApiConfig:
-    base_url: str = "https://your-app.up.railway.app"
-    login_path: str = "/api/security/login"
-    vehicles_path: str = "/api/security/vehicles"
-    violations_path: str = "/api/security/violations"
+    # psau-security (native-app). Guards sign in with their existing
+    # security/admin account there; no separate scanner accounts.
+    base_url: str = "https://psau-security-production.up.railway.app"
+    login_path: str = "/api/login"
+    vehicles_path: str = "/api/security/gate/vehicles"
+    violations_path: str = "/api/security/gate/violations"
     # Query parameter used for delta sync, sent as an ISO-8601 UTC timestamp.
     updated_since_param: str = "updated_since"
     page_size: int = 200
@@ -75,16 +77,44 @@ class MotionConfig:
     # the gate instead of after the motion ends. 0 = only read at the end.
     early_ocr_seconds: float = 0.8
     warmup_frames: int = 45
+    # Keep running plate detection this long after motion stops, so a
+    # vehicle that halts in view is still read.
+    hold_seconds: float = 2.0
 
 
 @dataclass
 class OcrConfig:
     use_gpu: str = "auto"  # "auto" | "yes" | "no"
-    # Directory with EasyOCR model files. Empty = <bundle>/models if present,
-    # else EasyOCR's default (~/.EasyOCR). The gate laptop is offline, so the
-    # models must be bundled or pre-fetched with tools/fetch_models.py.
+    # Directory holding the model files (in an "alpr" subfolder). Empty =
+    # <bundle>/models if present, else the libraries' download cache. The
+    # gate laptop is offline, so the models must be bundled or pre-fetched
+    # with tools/fetch_models.py.
     model_dir: str = ""
+    # Neural plate detector (open-image-models) and plate OCR (fast-plate-ocr).
+    # Bigger detector input = finds smaller / farther plates, but slower.
+    detector_model: str = "yolo-v9-t-384-license-plate-end2end"
+    # Several comma-separated OCR models are combined character by character.
+    ocr_model: str = "cct-xs-v1-global-model,cct-xs-v2-global-model"
+    detector_confidence: float = 0.35
+    # Also try plate candidates from the classical contrast/edge finder, in
+    # case the neural detector misses an unusual plate (~20 ms per frame).
+    classical_proposals: bool = True
+    # Mean per-character OCR confidence a read needs to count as a vote.
+    read_confidence: float = 0.30
+    # When a vehicle leaves before its plate was confirmed, its best guess is
+    # still reported if it averages this much (a violation only needs
+    # read_confidence: missing a violator is worse than a doubtful alert).
+    # Below it, the vehicle is logged as "plate not readable" with a snapshot.
+    report_confidence: float = 0.50
+    # (Confidence threshold of the classical text-assembly helpers.)
     min_confidence: float = 0.30
+    # A violation alerts on one read this confident; otherwise, and for
+    # every other result, `confirm_reads` agreeing reads are required.
+    alert_confidence: float = 0.75
+    confirm_reads: int = 2
+    # After a vehicle is reported, re-read it now and then (to catch a
+    # misread) up to this many reads in total.
+    max_reads_per_vehicle: int = 8
     # Plate layouts: L = letter, D = digit. Philippine formats by default.
     plate_layouts: list[str] = field(default_factory=lambda: [
         "LLLDDDD",  # ABC 1234  (current private vehicles)
@@ -109,12 +139,20 @@ class ScanConfig:
     snapshot_max_width: int = 1280
     alert_sound: bool = True
     overlay_seconds: float = 4.0
-    # Slow mode: show at most one scan per N seconds in the panels (0 = off).
-    # Violations always skip the queue.
+    # Slow mode: add at most one entry per N seconds to the Logs (0 = off).
+    # Only the Logs are paced; violations always skip the queue.
     slow_mode_seconds: float = 0.0
-    # A violation stays on the identity dashboard until acknowledged, or for
-    # this long, even if other vehicles are scanned meanwhile.
-    violation_hold_seconds: float = 20.0
+    # A violation alert stays until a guard acknowledges it. Until then the
+    # alarm repeats every N seconds (0 = alert once only)...
+    reminder_seconds: float = 15.0
+    # ...and the app brings itself to the front if another window covers it.
+    bring_to_front: bool = True
+    # On start-up, re-raise violations nobody acknowledged within this many hours.
+    unacknowledged_lookback_hours: float = 24.0
+    # A tracked vehicle is considered gone after this long without its plate.
+    track_max_age_seconds: float = 0.8
+    # Log "plate not readable" only for plates seen in at least this many frames.
+    min_hits_for_unread: int = 4
 
 
 @dataclass

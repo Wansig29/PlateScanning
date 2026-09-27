@@ -65,7 +65,13 @@ CREATE TABLE IF NOT EXISTS scan_log (
     vehicle_id    TEXT,
     violation_ids TEXT,
     crop_path     TEXT,
-    snapshot_path TEXT
+    snapshot_path TEXT,
+    vehicle_path  TEXT,
+    track_id      INTEGER,
+    vehicle_color TEXT,
+    position      TEXT,
+    acknowledged_at TEXT,
+    acknowledged_by TEXT
 );
 """
 
@@ -95,10 +101,13 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
-    # Databases created before snapshots existed.
+    # Databases created before these columns existed.
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(scan_log)")}
-    if "snapshot_path" not in cols:
-        conn.execute("ALTER TABLE scan_log ADD COLUMN snapshot_path TEXT")
+    for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
+                       ("vehicle_color", "TEXT"), ("position", "TEXT"),
+                       ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT")):
+        if name not in cols:
+            conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
     conn.commit()
 
 
@@ -159,6 +168,14 @@ def upsert_violations(conn: sqlite3.Connection, violations: Iterable[dict[str, A
     return len(rows)
 
 
+def remove_vehicles(conn: sqlite3.Connection, vehicle_ids: Iterable[Any]) -> int:
+    """Vehicles deleted or archived online, and their violations."""
+    ids = [(str(i),) for i in vehicle_ids]
+    conn.executemany("DELETE FROM violations WHERE vehicle_id=?", ids)
+    conn.executemany("DELETE FROM vehicles WHERE id=?", ids)
+    return len(ids)
+
+
 def replace_all(conn: sqlite3.Connection, vehicles: list[dict], violations: list[dict]) -> None:
     """Full resync: drop local records the server no longer has."""
     conn.execute("DELETE FROM vehicles")
@@ -208,10 +225,20 @@ def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
 def _active_violations(conn: sqlite3.Connection, vehicle_id: str | None, key: str) -> list[dict]:
     rows = conn.execute(
         "SELECT * FROM violations WHERE is_active=1 AND (plate_key=? OR (vehicle_id IS NOT NULL AND vehicle_id=?)) "
+        # A suspension is over once its end date has passed, even if the laptop
+        # hasn't synced since (the server lifts it at midnight the same way).
+        "AND (suspension_end IS NULL OR suspension_end = '' OR date(suspension_end) >= date('now', 'localtime')) "
         "ORDER BY COALESCE(occurred_at, updated_at) DESC",
         (key, vehicle_id),
     ).fetchall()
     return [_violation_dict(r) for r in rows]
+
+
+def _has_active_violation(conn: sqlite3.Connection, vehicle_id: str) -> bool:
+    return bool(conn.execute(
+        "SELECT 1 FROM violations WHERE is_active=1 AND vehicle_id=? "
+        "AND (suspension_end IS NULL OR suspension_end = '' OR date(suspension_end) >= date('now', 'localtime')) "
+        "LIMIT 1", (vehicle_id,)).fetchone())
 
 
 def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> LookupResult:
@@ -231,8 +258,14 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
 
     vehicle = None
     if candidates:
-        exact = [r for r in candidates if r["plate_norm"] == norm]
-        vehicle = dict((exact or candidates)[0])
+        exact = [r for r in candidates if r["plate_norm"] == norm] or candidates
+        if len(exact) > 1:
+            # The same plate registered twice (e.g. "ABC-1234" and "ABC 1234" are
+            # different records online): show the owner whose vehicle has the
+            # active violation, not an arbitrary one.
+            flagged = [r for r in exact if _has_active_violation(conn, r["id"])]
+            exact = flagged or exact
+        vehicle = dict(exact[0])
         vehicle["details"] = json.loads(vehicle.pop("details_json") or "{}")
         key = vehicle["plate_key"]
 
@@ -250,13 +283,17 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
 # --- scan log ----------------------------------------------------------------
 
 def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: LookupResult,
-             confidence: float | None, crop_path: str | None, snapshot_path: str | None = None) -> int:
+             confidence: float | None, crop_path: str | None, snapshot_path: str | None = None,
+             vehicle_path: str | None = None, track_id: int | None = None,
+             vehicle_color: str | None = None, position: str | None = None) -> int:
     cur = conn.execute(
         "INSERT INTO scan_log(ts, plate_read, matched_plate, result, confidence, approximate, "
-        "vehicle_id, violation_ids, crop_path, snapshot_path) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "vehicle_id, violation_ids, crop_path, snapshot_path, vehicle_path, track_id, vehicle_color, "
+        "position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (ts, plate_read, result.matched_plate, result.status, confidence, int(result.approximate),
          result.vehicle["id"] if result.vehicle else None,
-         json.dumps([v["id"] for v in result.violations]), crop_path, snapshot_path),
+         json.dumps([v["id"] for v in result.violations]), crop_path, snapshot_path,
+         vehicle_path, track_id, vehicle_color, position),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -264,6 +301,20 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
 
 def recent_scans(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
     rows = conn.execute("SELECT * FROM scan_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def acknowledge_scan(conn: sqlite3.Connection, scan_id: int, by: str, at: str) -> None:
+    """A guard confirmed they saw this violation alert."""
+    conn.execute("UPDATE scan_log SET acknowledged_at=?, acknowledged_by=? WHERE id=? AND acknowledged_at IS NULL",
+                 (at, by, scan_id))
+    conn.commit()
+
+
+def unacknowledged_violations(conn: sqlite3.Connection, since: str) -> list[dict[str, Any]]:
+    """Violation alerts nobody has confirmed yet (oldest first), e.g. after a restart."""
+    rows = conn.execute("SELECT * FROM scan_log WHERE result=? AND acknowledged_at IS NULL AND ts >= ? "
+                        "ORDER BY id", (RESULT_VIOLATION, since)).fetchall()
     return [dict(r) for r in rows]
 
 

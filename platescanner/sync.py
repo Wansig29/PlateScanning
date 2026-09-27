@@ -50,6 +50,8 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
 
     vehicles: dict[str, dict] = {}
     violations: list[dict] = []
+    removed = [r.get("id") for r in raw_vehicles if r.get("removed") and r.get("id") is not None]
+    raw_vehicles = [r for r in raw_vehicles if not r.get("removed")]
     for r in raw_violations:
         v = mapping.map_violation(r, base, cfg.sync.resolved_statuses)
         if v:
@@ -93,6 +95,7 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         else:
             db.upsert_vehicles(conn, vehicles.values())
             db.upsert_violations(conn, violations)
+            db.remove_vehicles(conn, removed)
         db.set_state(conn, "last_sync_at", now.isoformat())
 
     return {"full": full, "vehicles": len(vehicles), "violations": len(violations),
