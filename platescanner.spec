@@ -5,6 +5,7 @@ from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 models = Path("models") / "alpr"
 datas = collect_data_files("fast_plate_ocr") + collect_data_files("open_image_models")
+datas.append(("platescanner/assets", "platescanner/assets"))  # window/taskbar icon
 if models.is_dir():
     datas.append((str(models), "models/alpr"))
 else:
@@ -18,5 +19,5 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="PlateScanner",
-          console=False, upx=False)
+          console=False, upx=False, icon="platescanner/assets/app.ico")
 coll = COLLECT(exe, a.binaries, a.datas, name="PlateScanner", upx=False)

@@ -7,10 +7,11 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog
 
 from . import db
-from .config import load_config
+from .config import bundle_dir, load_config
 from .session import load_session, save_session
 from .ui import theme
 from .ui.login import LoginDialog
@@ -44,6 +45,9 @@ def main() -> None:
 
     app = QApplication(sys.argv)
     app.setApplicationName("PSAU Gate Plate Scanner")
+    icon = bundle_dir() / "platescanner" / "assets" / "app.ico"
+    if icon.exists():
+        app.setWindowIcon(QIcon(str(icon)))
     app.setStyle("Fusion")
     app.setStyleSheet(theme.STYLESHEET)
 
