@@ -1,4 +1,8 @@
-"""Plate localization and OCR on the selected best frame."""
+"""Classical plate localization and OCR-text assembly helpers.
+
+The live pipeline uses find_plate_regions() as a second source of plate
+candidates next to the neural detector (see vision/alpr.py).
+"""
 from __future__ import annotations
 
 import logging
@@ -16,44 +20,12 @@ log = logging.getLogger(__name__)
 Box = tuple[int, int, int, int]
 ALNUM = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 
-# One OCR detection: (4 corner points, text, confidence), as EasyOCR returns.
+# One OCR text detection: (4 corner points, text, confidence).
 Detection = tuple[Sequence[Sequence[float]], str, float]
 
 
 class TextReader(Protocol):
     def readtext(self, image: np.ndarray) -> list[Detection]: ...
-
-
-class EasyOcrReader:
-    """Lazy wrapper so importing torch/EasyOCR doesn't block app start-up."""
-
-    def __init__(self, cfg: Config):
-        self.cfg = cfg
-        self._reader = None
-        self.device = "?"
-
-    def load(self) -> None:
-        import easyocr  # heavy: pulls in torch
-
-        gpu = self.cfg.ocr.use_gpu
-        if gpu == "auto":
-            try:
-                import torch
-                use_gpu = torch.cuda.is_available()
-            except Exception:  # noqa: BLE001
-                use_gpu = False
-        else:
-            use_gpu = gpu == "yes"
-        model_dir = self.cfg.resolved_model_dir()
-        kwargs = {"gpu": use_gpu, "verbose": False}
-        if model_dir:
-            kwargs.update(model_storage_directory=str(model_dir), download_enabled=False)
-        self._reader = easyocr.Reader(["en"], **kwargs)
-        self.device = "GPU" if use_gpu else "CPU"
-
-    def readtext(self, image: np.ndarray) -> list[Detection]:
-        assert self._reader is not None, "call load() first"
-        return self._reader.readtext(image, allowlist=ALNUM, paragraph=False)
 
 
 @dataclass

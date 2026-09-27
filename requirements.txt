@@ -1,7 +1,8 @@
-# Install CPU-only PyTorch first (much smaller than the CUDA build):
-#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 opencv-python-headless>=4.9
 numpy>=1.26
 PySide6>=6.7
 requests>=2.31
-easyocr>=1.7
+# Plate detector + plate OCR (MIT-licensed ONNX models, no PyTorch needed)
+onnxruntime>=1.19
+open-image-models>=0.6
+fast-plate-ocr>=1.1

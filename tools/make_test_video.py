@@ -3,22 +3,36 @@
     python tools/make_test_video.py test_gate.mp4 NBC1234 ABC1234 XYZ789 QWE4567
     python -m platescanner --source test_gate.mp4
 
---blur adds motion blur while cars move (like a real camera), so only the
-frames where the car is stopped are sharp.
+Options:
+  --blur        motion blur on moving cars, from speed x exposure time
+  --shutter S   exposure time for --blur in seconds (default 0.01 = 1/100 s,
+                a typical webcam in daylight)
+  --no-stop     cars roll straight through instead of stopping ~1.5 s at the gate
+  --speed N     pixels per frame while moving (default 18; 25 fps). The plate
+                is 180 px = 39 cm wide, so 18 px/frame is about 6.5 km/h and
+                45 px/frame about 16 km/h.
+  --gap S       seconds between one car entering and the next (default: one car
+                at a time). A small gap gives a convoy with several cars in view.
+  --lanes N     spread cars over N lanes (1 or 2), so they can pass side by side
+
+Ground truth (when each plate is fully in view) is written next to the
+video as <video>.json, for tools/bench_live.py.
 """
 from __future__ import annotations
 
-import sys
+import argparse
+import json
 
 import cv2
 import numpy as np
 
 W, H, FPS = 1280, 720, 25
+LANE_Y = {1: [300], 2: [100, 415]}
 
 
 def background() -> np.ndarray:
     bg = np.full((H, W, 3), (70, 75, 78), np.uint8)
-    cv2.rectangle(bg, (0, 0), (W, 200), (150, 140, 120), -1)          # wall
+    cv2.rectangle(bg, (0, 0), (W, 120), (150, 140, 120), -1)          # wall
     for x in range(0, W, 160):
         cv2.rectangle(bg, (x + 60, 420), (x + 120, 430), (200, 200, 200), -1)  # lane marks
     noise = np.random.default_rng(1).integers(0, 12, (H, W, 3), dtype=np.uint8)
@@ -46,39 +60,64 @@ def car(plate: str, color: tuple[int, int, int]) -> np.ndarray:
 
 
 def main() -> None:
-    args = [a for a in sys.argv[1:] if a != "--blur"]
-    blur = "--blur" in sys.argv
-    out, plates = args[0], args[1:] or ["NBC1234", "ABC1234", "XYZ789"]
-    kernel = np.zeros((1, 25), np.float32)
-    kernel[0, :] = 1 / 25
+    ap = argparse.ArgumentParser()
+    ap.add_argument("out")
+    ap.add_argument("plates", nargs="*", default=["NBC1234", "ABC1234", "XYZ789"])
+    ap.add_argument("--blur", action="store_true")
+    ap.add_argument("--shutter", type=float, default=0.01)
+    ap.add_argument("--no-stop", action="store_true")
+    ap.add_argument("--speed", type=int, default=18)
+    ap.add_argument("--gap", type=float, default=0.0)
+    ap.add_argument("--lanes", type=int, default=1, choices=(1, 2))
+    a = ap.parse_args()
+
+    # Blur length = distance travelled while the shutter is open.
+    klen = max(1, round(a.speed * FPS * a.shutter)) | 1
+    kernel = np.zeros((1, klen), np.float32)
+    kernel[0, :] = 1 / klen
     bg = background()
-    vw = cv2.VideoWriter(out, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
-    colors = [(40, 40, 160), (150, 90, 30), (60, 60, 60), (30, 130, 30)]
+    colors = [(40, 40, 160), (150, 90, 30), (60, 60, 60), (30, 130, 30), (120, 40, 120), (20, 120, 160)]
 
-    def still(n: int) -> None:
-        for _ in range(n):
-            vw.write(bg)
-
-    still(FPS * 3)  # let the background model settle
-    for i, plate in enumerate(plates):
+    # Schedule: each car gets a lane, a start frame and a path of x positions.
+    cars = []
+    start = FPS * 3  # let the background model settle
+    for i, plate in enumerate(a.plates):
         sprite = car(plate, colors[i % len(colors)])
-        sh, sw = sprite.shape[:2]
-        y = 300
-        # Drive in, stop at the gate for ~1.5 s, drive out.
-        path = list(range(-sw, (W - sw) // 2, 18)) + [(W - sw) // 2] * int(FPS * 1.5) + \
-            list(range((W - sw) // 2, W + 10, 18))
-        for j, x in enumerate(path):
-            frame = bg.copy()
+        sw = sprite.shape[1]
+        gate = (W - sw) // 2
+        if a.no_stop:
+            path = list(range(-sw, W + 10, a.speed))
+        else:
+            path = list(range(-sw, gate, a.speed)) + [gate] * int(FPS * 1.5) + list(range(gate, W + 10, a.speed))
+        cars.append({"plate": plate, "sprite": sprite, "blurred": cv2.filter2D(sprite, -1, kernel),
+                     "y": LANE_Y[a.lanes][i % a.lanes], "start": start, "path": path, "visible": []})
+        start += int(a.gap * FPS) if a.gap else len(path) + FPS * 2
+    total = max(c["start"] + len(c["path"]) for c in cars) + FPS * 2
+
+    vw = cv2.VideoWriter(a.out, cv2.VideoWriter_fourcc(*"mp4v"), FPS, (W, H))
+    for f in range(total):
+        frame = bg.copy()
+        for c in cars:
+            j = f - c["start"]
+            if not 0 <= j < len(c["path"]):
+                continue
+            x, path = c["path"][j], c["path"]
+            moving = j == 0 or path[j - 1] != x
+            sprite = c["blurred"] if a.blur and moving else c["sprite"]
+            sh, sw = sprite.shape[:2]
             x0, x1 = max(0, x), min(W, x + sw)
             if x1 > x0:
-                frame[y:y + sh, x0:x1] = sprite[:, x0 - x:x1 - x]
-            moving = j == 0 or path[j - 1] != x
-            if blur and moving:
-                frame = cv2.filter2D(frame, -1, kernel)
-            vw.write(frame)
-        still(FPS * 2)
+                frame[c["y"]:c["y"] + sh, x0:x1] = sprite[:, x0 - x:x1 - x]
+            if x + 120 >= 0 and x + 300 <= W:  # whole plate in the picture
+                c["visible"].append(f)
+        vw.write(frame)
     vw.release()
-    print(f"Wrote {out}")
+
+    truth = [{"plate": c["plate"], "plate_visible_from": c["visible"][0] / FPS,
+              "plate_visible_until": c["visible"][-1] / FPS} for c in cars]
+    with open(a.out + ".json", "w", encoding="utf-8") as fh:
+        json.dump({"fps": FPS, "duration": total / FPS, "cars": truth}, fh, indent=2)
+    print(f"Wrote {a.out} ({total / FPS:.1f}s, {len(cars)} cars)")
 
 
 if __name__ == "__main__":

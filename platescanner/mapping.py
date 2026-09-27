@@ -1,9 +1,10 @@
-"""Translate native-app API records into the local schema.
+"""Translate psau-security API records into the local schema.
 
-The exact JSON shape of the Laravel resources isn't fixed yet, so each field
-is looked up under several likely names (including nested "owner.name"
-style paths). Once the backend endpoints are final, trim these lists down
-to the real keys.
+The main source is psau-security's gate endpoints (GET /api/security/gate/
+vehicles and .../violations, see GateScannerApiController.php there). Each
+field is also looked up under a few alternative names (including nested
+"owner.name" style paths), so small changes to the response shape don't
+break syncing.
 """
 from __future__ import annotations
 
@@ -65,7 +66,7 @@ def map_vehicle(r: dict[str, Any], base_url: str) -> dict[str, Any] | None:
         "id": vid,
         "plate": str(plate),
         "owner_name": _owner_name(r),
-        "contact": pick(r, "contact", "contact_number", "contact_no", "owner.contact_number",
+        "contact": pick(r, "contact", "contact_number", "owner_contact", "contact_no", "owner.contact_number",
                         "owner.contact_no", "owner.phone", "owner.mobile", "user.contact_number",
                         "user.phone", "phone", "mobile"),
         "owner_photo_url": _abs_url(pick(r, "owner_photo_url", "owner.photo_url", "owner.profile_photo_url",
@@ -76,7 +77,8 @@ def map_vehicle(r: dict[str, Any], base_url: str) -> dict[str, Any] | None:
             "model": ("model",),
             "color": ("color", "colour"),
             "type": ("vehicle_type", "type"),
-            "sticker": ("sticker_number", "sticker_no", "rfid"),
+            "sticker": ("sticker_number", "sticker_no", "rfid", "qr_sticker_id"),
+            "registration": ("registration_status",),
         }.items() if pick(r, *keys) is not None},
         "updated_at": pick(r, "updated_at"),
     }

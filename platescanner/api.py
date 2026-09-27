@@ -59,6 +59,9 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
     return data, has_more
 
 
+STAFF_ROLES = {"security", "admin", "system_admin"}
+
+
 class ApiClient:
     def __init__(self, cfg: ApiConfig, token: str | None = None):
         self.cfg = cfg
@@ -100,6 +103,18 @@ class ApiClient:
         if not token:
             raise ApiError("Login response did not include a token")
         user = body.get("user") or (body.get("data") or {}).get("user") or {}
+        role = str(user.get("role") or "")
+        if role and role not in STAFF_ROLES:
+            # Students/vehicle owners have psau-security accounts too, but the
+            # gate data is for security staff only (the server enforces this as well).
+            try:  # don't leave the session this login just opened
+                self.session.post(self._url("/api/logout"), headers={"Authorization": f"Bearer {token}"},
+                                  timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
+            except requests.RequestException:
+                pass
+            self.token = None
+            raise AuthError("This account isn't a security staff account. Sign in with your "
+                            "psau-security guard or admin account.")
         self.token = token
         return token, user if isinstance(user, dict) else {}
 
