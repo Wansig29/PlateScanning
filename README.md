@@ -132,9 +132,15 @@ The scanner gets its data from the **psau-security** system (`native-app`, on Ra
 .\build.ps1
 ```
 
-This fetches the plate models into `models\alpr\` if needed (the gate laptop is offline, so the models are bundled), runs the tests, and builds `dist\PlateScanner\PlateScanner.exe`. Copy the whole `dist\PlateScanner` folder to the gate laptop.
+This fetches the plate models into `models\alpr\` if needed (the gate laptop is offline, so the models are bundled), runs the tests, and builds `dist\PlateScanner\PlateScanner.exe`. Copy the whole `dist\PlateScanner` folder to the target computer (a USB drive or shared folder both work — everything the app needs is inside it).
 
 The models run on ONNX Runtime (no PyTorch), so the build is small and starts quickly.
+
+### Using it on another computer
+
+1. Copy the whole `dist\PlateScanner` folder to the other computer.
+2. From that folder, run `..\make_shortcut.ps1 -ExePath PlateScanner.exe` (or point `-ExePath` at wherever you copied `PlateScanner.exe`) to add a **PSAU Gate Plate Scanner** shortcut to the Desktop.
+3. Double-click the shortcut to launch the app. On first run it writes its own `config.json` to `%LOCALAPPDATA%\PlateScanner\` (see *Configuration*) — edit `camera.source` there for that computer's camera.
 
 ## Security notes
 
