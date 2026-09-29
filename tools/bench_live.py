@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -95,6 +96,8 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config()
+    # A throwaway data folder, so benchmark reads never end up in the real scan log.
+    cfg.home = Path(tempfile.mkdtemp(prefix="platescanner-bench-"))
     cfg.scan.save_captures = False
     cfg.scan.save_snapshots = False
     for kv in args.set or []:  # e.g. --set ocr.confirm_reads=3
