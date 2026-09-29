@@ -228,7 +228,8 @@ def load_config(path: Path | None = None) -> Config:
     path = path or home / "config.json"
     data: dict[str, Any] = {}
     if path.exists():
-        data = json.loads(path.read_text(encoding="utf-8"))
+        # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     cfg = _merge(Config, data)
     cfg.home = home
     # Write back so newly added settings show up in the file with defaults.
