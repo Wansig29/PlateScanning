@@ -64,8 +64,14 @@ class MotionConfig:
     process_width: int = 320
     history: int = 300
     var_threshold: float = 32.0
-    # Fraction of the (ROI) frame that must be moving to count as motion.
+    # Only vehicle-like motion switches on full-speed scanning: one connected
+    # moving shape covering at least min_area_ratio of the (ROI) frame...
     min_area_ratio: float = 0.015
+    # ...that is not tall and narrow like a walking person (height > this x width)...
+    max_height_ratio: float = 2.2
+    # ...in a picture that didn't change almost entirely at once (lighting,
+    # clouds, the camera adjusting its exposure).
+    max_area_ratio: float = 0.6
     start_frames: int = 3
     end_frames: int = 12
     max_event_seconds: float = 6.0
@@ -99,6 +105,8 @@ class OcrConfig:
     # Also try plate candidates from the classical contrast/edge finder, in
     # case the neural detector misses an unusual plate (~20 ms per frame).
     classical_proposals: bool = True
+    # Undo sideways motion blur on plates of moving vehicles before reading them.
+    deblur: bool = True
     # Mean per-character OCR confidence a read needs to count as a vote.
     read_confidence: float = 0.30
     # When a vehicle leaves before its plate was confirmed, its best guess is

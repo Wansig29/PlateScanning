@@ -53,6 +53,58 @@ def test_moving_object_yields_one_event_with_sharpest_frame_first():
     assert ev.candidates[0].score > 2 * ev.candidates[-1].score or len(ev.candidates) == 1
 
 
+def _motion_frames(cfg, draw, n=40):
+    """Run the motion detector over a warmed-up static scene with `draw(frame, i)` applied."""
+    det = MotionDetector(cfg)
+    bg = np.full((360, 640, 3), 90, np.uint8)
+    for _ in range(cfg.warmup_frames + 20):
+        det.apply(bg)
+    out = []
+    for i in range(n):
+        f = bg.copy()
+        draw(f, i)
+        out.append(det.apply(f)[0])
+    return out
+
+
+def test_walking_person_is_not_vehicle_motion():
+    cfg = MotionConfig(warmup_frames=10)
+    person = lambda f, i: cv2.rectangle(f, (100 + 6 * i, 120), (134 + 6 * i, 260), (30, 30, 30), -1)  # noqa: E731
+    assert not any(_motion_frames(cfg, person))
+
+
+def test_motorcycle_from_the_front_is_vehicle_motion():
+    cfg = MotionConfig(warmup_frames=10)
+    bike = lambda f, i: cv2.rectangle(f, (100 + 6 * i, 120), (170 + 6 * i, 260), (30, 30, 30), -1)  # noqa: E731
+    assert any(_motion_frames(cfg, bike))
+
+
+def test_scattered_flicker_is_not_vehicle_motion():
+    cfg = MotionConfig(warmup_frames=10)
+    rng = np.random.default_rng(0)
+
+    def leaves(f, _i):
+        for x, y in rng.integers(0, (620, 340), (30, 2)):
+            cv2.rectangle(f, (int(x), int(y)), (int(x) + 16, int(y) + 16), (20, 160, 20), -1)
+    assert not any(_motion_frames(cfg, leaves))
+
+
+def test_lighting_change_is_not_vehicle_motion():
+    cfg = MotionConfig(warmup_frames=10)
+    brighter = lambda f, _i: cv2.add(f, np.full_like(f, 70), dst=f)  # noqa: E731
+    assert not any(_motion_frames(cfg, brighter, n=10))
+
+
+def test_motion_blur_length_and_deblur():
+    from platescanner.vision.alpr import deblur_horizontal, motion_blur_length
+    plate = np.full((76, 200, 3), 245, np.uint8)
+    cv2.putText(plate, "ABC 1234", (12, 52), cv2.FONT_HERSHEY_DUPLEX, 1.25, (20, 20, 20), 3, cv2.LINE_AA)
+    assert motion_blur_length(plate) == 0
+    blurred = cv2.blur(plate, (15, 1))
+    assert abs(motion_blur_length(blurred) - 15) <= 2
+    assert sharpness(deblur_horizontal(blurred, 15)) > 1.5 * sharpness(blurred)
+
+
 def test_sharpness_prefers_crisp_image():
     img = np.zeros((200, 300, 3), np.uint8)
     cv2.putText(img, "ABC1234", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)

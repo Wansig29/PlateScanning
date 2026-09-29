@@ -11,6 +11,7 @@ import numpy as np
 from ..config import MotionConfig
 
 Box = tuple[int, int, int, int]  # x, y, w, h
+MIN_FILL = 0.5  # share of a moving shape's bounding box that must actually be moving
 
 
 class MotionDetector:
@@ -35,16 +36,27 @@ class MotionDetector:
 
         # Drop shadows (127), keep definite foreground (255).
         _, mask = cv2.threshold(mask, 200, 255, cv2.THRESH_BINARY)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
-        mask = cv2.dilate(mask, self.kernel, iterations=2)
+        solid = cv2.morphologyEx(mask, cv2.MORPH_OPEN, self.kernel)
+        mask = cv2.dilate(solid, self.kernel, iterations=2)
 
         ratio = cv2.countNonZero(mask) / mask.size
-        if ratio < self.cfg.min_area_ratio:
-            return False, None
+        if not self.cfg.min_area_ratio <= ratio <= self.cfg.max_area_ratio:
+            return False, None  # too little to be a vehicle, or a lighting change
 
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        min_blob = mask.size * self.cfg.min_area_ratio * 0.25
-        blobs = [cv2.boundingRect(c) for c in contours if cv2.contourArea(c) >= min_blob]
+        min_blob = mask.size * self.cfg.min_area_ratio  # one shape, not scattered leaves added up
+        mw = mask.shape[1]
+        blobs = []
+        for c in contours:
+            if cv2.contourArea(c) < min_blob:
+                continue
+            x, y, bw, bh = cv2.boundingRect(c)
+            at_edge = x <= 1 or x + bw >= mw - 1  # a vehicle entering is a narrow slice at first
+            if bh > self.cfg.max_height_ratio * bw and not at_edge:
+                continue  # tall and narrow: a person, not a vehicle
+            if cv2.countNonZero(solid[y:y + bh, x:x + bw]) < MIN_FILL * bw * bh:
+                continue  # mostly empty: specks merged together (leaves, rain), not one body
+            blobs.append((x, y, bw, bh))
         if not blobs:
             return False, None
         x0 = min(b[0] for b in blobs)

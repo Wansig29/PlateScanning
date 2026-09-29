@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -309,6 +310,9 @@ class RecognizerWorker(QThread):
         self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
         self._in_view: set[int] = set()
         self.frames_processed = 0
+        # Plate reads and the classical finder run here, in parallel with the detector.
+        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plate-read")
+        self._detector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plate-detect")
 
     def stop(self) -> None:
         self._stop.set()
@@ -344,7 +348,7 @@ class RecognizerWorker(QThread):
             try:
                 engine = PlateEngine(self.cfg.resolved_model_dir(), self.cfg.ocr.detector_model,
                                      self.cfg.ocr.ocr_model, self.cfg.ocr.detector_confidence,
-                                     self.cfg.ocr.plate_layouts)
+                                     self.cfg.ocr.plate_layouts, self.cfg.ocr.deblur)
                 engine.load()
                 self.engine = engine
             except Exception as e:  # noqa: BLE001
@@ -357,25 +361,47 @@ class RecognizerWorker(QThread):
         db.init_schema(conn)  # (idempotent) adds any columns an older database lacks
         seq = 0
         last_detect = 0.0
+        # Assembly line: while the plates of one frame are being read, the next
+        # frame is already going through the detector.
+        pending = None  # (frame, detections future) not applied yet
+
+        def drain() -> None:
+            nonlocal pending
+            if pending is None:
+                return
+            f, fut = pending
+            pending = None
+            try:
+                self._apply(conn, f, fut.result())
+            except Exception:  # noqa: BLE001 - never let one bad frame kill the scanner
+                log.exception("Recognition failed")
+
         try:
             while not self._stop.is_set():
                 f = self.slot.get_newer(seq, 0.3)
                 if f is None:
+                    drain()
                     self._expire(conn, time.monotonic())
                     continue
                 seq = f.seq
                 # Idle scene: skip the detector, but still look about once a
                 # second in case a vehicle crept in without tripping the motion gate.
-                if not f.motion and not self.tracker.tracks and f.ts - last_detect < 1.0:
+                # Only real plates keep it busy, not the classical finder's static
+                # guesses (signs, lane marks, windows).
+                following = any(t.neural_hits or t.reads for t in self.tracker.tracks.values())
+                if not f.motion and not following and f.ts - last_detect < 1.0:
+                    drain()
                     continue
                 last_detect = f.ts
-                try:
-                    self._process(conn, f)
-                except Exception:  # noqa: BLE001 - never let one bad frame kill the scanner
-                    log.exception("Recognition failed")
+                nxt = (f, self._detector.submit(self._detect, f))
+                drain()
+                pending = nxt
+            drain()
             for t in self.tracker.flush():
                 self._finish(conn, t)
         finally:
+            self._detector.shutdown(wait=True)
+            self._pool.shutdown(wait=True)
             conn.close()
 
     def _expire(self, conn, now: float) -> None:
@@ -386,13 +412,21 @@ class RecognizerWorker(QThread):
             self._push_overlays(None)
             self._report_in_view()
 
-    def _process(self, conn, f: _Frame) -> None:
+    def _detect(self, f: _Frame) -> list:
+        rx, ry, rw, rh = f.roi
+        work = f.image[ry:ry + rh, rx:rx + rw]
+        # The classical finder runs alongside the neural detector (both release the GIL).
+        classical = self._pool.submit(find_plate_regions, work, 8) if self.cfg.ocr.classical_proposals else None
+        dets = self.engine.detect(work)
+        if classical is not None:
+            dets = merge_proposals(dets, classical.result())
+        return dets
+
+    def _apply(self, conn, f: _Frame, dets: list) -> None:
+        """Track and read the plates found in frame f (frames arrive here in order)."""
         rx, ry, rw, rh = f.roi
         work = f.image[ry:ry + rh, rx:rx + rw]
         ocr = self.cfg.ocr
-        dets = self.engine.detect(work)
-        if ocr.classical_proposals:
-            dets = merge_proposals(dets, find_plate_regions(work, 8))
         self.frames_processed += 1
         matched, ended = self.tracker.update([d.box for d in dets], f.ts)
         for t in ended:
@@ -406,6 +440,7 @@ class RecognizerWorker(QThread):
             return [(d.box[0] + rx, d.box[1] + ry, d.box[2], d.box[3])
                     for j, d in enumerate(dets) if j != i and j in real]
 
+        todo = []
         for track, i in matched:
             box = dets[i].box
             if track.best_frame is None:
@@ -420,8 +455,11 @@ class RecognizerWorker(QThread):
             if box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2:
                 continue  # plate cut off by the edge of the picture: wait until it's fully in
             px, py, pw, ph = pad_box(box, 0.06, 0.10, work.shape)
-            crop = work[py:py + ph, px:px + pw]
-            read = self.engine.read(crop)
+            todo.append((track, i, px, py, pw, ph, work[py:py + ph, px:px + pw]))
+
+        # Every plate in the frame is read at once; the results are applied in order.
+        reads = list(self._pool.map(lambda t: self.engine.read(t[-1]), todo))
+        for (track, i, px, py, pw, ph, crop), read in zip(todo, reads):
             track.reads_tried += 1
             if not read or not read.text:
                 continue

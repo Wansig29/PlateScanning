@@ -60,8 +60,9 @@ class PlateEngine:
     """Finds every plate in a frame and reads a cropped plate."""
 
     def __init__(self, model_dir: Path | None, detector: str, ocr: str, det_conf: float,
-                 layouts: list[str] | None = None):
+                 layouts: list[str] | None = None, deblur: bool = True):
         self.layouts = layouts or []
+        self.deblur = deblur
         self.model_dir = model_dir
         self.detector_name = detector
         self.ocr_name = ocr
@@ -134,6 +135,12 @@ class PlateEngine:
         assert self._ocrs, "call load() first"
         if crop.size == 0:
             return None
+        if self.deblur:
+            # Blurred plates are often read confidently wrong, so a blurred crop
+            # is only read after deblurring, never as-is.
+            length = motion_blur_length(crop)
+            if length >= 3:
+                crop = deblur_horizontal(crop, length)
         outs = [self._read_one(rec, mode, crop) for rec, mode in self._ocrs]
         outs = [(t, p) for t, p in outs if t]
         if not outs:
@@ -144,6 +151,46 @@ class PlateEngine:
                 outs = [(f, p) for f, p in fixed if f]
         text, probs = vote_chars(outs, len(outs))
         return OcrRead(text, sum(probs) / len(probs) if probs else 0.0, probs)
+
+
+# A sharp plate has sideways edges (the characters' vertical strokes) about as
+# strong as up-and-down ones; horizontal motion blur flattens the sideways ones.
+BLUR_EDGE_RATIO = 0.5
+
+
+def motion_blur_length(crop: np.ndarray, max_len: int = 60) -> int:
+    """Length in px of horizontal motion blur on a plate crop, or 0 if it looks sharp.
+
+    A box blur of length L puts periodic zeros in the row spectrum, which show
+    up as a negative peak at L in the cepstrum.
+    """
+    gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    g = gray.astype(np.float32)
+    gx = np.abs(cv2.Sobel(g, cv2.CV_32F, 1, 0)).mean()
+    gy = np.abs(cv2.Sobel(g, cv2.CV_32F, 0, 1)).mean()
+    if gx >= BLUR_EDGE_RATIO * gy or g.shape[1] < 24:
+        return 0
+    d = np.diff(g, axis=1)
+    d -= d.mean(axis=1, keepdims=True)
+    n = d.shape[1]
+    spec = np.abs(np.fft.rfft(d * np.hanning(n).astype(np.float32), axis=1)).mean(axis=0) + 1e-3
+    ceps = np.fft.irfft(np.log(spec))
+    hi = min(max_len, n // 3)
+    return 3 + int(np.argmin(ceps[3:hi])) if hi > 4 else 0
+
+
+def deblur_horizontal(img: np.ndarray, length: int, noise: float = 0.01) -> np.ndarray:
+    """Wiener deconvolution of a horizontal box blur `length` px long."""
+    h, w = img.shape[:2]
+    psf = np.zeros((h, w), np.float32)
+    psf[0, :length] = 1.0 / length
+    psf = np.roll(psf, -(length // 2), axis=1)
+    otf = np.fft.fft2(psf)
+    wiener = np.conj(otf) / (np.abs(otf) ** 2 + noise)
+    chans = [img] if img.ndim == 2 else cv2.split(img)
+    out = [np.real(np.fft.ifft2(np.fft.fft2(c.astype(np.float32)) * wiener)) for c in chans]
+    out = [np.clip(c, 0, 255).astype(np.uint8) for c in out]
+    return out[0] if img.ndim == 2 else cv2.merge(out)
 
 
 def vote_chars(reads: list[tuple[str, list[float]]], voters: int) -> tuple[str, list[float]]:
