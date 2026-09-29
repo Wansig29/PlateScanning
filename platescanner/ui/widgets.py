@@ -269,7 +269,7 @@ class VideoView(QWidget):
         self._pill(p, QRectF(target.right() - width - 12, target.bottom() - 38, width, 26), None, stamp)
 
 
-def _fmt_date(value: str | None) -> str | None:
+def fmt_date(value: str | None) -> str | None:
     if not value:
         return None
     try:
@@ -282,8 +282,10 @@ def suspension_text(v: dict[str, Any]) -> str:
     parts = []
     if v.get("suspension_text"):
         parts.append(v["suspension_text"])
-    start, end = _fmt_date(v.get("suspension_start")), _fmt_date(v.get("suspension_end"))
-    if start or end:
+    start, end = fmt_date(v.get("suspension_start")), fmt_date(v.get("suspension_end"))
+    if end and end[-4:].isdigit() and int(end[-4:]) >= 2900:  # psau-security's "revoked for good" date
+        parts.append(f"(from {start}, no end date)" if start else "(no end date)")
+    elif start or end:
         parts.append(f"({start or '…'} – {end or '…'})")
     if v.get("suspension_end"):
         try:
@@ -624,7 +626,7 @@ class IdentityPanel(QFrame):
         self.evidence_btn.setText(f"View evidence photo{'s' if n != 1 else ''} ({n})  →")
         self.evidence_btn.setVisible(n > 0)
         self.pager.setVisible(len(vs) > 1)
-        when = _fmt_date(v.get("occurred_at"))
+        when = fmt_date(v.get("occurred_at"))
         dots = " ".join("●" if i == self._vi else "○" for i in range(len(vs)))
         self.pager_label.setText(f"{dots}   Violation {self._vi + 1} of {len(vs)}" + (f" · {when}" if when else ""))
 

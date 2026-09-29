@@ -187,7 +187,7 @@ def replace_all(conn: sqlite3.Connection, vehicles: list[dict], violations: list
 def counts(conn: sqlite3.Connection) -> dict[str, int]:
     return {
         "vehicles": conn.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0],
-        "violations": conn.execute("SELECT COUNT(*) FROM violations WHERE is_active=1").fetchone()[0],
+        "violations": conn.execute(f"SELECT COUNT(*) FROM violations WHERE {_ALERTING}").fetchone()[0],
     }
 
 
@@ -222,12 +222,17 @@ def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
     return d
 
 
+# A violation that raises a gate alert. A suspension is over once its end date
+# has passed, even if the laptop hasn't synced since (the server lifts it at
+# midnight the same way).
+_ALERTING = ("is_active=1 AND (suspension_end IS NULL OR suspension_end = '' "
+             "OR date(suspension_end) >= date('now', 'localtime'))")
+
+
 def _active_violations(conn: sqlite3.Connection, vehicle_id: str | None, key: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT * FROM violations WHERE is_active=1 AND (plate_key=? OR (vehicle_id IS NOT NULL AND vehicle_id=?)) "
-        # A suspension is over once its end date has passed, even if the laptop
-        # hasn't synced since (the server lifts it at midnight the same way).
-        "AND (suspension_end IS NULL OR suspension_end = '' OR date(suspension_end) >= date('now', 'localtime')) "
+        f"SELECT * FROM violations WHERE {_ALERTING} "
+        "AND (plate_key=? OR (vehicle_id IS NOT NULL AND vehicle_id=?)) "
         "ORDER BY COALESCE(occurred_at, updated_at) DESC",
         (key, vehicle_id),
     ).fetchall()
@@ -236,9 +241,36 @@ def _active_violations(conn: sqlite3.Connection, vehicle_id: str | None, key: st
 
 def _has_active_violation(conn: sqlite3.Connection, vehicle_id: str) -> bool:
     return bool(conn.execute(
-        "SELECT 1 FROM violations WHERE is_active=1 AND vehicle_id=? "
-        "AND (suspension_end IS NULL OR suspension_end = '' OR date(suspension_end) >= date('now', 'localtime')) "
-        "LIMIT 1", (vehicle_id,)).fetchone())
+        f"SELECT 1 FROM violations WHERE {_ALERTING} AND vehicle_id=? LIMIT 1", (vehicle_id,)).fetchone())
+
+
+def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
+    """The violations that would raise an alert for this vehicle at the gate, newest first."""
+    return _active_violations(conn, vehicle["id"], vehicle["plate_key"])
+
+
+def list_vehicles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every vehicle with its number of alerting violations; violators first."""
+    rows = conn.execute(
+        f"SELECT v.*, (SELECT COUNT(*) FROM violations x WHERE {_ALERTING} "
+        "AND (x.plate_key = v.plate_key OR x.vehicle_id = v.id)) AS alerting "
+        "FROM vehicles v ORDER BY alerting > 0 DESC, v.plate_norm").fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["details"] = json.loads(d.pop("details_json") or "{}")
+        out.append(d)
+    return out
+
+
+def list_violations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """Every stored violation with its owner's name; alerting ones first, newest first."""
+    rows = conn.execute(
+        f"SELECT x.*, ({_ALERTING}) AS alerting, "
+        "COALESCE((SELECT owner_name FROM vehicles WHERE id = x.vehicle_id), "
+        "         (SELECT owner_name FROM vehicles WHERE plate_key = x.plate_key LIMIT 1)) AS owner_name "
+        "FROM violations x ORDER BY alerting DESC, COALESCE(x.occurred_at, x.updated_at) DESC").fetchall()
+    return [_violation_dict(r) for r in rows]
 
 
 def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> LookupResult:

@@ -95,6 +95,31 @@ def test_fuzzy_match_one_char_off(conn):
     assert db.lookup(conn, "QWE457", fuzzy=False).status == db.RESULT_NOT_REGISTERED
 
 
+def test_list_vehicles_counts_alerting_violations_violators_first(conn):
+    db.upsert_violations(conn, [{"id": 14, "vehicle_id": 3, "plate": "QWE 4567", "violation_type": "Speeding",
+                                 "suspension_end": "2020-01-01"}])  # suspension already over
+    rows = db.list_vehicles(conn)
+    assert [(r["plate"], r["alerting"]) for r in rows] == [("NBC 1234", 2), ("QWE 4567", 0), ("XYZ 789", 0)]
+    assert rows[0]["details"] == {}
+    assert db.counts(conn)["violations"] == 3  # NBC 1234's two + LMN 5555's; not the ended or resolved ones
+
+
+def test_list_violations_alerting_first_with_owner(conn):
+    rows = db.list_violations(conn)
+    assert [(r["violation_type"], r["alerting"], r["owner_name"]) for r in rows] == [
+        ("Speeding", 1, "Juan"), ("Parking", 1, "Juan"), ("Unregistered entry", 1, None), ("Old", 0, "Pedro")]
+    juan = db.list_vehicles(conn)[0]
+    assert [v["violation_type"] for v in db.vehicle_violations(conn, juan)] == ["Speeding", "Parking"]
+
+
+def test_suspension_text_far_future_end_means_no_end_date():
+    from platescanner.ui.widgets import suspension_text
+    assert suspension_text({"suspension_start": "2026-08-22", "suspension_end": "3000-08-22"}) == \
+        "(from Aug 22, 2026, no end date)"
+    assert suspension_text({"suspension_start": "2026-08-22", "suspension_end": "2026-08-29"}) == \
+        "(Aug 22, 2026 – Aug 29, 2026) · ended"
+
+
 def test_scan_log_roundtrip(conn):
     r = db.lookup(conn, "NBC1234")
     sid = db.add_scan(conn, ts="2026-09-26T08:00:00", plate_read="NBC1234", result=r,

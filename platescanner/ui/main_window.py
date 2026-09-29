@@ -24,6 +24,7 @@ from ..pipeline import CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker,
 from ..session import clear_session, save_session
 from ..sync import run_sync
 from . import theme
+from .database_view import DatabaseWindow
 from .login import LoginDialog
 from .widgets import (
     AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
@@ -165,6 +166,7 @@ class MainWindow(QMainWindow):
         self._last_shown = 0.0
         self._slow_timer = QTimer(self, singleShot=True)
         self._slow_timer.timeout.connect(self._drain)
+        self.db_window: DatabaseWindow | None = None
 
         self._build_ui()
         self._update_slow_label()
@@ -318,6 +320,9 @@ class MainWindow(QMainWindow):
         self.cam_status = QLabel()
         self.ocr_status = QLabel()
         self.db_status = QLabel()
+        self.db_status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.db_status.setToolTip("Browse the synced vehicles and violations")
+        self.db_status.mousePressEvent = lambda _e: self._open_database()  # type: ignore[method-assign]
         self._set_status(self.cam_status, "Camera: starting", theme.AMBER)
         self._set_status(self.ocr_status, "OCR: loading", theme.AMBER)
         for w in (self.cam_status, self.ocr_status):
@@ -421,6 +426,8 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(
             f"{kind} complete: {summary['vehicles']} vehicle and {summary['violations']} violation records updated", 8000)
         self._refresh_sync_label()
+        if self.db_window is not None and self.db_window.isVisible():
+            self.db_window.refresh()
 
     def _sync_failed(self, msg: str) -> None:
         self._sync_finished_ui()
@@ -440,7 +447,9 @@ class MainWindow(QMainWindow):
         last = db.get_state(self.conn, "last_sync_at")
         c = db.counts(self.conn)
         self._set_status(self.db_status,
-                         f"Local DB: {c['vehicles']:,} vehicles · {c['violations']:,} active violations",
+                         f"Local DB: {c['vehicles']:,} vehicles · {c['violations']:,} active violations"
+                         f"&nbsp;&nbsp;<span style='color:{theme.ACCENT_HOVER}; text-decoration: underline;'>"
+                         "View</span>",
                          theme.ACCENT)
         if error:
             self.sync_label.setText(f"⚠ {error} · last synced {_ago(last)}")
@@ -449,6 +458,14 @@ class MainWindow(QMainWindow):
             prefix = "" if self.session else "Offline mode · "
             self.sync_label.setText(f"{prefix}Last synced {_ago(last)}")
             self.sync_label.setStyleSheet("")
+
+    def _open_database(self) -> None:
+        if self.db_window is None:
+            self.db_window = DatabaseWindow(self.conn, self)
+        self.db_window.refresh()
+        self.db_window.show()
+        self.db_window.raise_()
+        self.db_window.activateWindow()
 
     # --- account ------------------------------------------------------------
 

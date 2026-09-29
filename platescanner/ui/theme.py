@@ -165,6 +165,17 @@ QTableWidget {{
     selection-color: {TEXT};
 }}
 QTableWidget::item {{ padding: 0 8px; border-bottom: 1px solid {BORDER}; }}
+QTabWidget::pane {{ border: none; border-top: 1px solid {BORDER}; }}
+QTabBar::tab {{
+    background: transparent;
+    color: {MUTED};
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 7px 16px;
+    font-weight: 600;
+}}
+QTabBar::tab:hover {{ color: {TEXT}; }}
+QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
 QHeaderView::section {{
     background: transparent;
     color: {FAINT};
