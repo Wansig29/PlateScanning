@@ -48,6 +48,7 @@ class Track:
     last_seen: float
     hits: int = 1
     neural_hits: int = 0  # detections by the neural plate detector (vs. classical proposals)
+    max_width: int = 0    # widest the plate box got, in px (how well the camera resolves it)
     velocity: tuple[float, float] = (0.0, 0.0)  # px/s of the box center
     reads: list[tuple[str, str, float, list[float]]] = field(default_factory=list)  # (text, raw, conf, char probs)
     layouts: list[str] = field(default_factory=list)
@@ -174,11 +175,12 @@ class PlateTracker:
                 a = 0.6 if t.hits > 1 else 1.0  # smooth the velocity estimate
                 t.velocity = (a * vx + (1 - a) * t.velocity[0], a * vy + (1 - a) * t.velocity[1])
             t.box, t.last_seen = boxes[i], now
+            t.max_width = max(t.max_width, boxes[i][2])
             t.hits += 1
             matched.append((t, i))
         for i, b in enumerate(boxes):
             if i not in used_d:
-                t = Track(next(self._ids), b, now, now, layouts=self.layouts)
+                t = Track(next(self._ids), b, now, now, max_width=b[2], layouts=self.layouts)
                 self.tracks[t.track_id] = t
                 matched.append((t, i))
         for t, i in matched:

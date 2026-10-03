@@ -298,7 +298,8 @@ def scan_videos(videos: list[Path], overrides: list[str] | None = None) -> list[
             parsed = value
         setattr(getattr(cfg, section), name, parsed)
     engine = PlateEngine(cfg.resolved_model_dir(), cfg.ocr.detector_model, cfg.ocr.ocr_model,
-                         cfg.ocr.detector_confidence, cfg.ocr.plate_layouts, cfg.ocr.deblur)
+                         cfg.ocr.detector_confidence, cfg.ocr.plate_layouts, cfg.ocr.deblur,
+                         cfg.ocr.deskew, cfg.ocr.enhance)
     engine.load()
     app = QCoreApplication.instance() or QCoreApplication(sys.argv[:1])
     reports: list[Report] = []

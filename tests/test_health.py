@@ -158,3 +158,28 @@ def test_no_frames_yet_is_silent():
     m, clk = make()
     clk.t = 1000
     assert m.check() == []
+
+
+def test_small_plates_are_reported_then_cleared():
+    from platescanner.health import HealthConfig, HealthMonitor
+    clock = [0.0]
+    m = HealthMonitor(HealthConfig(min_plate_px=60, plate_px_samples=5), clock=lambda: clock[0])
+    m.frame(100.0, True, 0.0, 120.0)
+    for px in (40, 45, 50, 42):
+        m.plate_width(px)
+    assert [w.code for w in m.check(1.0)] == []                   # not enough vehicles yet
+    m.plate_width(48)
+    (w,) = [w for w in m.check(2.0) if w.code == "small_plates"]
+    assert w.severity == "warn" and "45" in w.message and "60" in w.message
+    for px in (80, 85, 90, 82, 88):                                 # a closer camera
+        m.plate_width(px)
+    assert [(w.code, w.severity) for w in m.check(3.0) if w.code == "small_plates"] == [("small_plates", "ok")]
+
+
+def test_plate_size_check_is_off_by_default():
+    from platescanner.health import HealthMonitor
+    m = HealthMonitor(clock=lambda: 0.0)
+    m.frame(100.0, True, 0.0, 120.0)
+    for _ in range(30):
+        m.plate_width(10)
+    assert all(w.code != "small_plates" for w in m.check(1.0))

@@ -29,7 +29,7 @@ from PySide6.QtGui import QImage
 
 from . import camera, db, plates
 from .decode import Decoding, PlateLexicon
-from .health import HealthMonitor, scene_stats
+from .health import HealthConfig, HealthMonitor, scene_stats
 from .config import Config
 from .vision import identify
 from .vision.alpr import PlateEngine, merge_proposals, pad_box
@@ -335,7 +335,7 @@ class RecognizerWorker(QThread):
         self._detector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plate-detect")
         self.video_name: str | None = None  # set when scanning a video file instead of the camera
         self._lexicon: PlateLexicon | None = None
-        self._health = HealthMonitor()
+        self._health = HealthMonitor(HealthConfig(min_plate_px=cfg.ocr.min_plate_width_px))
         self._next_health_check = 0.0
 
     def _source(self, track: Track) -> str | None:
@@ -396,7 +396,8 @@ class RecognizerWorker(QThread):
             try:
                 engine = PlateEngine(self.cfg.resolved_model_dir(), self.cfg.ocr.detector_model,
                                      self.cfg.ocr.ocr_model, self.cfg.ocr.detector_confidence,
-                                     self.cfg.ocr.plate_layouts, self.cfg.ocr.deblur)
+                                     self.cfg.ocr.plate_layouts, self.cfg.ocr.deblur,
+                                     self.cfg.ocr.deskew, self.cfg.ocr.enhance)
                 engine.load()
                 self.engine = engine
             except Exception as e:  # noqa: BLE001
@@ -640,6 +641,7 @@ class RecognizerWorker(QThread):
             self._decide(conn, track, final=True)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
             self._health.plate_seen(bool(track.emitted_key))
+            self._health.plate_width(track.max_width)
         # Only for real plates (seen by the neural detector), not for the
         # classical finder's guesses at windows, signs or lane marks.
         if track.emitted_key or track.neural_hits < self.cfg.scan.min_hits_for_unread:

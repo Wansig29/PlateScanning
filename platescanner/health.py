@@ -52,6 +52,11 @@ class HealthConfig:
     dark_exit: float = 55.0
     bright_enter: float = 220.0
     bright_exit: float = 205.0
+    # Plates narrower than this (px, at their widest in view) can't be read reliably;
+    # 0 turns the check off. Judged on the median of the last `plate_px_samples` vehicles.
+    min_plate_px: float = 0.0
+    plate_px_samples: int = 10
+    plate_px_exit: float = 1.15       # cleared above this multiple of the minimum
     # Repeat a still-active warning no sooner than this.
     cooldown_s: float = 300.0
 
@@ -89,6 +94,7 @@ class HealthMonitor:
         self._learn: list[float] = []
         self.baseline: float | None = None
         self._reads: deque = deque(maxlen=self.cfg.read_window)
+        self._widths: deque = deque(maxlen=max(self.cfg.plate_px_samples, 1) * 3)
         self._active: dict[str, bool] = {}
         self._reported: dict[str, float] = {}
 
@@ -113,6 +119,11 @@ class HealthMonitor:
     def plate_seen(self, read_ok: bool, ts: float | None = None) -> None:
         """Record a real plate: read_ok False if it stayed unreadable."""
         self._reads.append(bool(read_ok))
+
+    def plate_width(self, px: float) -> None:
+        """Record how wide (px) a vehicle's plate was at its widest while in view."""
+        if px > 0:
+            self._widths.append(float(px))
 
     def _update_baseline(self, sharpness: float, ts: float) -> None:
         c = self.cfg
@@ -191,6 +202,16 @@ class HealthMonitor:
                   ("plates are being read again",
                    f"{bad_frac:.0%} of the last {len(self._reads)} plates "
                    "could not be read - check the camera view."))
+
+        # (f) plates too small for the camera's resolution or distance
+        recent = list(self._widths)[-c.plate_px_samples:]
+        if c.min_plate_px > 0 and len(recent) >= c.plate_px_samples:
+            m = median(recent)
+            judge("small_plates", m < c.min_plate_px, m >= c.min_plate_px * c.plate_px_exit, "warn",
+                  ("plates are large enough to read again",
+                   f"Plates are only {m:.0f} px wide (about {c.min_plate_px:.0f} px are needed): "
+                   "reading will be unreliable. Move the camera closer, zoom in, narrow the watched "
+                   "area (camera.roi) or use a higher resolution."))
 
         # (e) darkness / overexposure
         br = [f[3] for f in win if f[3] is not None]

@@ -113,6 +113,13 @@ class OcrConfig:
     classical_proposals: bool = True
     # Undo sideways motion blur on plates of moving vehicles before reading them.
     deblur: bool = True
+    # Straighten tilted/sheared plate text before reading (see tools/bench_conditions.py).
+    deskew: bool = False
+    # Fix dark, low-contrast or blown-out plate crops before reading.
+    enhance: bool = False
+    # Warn when plates are typically narrower than this many pixels at their widest
+    # (camera too far, too wide a view or too low a resolution). 0 = no warning.
+    min_plate_width_px: float = 0.0
     # Mean per-character OCR confidence a read needs to count as a vote.
     read_confidence: float = 0.30
     # When a vehicle leaves before its plate was confirmed, its best guess is

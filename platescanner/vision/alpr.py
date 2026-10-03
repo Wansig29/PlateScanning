@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 
 from .. import decode, plates
+from . import enhance as enhance_mod
 
 log = logging.getLogger(__name__)
 
@@ -63,9 +64,12 @@ class PlateEngine:
     """Finds every plate in a frame and reads a cropped plate."""
 
     def __init__(self, model_dir: Path | None, detector: str, ocr: str, det_conf: float,
-                 layouts: list[str] | None = None, deblur: bool = True):
+                 layouts: list[str] | None = None, deblur: bool = True,
+                 deskew: bool = False, enhance: bool = False):
         self.layouts = layouts or []
         self.deblur = deblur
+        self.deskew = deskew
+        self.enhance = enhance
         self.model_dir = model_dir
         self.detector_name = detector
         self.ocr_name = ocr
@@ -169,6 +173,10 @@ class PlateEngine:
             length = motion_blur_length(crop)
             if length >= 3:
                 crop = deblur_horizontal(crop, length)
+        if self.deskew:
+            crop = enhance_mod.deskew_plate(crop)
+        if self.enhance:
+            crop = enhance_mod.enhance_contrast(crop)
         reads = [self._read_one(rec, mode, crop) for rec, mode in self._ocrs]
         outs = [(t, p) for t, p, _ in reads if t]
         if not outs:

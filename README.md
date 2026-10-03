@@ -133,6 +133,10 @@ For accuracy on **real footage**, write a CSV of what each video really shows (`
 
 `bench_live.py` plays a video in real time through the same threads the app uses and reports, for each vehicle, whether it was read, whether correctly, and how long after its plate appeared. Run it on footage from the actual gate camera before deploying, and use `--set section.name=value` to try settings.
 
+### Tried and not used: deskew and contrast enhancement
+
+`ocr.deskew` (straighten tilted plates) and `ocr.enhance` (fix dark, low-contrast or blown-out crops), in `vision/enhance.py`, are off by default. `tools/bench_conditions.py` (synthetic plates, 300 per condition, the real OCR models) found no worthwhile gain: deskew lowered reads on rotated plates by about 1.5 points on average, because the OCR already tolerates tilt and resampling blurs, and enhance changed them by +0.2 points (noise). They are kept so the comparison can be re-run on real footage.
+
 ### Tried and not used: multi-frame pixel fusion
 
 `vision/fusion.py` aligns several crops of one plate and takes their per-pixel median, and `tools/bench_fusion.py` compares it with the voting the app already does (synthetic plates, 3-8 frames each, the real OCR models). Combining the *pixels* never beat voting over the *reads* (exact reads at 56 / 80 / 120 px plate width: single frame 24 / 58 / 86%, vote 35 / 73 / 96%, fused 24 / 64 / 91%), so it is not wired in. The same run shows how steeply reading depends on plate width: nothing reads below about 40 px, and reliable reading needs plates well over 80 px wide. Re-measure on real footage before relying on these figures.
