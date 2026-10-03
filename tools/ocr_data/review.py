@@ -1,6 +1,6 @@
 """Keyboard-driven tool to verify and correct the plate labels in an OCR dataset.
 
-    python tools/ocr_data/review.py [--dir datasets/plates] [--only unverified|all|rejected|motorcycle|car|low-confidence] [--start N]
+    python tools/ocr_data/review.py [--dir datasets/plates] [--only unverified|all|rejected|motorcycle|car|low-confidence] [--start N] [--sample N [--seed S]]
 
 Keys: Enter accept + next unverified | Ctrl+Z or Backspace-on-empty previous | Tab skip |
 Delete (cursor at end) reject as a bad image | Alt+C / Alt+M car / motorcycle (plain C / M when the
@@ -90,6 +90,31 @@ def select_indices(rows: list[dict], only: str = "unverified") -> list[int]:
     return [i for i, r in enumerate(rows) if matches_filter(r, only)]
 
 
+def sample_indices(rows: list[dict], order: list[int], per_source: int, seed: int = 0) -> list[int]:
+    """A random, fair sample of `order`: at most `per_source` rows from each source dataset.
+
+    Crops of the same plate (same suggested text) count once, so one vehicle photographed
+    many times is not reviewed many times. The result is shuffled; fixed by `seed`.
+    """
+    import random
+    rng = random.Random(seed)
+    groups: dict[tuple[str, str], list[int]] = {}
+    for i in order:
+        r = rows[i]
+        key = (r.get("source", ""), r.get("suggested_text") or r.get("image_path", ""))
+        groups.setdefault(key, []).append(i)
+    by_source: dict[str, list[int]] = {}
+    for (source, _), members in groups.items():
+        by_source.setdefault(source, []).append(rng.choice(members))
+    picked: list[int] = []
+    for source in sorted(by_source):
+        pool = by_source[source]
+        rng.shuffle(pool)
+        picked += pool[:per_source]
+    rng.shuffle(picked)
+    return picked
+
+
 def next_pending(rows: list[dict], order: list[int], pos: int) -> int | None:
     """Position (in `order`) of the next pending row after `pos`, or None."""
     for p in range(pos + 1, len(order)):
@@ -151,7 +176,8 @@ def progress_text(rows: list[dict]) -> str:
 class ReviewModel:
     """Rows + a cursor over the filtered list. No Qt; every change is saved at once."""
 
-    def __init__(self, dataset_dir: Path, only: str = "unverified", start: int = 1, save: bool = True):
+    def __init__(self, dataset_dir: Path, only: str = "unverified", start: int = 1, save: bool = True,
+                 per_source: int = 0, seed: int = 0):
         self.dir = Path(dataset_dir)
         self.csv_path = self.dir / "labels.csv"
         self.fields, self.rows = load_rows(self.csv_path)
@@ -160,6 +186,8 @@ class ReviewModel:
                 self.fields.append(col)
         self.only = only
         self.order = select_indices(self.rows, only)
+        if per_source:
+            self.order = sample_indices(self.rows, self.order, per_source, seed)
         self.pos = min(max(start, 1), max(len(self.order), 1)) - 1
         self._save = save
 
@@ -449,11 +477,14 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dir", default="datasets/plates", help="dataset folder (images/ + labels.csv)")
     ap.add_argument("--only", choices=FILTERS, default="unverified")
     ap.add_argument("--start", type=int, default=1, help="1-based position in the filtered list")
+    ap.add_argument("--sample", type=int, default=0, metavar="N",
+                    help="review a random sample of at most N distinct plates per source dataset")
+    ap.add_argument("--seed", type=int, default=0, help="makes --sample repeatable")
     a = ap.parse_args(argv)
     if not (Path(a.dir) / "labels.csv").exists():
         print(f"No labels.csv in {a.dir}", file=sys.stderr)
         return 1
-    model = ReviewModel(Path(a.dir), a.only, a.start)
+    model = ReviewModel(Path(a.dir), a.only, a.start, per_source=a.sample, seed=a.seed)
     Window, App = build_window_class()
     app = App.instance() or App(sys.argv[:1])
     win = Window(model)

@@ -111,3 +111,17 @@ def test_window_smoke(tmp_path):
     w.reject()
     assert read(ds)[2]["verified"] == "-1"
     assert app is not None
+
+
+def test_sample_takes_distinct_plates_per_source_and_is_repeatable():
+    from tools.ocr_data.review import sample_indices
+    rows = ([{"source": "big", "suggested_text": f"AAA{i % 50:04d}", "image_path": f"b{i}.jpg"} for i in range(500)]
+            + [{"source": "small", "suggested_text": f"BBB{i:04d}", "image_path": f"s{i}.jpg"} for i in range(8)])
+    order = list(range(len(rows)))
+    pick = sample_indices(rows, order, per_source=20, seed=1)
+    assert sum(rows[i]["source"] == "big" for i in pick) == 20          # capped
+    assert sum(rows[i]["source"] == "small" for i in pick) == 8         # a small source is taken whole
+    texts = [rows[i]["suggested_text"] for i in pick if rows[i]["source"] == "big"]
+    assert len(set(texts)) == 20                                       # one crop per distinct plate
+    assert pick == sample_indices(rows, order, per_source=20, seed=1)  # repeatable
+    assert pick != sample_indices(rows, order, per_source=20, seed=2)
