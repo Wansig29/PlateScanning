@@ -133,6 +133,10 @@ For accuracy on **real footage**, write a CSV of what each video really shows (`
 
 `bench_live.py` plays a video in real time through the same threads the app uses and reports, for each vehicle, whether it was read, whether correctly, and how long after its plate appeared. Run it on footage from the actual gate camera before deploying, and use `--set section.name=value` to try settings.
 
+### Tried and not used: multi-frame pixel fusion
+
+`vision/fusion.py` aligns several crops of one plate and takes their per-pixel median, and `tools/bench_fusion.py` compares it with the voting the app already does (synthetic plates, 3-8 frames each, the real OCR models). Combining the *pixels* never beat voting over the *reads* (exact reads at 56 / 80 / 120 px plate width: single frame 24 / 58 / 86%, vote 35 / 73 / 96%, fused 24 / 64 / 91%), so it is not wired in. The same run shows how steeply reading depends on plate width: nothing reads below about 40 px, and reliable reading needs plates well over 80 px wide. Re-measure on real footage before relying on these figures.
+
 ### Multiple violations per vehicle
 
 The spec left this open. The app stores **all** active violations. The dashboard shows the newest one in the wireframe's fields. When there are more, it rotates through them every 4 s, and the ‹ › buttons page manually (pausing rotation for 15 s). The banner and log entry say how many there are.
