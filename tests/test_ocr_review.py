@@ -125,3 +125,12 @@ def test_sample_takes_distinct_plates_per_source_and_is_repeatable():
     assert len(set(texts)) == 20                                       # one crop per distinct plate
     assert pick == sample_indices(rows, order, per_source=20, seed=1)  # repeatable
     assert pick != sample_indices(rows, order, per_source=20, seed=2)
+
+
+def test_confidence_band_filter_keeps_only_that_band(tmp_path):
+    from tools.ocr_data.review import ReviewModel
+    header = "image_path,plate_text,suggested_text,suggested_conf,vehicle,source,license,orig_image,box,verified,split\n"
+    body = "".join(f"i{n}.jpg,,AAA{n:04d},{c},,s,,,,0,\n" for n, c in enumerate((0.2, 0.55, 0.7, 0.9, 0.97)))
+    (tmp_path / "labels.csv").write_text(header + body, encoding="utf-8")
+    m = ReviewModel(tmp_path, "unverified", save=False, conf_range=(0.5, 0.95))
+    assert [m.rows[i]["suggested_conf"] for i in m.order] == ["0.55", "0.7", "0.9"]

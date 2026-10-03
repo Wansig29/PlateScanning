@@ -177,7 +177,7 @@ class ReviewModel:
     """Rows + a cursor over the filtered list. No Qt; every change is saved at once."""
 
     def __init__(self, dataset_dir: Path, only: str = "unverified", start: int = 1, save: bool = True,
-                 per_source: int = 0, seed: int = 0):
+                 per_source: int = 0, seed: int = 0, conf_range: tuple[float, float] | None = None):
         self.dir = Path(dataset_dir)
         self.csv_path = self.dir / "labels.csv"
         self.fields, self.rows = load_rows(self.csv_path)
@@ -186,6 +186,9 @@ class ReviewModel:
                 self.fields.append(col)
         self.only = only
         self.order = select_indices(self.rows, only)
+        if conf_range:
+            lo, hi = conf_range
+            self.order = [i for i in self.order if lo <= (conf_of(self.rows[i]) or 0.0) < hi]
         if per_source:
             self.order = sample_indices(self.rows, self.order, per_source, seed)
         self.pos = min(max(start, 1), max(len(self.order), 1)) - 1
@@ -480,11 +483,13 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--sample", type=int, default=0, metavar="N",
                     help="review a random sample of at most N distinct plates per source dataset")
     ap.add_argument("--seed", type=int, default=0, help="makes --sample repeatable")
+    ap.add_argument("--conf", metavar="LO,HI", help="only rows whose suggestion confidence is in [LO, HI), e.g. 0.5,0.95")
     a = ap.parse_args(argv)
     if not (Path(a.dir) / "labels.csv").exists():
         print(f"No labels.csv in {a.dir}", file=sys.stderr)
         return 1
-    model = ReviewModel(Path(a.dir), a.only, a.start, per_source=a.sample, seed=a.seed)
+    conf_range = tuple(float(x) for x in a.conf.split(",")) if a.conf else None
+    model = ReviewModel(Path(a.dir), a.only, a.start, per_source=a.sample, seed=a.seed, conf_range=conf_range)
     Window, App = build_window_class()
     app = App.instance() or App(sys.argv[:1])
     win = Window(model)
