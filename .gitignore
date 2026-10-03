@@ -9,3 +9,7 @@ models/
 bench_out/
 eval_out/
 probe_out/
+
+# Local plate datasets (images and licences stay out of git) and training runs
+datasets/
+runs/

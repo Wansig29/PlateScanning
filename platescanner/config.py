@@ -119,7 +119,9 @@ class OcrConfig:
     enhance: bool = False
     # Warn when plates are typically narrower than this many pixels at their widest
     # (camera too far, too wide a view or too low a resolution). 0 = no warning.
-    min_plate_width_px: float = 0.0
+    # 80 is where single synthetic crops first read about 80-90% (tools/bench_resolution.py);
+    # re-measure on real footage.
+    min_plate_width_px: float = 80.0
     # Mean per-character OCR confidence a read needs to count as a vote.
     read_confidence: float = 0.30
     # When a vehicle leaves before its plate was confirmed, its best guess is
