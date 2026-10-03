@@ -77,6 +77,7 @@ class ScanResult:
     position: str | None = None
     others_in_view: int = 0
     source: str | None = None  # e.g. "video gate.mp4 at 0:23"; None for the live camera
+    verify: bool = False       # a violation resting on a doubtful read: the guard should check the plate
 
 
 @dataclass
@@ -87,6 +88,12 @@ class NoPlateEvent:
     snapshot_path: str | None
     ocr_saw: list[str]
     source: str | None = None
+
+
+def needs_verification(reads: int, avg_confidence: float, approximate: bool, ocr) -> bool:
+    """Should a violation alert tell the guard to check the plate against the photo?"""
+    return (approximate or avg_confidence < ocr.verify_below_confidence
+            or (reads < ocr.confirm_reads and avg_confidence < ocr.verify_single_read_below))
 
 
 def video_clock(seconds: float) -> str:
@@ -607,16 +614,18 @@ class RecognizerWorker(QThread):
                                       RESULT_BGR.get(result.status, READING_BGR))
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
+        verify = result.status == db.RESULT_VIOLATION and needs_verification(
+            lead.reads, avg, result.approximate, ocr)
         scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
                               result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
                               vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
-                              position=pos, source=source)
+                              position=pos, source=source, verify=verify)
         log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)%s%s", track.track_id, text, result.status,
                  lead.reads, avg * 100, f" in {source}" if source else "",
                  f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
                  if decoded and plates.normalize(text) != plates.normalize(lead.text) else "")
         self.scanned.emit(ScanResult(scan_id, ts, read, result, crop_path, snap, track.track_id, vehicle,
-                                     vehicle_path, color, pos, len(track.best_frame_others), source))
+                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify))
 
     def _save_locator(self, track: Track, ts: datetime, name: str, label: str,
                       color: tuple[int, int, int]) -> str | None:

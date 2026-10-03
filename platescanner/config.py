@@ -109,6 +109,12 @@ class OcrConfig:
     # A violation alerts on one read this confident; otherwise, and for
     # every other result, `confirm_reads` agreeing reads are required.
     alert_confidence: float = 0.75
+    # A violation alert is marked "verify plate" for the guard (instead of being
+    # presented as certain) when it rests on a doubtful read: an approximate or
+    # decoded match, an average confidence below `verify_below_confidence`, or a
+    # single read that isn't at least `verify_single_read_below` sure.
+    verify_below_confidence: float = 0.60
+    verify_single_read_below: float = 0.90
     confirm_reads: int = 2
     # After a vehicle is reported, re-read it now and then (to catch a
     # misread) up to this many reads in total.

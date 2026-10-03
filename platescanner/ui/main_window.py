@@ -407,8 +407,7 @@ class MainWindow(QMainWindow):
         more = len(self._health_issues) - 1
         self._set_status(self.health_status, "⚠ " + first + (f"  (+{more} more)" if more else ""),
                          theme.RED if worst == "bad" else theme.AMBER)
-        self.health_status.setToolTip("
-".join(m for _, m in self._health_issues.values()))
+        self.health_status.setToolTip("\n".join(m for _, m in self._health_issues.values()))
         self.health_status.show()
 
     def _ocr_failed(self, msg: str) -> None:
@@ -656,7 +655,7 @@ class MainWindow(QMainWindow):
         ts = scan.ts.isoformat(timespec="seconds")
         seen = VehicleView(vehicle_pm, load_pixmap(scan.snapshot_path), scan.color, scan.position,
                            scan.others_in_view, scan.track_id,
-                           self._when(scan.ts.strftime('%H:%M:%S'), scan.source), scan.scan_id)
+                           self._when(scan.ts.strftime('%H:%M:%S'), scan.source), scan.scan_id, scan.verify)
         is_violation = res.status == db.RESULT_VIOLATION
         if is_violation:
             # Shown now, or queued behind the violator already on screen.
@@ -668,7 +667,7 @@ class MainWindow(QMainWindow):
         self.captured.add_capture(scan.scan_id, ts, vehicle_pm or crop_pm, shown_plate, scan.read.confidence,
                                   res.status, scan.snapshot_path, scan.color)
         # ts is the real scan time, so a paced entry still shows when the vehicle actually passed.
-        self._enqueue_log((scan.scan_id, ts, shown_plate, res.status, self._detail(res), res.approximate,
+        self._enqueue_log((scan.scan_id, ts, shown_plate, res.status, ("VERIFY PLATE · " if scan.verify else "") + self._detail(res), res.approximate,
                            scan.read.confidence, self._looks(scan.color, scan.position, scan.source), None),
                           urgent=is_violation)
         self._refresh_sync_label()
@@ -776,7 +775,8 @@ class MainWindow(QMainWindow):
             res.approximate = bool(r["approximate"])
             seen = VehicleView(load_pixmap(r.get("vehicle_path")), load_pixmap(r["snapshot_path"]),
                                r.get("vehicle_color"), r.get("position"),
-                               when=self._when(format_ts(r["ts"]), r.get("source")), scan_id=r["id"])
+                               when=self._when(format_ts(r["ts"]), r.get("source")), scan_id=r["id"],
+                               verify=bool(r.get("verify")))
             if self.dash.on_violation((r["id"], r["plate_read"], res, seen)) is not None:
                 self._show(r["plate_read"], res, seen, needs_ack=True)
         self._update_pending()
@@ -851,7 +851,8 @@ class MainWindow(QMainWindow):
         pending = self.dash.view_other()
         seen = VehicleView(load_pixmap(scan.get("vehicle_path")), load_pixmap(scan["snapshot_path"]),
                            scan.get("vehicle_color"), scan.get("position"),
-                           when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan_id)
+                           when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan_id,
+                           verify=bool(scan.get("verify")))
         self._show(scan["plate_read"], res, seen, back=pending)
         self._update_pending()
         self.captured.select(scan_id)
@@ -862,7 +863,8 @@ class MainWindow(QMainWindow):
         for r in reversed(rows):  # oldest first: newest ends up at the bottom
             detail = ""
             if r["result"] == db.RESULT_VIOLATION:
-                detail = self._detail(db.lookup(self.conn, r["matched_plate"] or r["plate_read"], fuzzy=False))
+                detail = ("VERIFY PLATE · " if r.get("verify") else "") + self._detail(
+                    db.lookup(self.conn, r["matched_plate"] or r["plate_read"], fuzzy=False))
             ack = None
             if r.get("acknowledged_at"):
                 ack = f"acknowledged by {r['acknowledged_by']} at {format_ts(r['acknowledged_at'])}"

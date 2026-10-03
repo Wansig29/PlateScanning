@@ -100,6 +100,7 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 - **Slow mode** (Logs header): adds at most one log entry per 2–10 s and queues the rest, so each can be read during busy periods. It only paces the Logs: the dashboard, captured plates and alerts are always immediate, violations skip the queue, and every entry keeps the time its vehicle was actually scanned.
 
 - **Guards can confirm or correct a plate**: *✎ Wrong plate? Confirm or correct it* under the dashboard banner shows the plate photo and lets the guard type what it really says. The scan, its Logs row and its Captured Plates card are rewritten and looked up again (a corrected violation raises the alert, a wrongly flagged one is withdrawn). Every answer is saved with the guard's name in `plate_corrections`; `tools/export_corrections.py out_folder` turns them into a labelled dataset (`labels.csv` + crops) for measuring and fine-tuning the OCR.
+- **"Verify plate" alerts**: a violation that rests on a doubtful read (an approximate or decoded match, an average confidence under `ocr.verify_below_confidence` (0.60), or a single read under `ocr.verify_single_read_below` (0.90)) is still raised at once, but its banner and Logs row say **VERIFY PLATE**, so the guard compares the plate with the photo instead of trusting it blindly. Confirming or correcting the plate clears the mark.
 - **Health warnings** (`health.py`): the status bar warns when the camera image is blurred or dirty, the frame or analysis rate drops, the picture freezes, the scene is too dark or overexposed, or more than half of the recent plates could not be read. Each warning shows once, a stalled feed also beeps, and a green *Recovered* follows when it clears.
 
 ### Measuring speed and accuracy
@@ -109,6 +110,8 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 .\.venv\Scripts\python tools\bench_live.py rush.mp4
 .\.venv\Scripts\python tools\bench_live.py real_gate.mp4 --set camera.roi=[0.1,0.3,0.8,0.7]   # real footage: lists every read
 ```
+
+To check that `ocr.plate_layouts` covers the plates you actually have, run `python tools\plate_formats.py`: it lists the plate shapes in the local database (L = letter, D = digit), which ones the layouts miss, and a suggested list. It only reads the database.
 
 For accuracy on **real footage**, write a CSV of what each video really shows (`video, seconds_start, seconds_end, plate, condition`, with the condition free text such as `night` or `rain`) and run:
 

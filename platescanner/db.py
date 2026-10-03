@@ -72,7 +72,8 @@ CREATE TABLE IF NOT EXISTS scan_log (
     position      TEXT,
     acknowledged_at TEXT,
     acknowledged_by TEXT,
-    source        TEXT
+    source        TEXT,
+    verify        INTEGER NOT NULL DEFAULT 0
 );
 
 -- What guards confirmed or fixed: ground truth for measuring and retraining the OCR.
@@ -119,7 +120,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(scan_log)")}
     for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
                        ("vehicle_color", "TEXT"), ("position", "TEXT"),
-                       ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT"), ("source", "TEXT")):
+                       ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT"), ("source", "TEXT"),
+                       ("verify", "INTEGER NOT NULL DEFAULT 0")):
         if name not in cols:
             conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
     conn.commit()
@@ -332,16 +334,17 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
              confidence: float | None, crop_path: str | None, snapshot_path: str | None = None,
              vehicle_path: str | None = None, track_id: int | None = None,
              vehicle_color: str | None = None, position: str | None = None,
-             source: str | None = None) -> int:
-    """source: where the scan came from when not the live gate camera, e.g. "video gate.mp4 at 0:23"."""
+             source: str | None = None, verify: bool = False) -> int:
+    """source: where the scan came from when not the live gate camera, e.g. "video gate.mp4 at 0:23".
+    verify: the plate rests on a doubtful read; a guard should check it against the photo."""
     cur = conn.execute(
         "INSERT INTO scan_log(ts, plate_read, matched_plate, result, confidence, approximate, "
         "vehicle_id, violation_ids, crop_path, snapshot_path, vehicle_path, track_id, vehicle_color, "
-        "position, source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "position, source, verify) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (ts, plate_read, result.matched_plate, result.status, confidence, int(result.approximate),
          result.vehicle["id"] if result.vehicle else None,
          json.dumps([v["id"] for v in result.violations]), crop_path, snapshot_path,
-         vehicle_path, track_id, vehicle_color, position, source),
+         vehicle_path, track_id, vehicle_color, position, source, int(verify)),
     )
     conn.commit()
     return int(cur.lastrowid)
@@ -375,7 +378,7 @@ def correct_scan(conn: sqlite3.Connection, scan_id: int, true_text: str, by: str
     conn.execute("INSERT INTO plate_corrections(scan_id, ts, by, kind, read_text, true_text, crop_path) "
                  "VALUES(?,?,?,?,?,?,?)",
                  (scan_id, at, by, "confirmed" if read == true else "corrected", read, true, scan["crop_path"]))
-    conn.execute("UPDATE scan_log SET plate_read=?, matched_plate=?, result=?, approximate=0, vehicle_id=?, "
+    conn.execute("UPDATE scan_log SET plate_read=?, matched_plate=?, result=?, approximate=0, verify=0, vehicle_id=?, "
                  "violation_ids=? WHERE id=?",
                  (true, result.matched_plate, result.status, result.vehicle["id"] if result.vehicle else None,
                   json.dumps([v["id"] for v in result.violations]), scan_id))

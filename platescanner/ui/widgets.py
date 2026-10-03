@@ -308,6 +308,7 @@ class VehicleView:
     track_id: int | None = None      # the #number shown on the live feed (this session only)
     when: str = ""                   # e.g. "Scanned 10:03:53"
     scan_id: int | None = None       # the scan this is a picture of (for corrections)
+    verify: bool = False             # a violation resting on a doubtful read: check the plate
 
     def describe(self) -> str:
         parts = []
@@ -591,7 +592,10 @@ class IdentityPanel(QFrame):
         seen = seen or VehicleView()
         self._banner_color = color
         vehicle_no = f"   \u00b7   VEHICLE #{seen.track_id}" if seen.track_id else ""
-        self.banner.setText(f"{theme.RESULT_ICONS.get(result.status, '')}  {label}{vehicle_no}")
+        verify = "   ·   VERIFY PLATE" if seen.verify and result.status == db.RESULT_VIOLATION else ""
+        self.banner.setToolTip("The plate was read with some doubt. Compare it with the photo and press "
+                               "Confirm or correct." if verify else "")
+        self.banner.setText(f"{theme.RESULT_ICONS.get(result.status, '')}  {label}{vehicle_no}{verify}")
         self._paint_banner(color)
         self.vehicle_img.set_pixmap(seen.vehicle)
         self.where_img.set_pixmap(seen.where)
