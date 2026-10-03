@@ -17,7 +17,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-from .. import plates
+from .. import decode, plates
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +44,9 @@ class OcrRead:
     text: str
     confidence: float        # mean per-character probability
     char_probs: list[float]
+    # Probability of every character at every position (positions x alphabet),
+    # for scoring against the registered plates. None if unavailable.
+    dist: np.ndarray | None = None
 
 
 def _session_options():
@@ -70,6 +73,9 @@ class PlateEngine:
         self._det = None
         self._ocrs: list = []
         self.device = "CPU"
+        self.alphabet = ""
+        self.pad_char = "_"
+        self.slots = 0
 
     def load(self) -> None:
         from fast_plate_ocr import LicensePlateRecognizer
@@ -101,6 +107,9 @@ class PlateEngine:
                 rec = LicensePlateRecognizer(hub_ocr_model=name, providers=providers,
                                              sess_options=_session_options())
             self._ocrs.append((rec, rec.config.image_color_mode))
+        cfgs = [rec.config for rec, _ in self._ocrs]
+        self.alphabet, self.pad_char = cfgs[0].alphabet, cfgs[0].pad_char
+        self.slots = max(c.max_plate_slots for c in cfgs)
         # Warm up: the first inference allocates buffers and is several times slower.
         self.detect(np.zeros((360, 640, 3), np.uint8))
         self.read(np.zeros((40, 120, 3), np.uint8))
@@ -117,19 +126,38 @@ class PlateEngine:
                 out.append(PlateBox((x1, y1, x2 - x1, y2 - y1), float(d.confidence)))
         return out
 
-    def _read_one(self, rec, mode: str, crop: np.ndarray) -> tuple[str, list[float]]:
+    def _read_one(self, rec, mode: str, crop: np.ndarray) -> tuple[str, list[float], np.ndarray | None]:
         if mode == "grayscale":
             img = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         elif mode == "rgb":
             img = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         else:
             img = crop
-        pred = rec.run_one(img, return_confidence=True)
-        text = plates.normalize(pred.plate)
-        probs = [float(p) for p in (pred.char_probs.tolist() if pred.char_probs is not None else [])]
+        dist = self._distribution(rec, img)
+        if dist is not None:  # the library's own decoding: likeliest character per position
+            idx = dist.argmax(axis=-1)
+            text = plates.normalize("".join(rec.config.alphabet[i] for i in idx).rstrip(rec.config.pad_char))
+            probs = dist.max(axis=-1).astype(float).tolist()
+        else:
+            pred = rec.run_one(img, return_confidence=True)
+            text = plates.normalize(pred.plate)
+            probs = [float(p) for p in (pred.char_probs.tolist() if pred.char_probs is not None else [])]
         if len(probs) < len(text):
             probs += [0.5] * (len(text) - len(probs))
-        return text, probs[:len(text)]
+        return text, probs[:len(text)], dist
+
+    @staticmethod
+    def _distribution(rec, img: np.ndarray) -> np.ndarray | None:
+        """The model's full output (positions x alphabet), which rec.run_one() reduces to a winner."""
+        try:
+            from fast_plate_ocr.core.process import preprocess_image
+            from fast_plate_ocr.inference.plate_recognizer import _load_image_from_source
+            x = preprocess_image(_load_image_from_source(img, rec.config))
+            out = rec.model.run([rec.plate_output_name], {"input": x})[0]
+            return out.reshape(-1, rec.config.max_plate_slots, len(rec.config.alphabet))[0]
+        except Exception:  # noqa: BLE001 - library internals changed: fall back to the plain read
+            log.debug("Could not get the OCR distribution", exc_info=True)
+            return None
 
     def read(self, crop: np.ndarray) -> OcrRead | None:
         assert self._ocrs, "call load() first"
@@ -141,16 +169,25 @@ class PlateEngine:
             length = motion_blur_length(crop)
             if length >= 3:
                 crop = deblur_horizontal(crop, length)
-        outs = [self._read_one(rec, mode, crop) for rec, mode in self._ocrs]
-        outs = [(t, p) for t, p in outs if t]
+        reads = [self._read_one(rec, mode, crop) for rec, mode in self._ocrs]
+        outs = [(t, p) for t, p, _ in reads if t]
         if not outs:
             return OcrRead("", 0.0, [])
+        dist = self._merge_distributions([d for _, _, d in reads if d is not None])
         if self.layouts:  # coerce each model's text into a plate layout first
             fixed = [(plates.best_layout_match(t, self.layouts), p) for t, p in outs]
             if any(f for f, _ in fixed):
                 outs = [(f, p) for f, p in fixed if f]
         text, probs = vote_chars(outs, len(outs))
-        return OcrRead(text, sum(probs) / len(probs) if probs else 0.0, probs)
+        return OcrRead(text, sum(probs) / len(probs) if probs else 0.0, probs, dist)
+
+    def _merge_distributions(self, dists: list[np.ndarray]) -> np.ndarray | None:
+        """Average the models' distributions (models with fewer positions are padded)."""
+        if not dists or not self.alphabet:
+            return None
+        aligned = [decode.align_slots(d, self.slots, self.alphabet, self.pad_char) for d in dists
+                   if d.shape[1] == len(self.alphabet)]
+        return np.mean(aligned, axis=0) if aligned else None
 
 
 # A sharp plate has sideways edges (the characters' vertical strokes) about as

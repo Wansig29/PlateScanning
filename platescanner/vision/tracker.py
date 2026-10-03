@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .. import plates
+from .. import decode, plates
 
 Box = tuple[int, int, int, int]
 
@@ -58,16 +58,29 @@ class Track:
     best_frame_box: Box | None = None
     best_frame_others: list[Box] = field(default_factory=list)  # other vehicles' plates in that frame
     emitted_key: str | None = None   # plate key already reported for this vehicle
+    emitted_text: str | None = None  # the plate text reported (may be a registered plate decoded from the reads)
     trail: list[tuple[int, int]] = field(default_factory=list)
     status: str | None = None        # lookup result of the reported plate (for the overlay)
+    # Log-probabilities of every character at every position, summed over the reads.
+    log_sum: np.ndarray | None = None
+    dist_reads: int = 0
 
     def predicted(self, now: float) -> Box:
         dt = now - self.last_seen
         x, y, w, h = self.box
         return int(x + self.velocity[0] * dt), int(y + self.velocity[1] * dt), w, h
 
-    def add_vote(self, text: str, raw: str, conf: float, char_probs: list[float] | None = None) -> None:
-        """Record one layout-corrected OCR read of this vehicle's plate."""
+    def add_vote(self, text: str, raw: str, conf: float, char_probs: list[float] | None = None,
+                 dist: np.ndarray | None = None) -> None:
+        """Record one layout-corrected OCR read of this vehicle's plate.
+
+        dist: the OCR's full character distribution for this read, if it has one."""
+        if dist is not None:
+            lp = decode.log_dist(dist)
+            if self.log_sum is None or self.log_sum.shape != lp.shape:
+                self.log_sum, self.dist_reads = lp, 1
+            else:
+                self.log_sum, self.dist_reads = self.log_sum + lp, self.dist_reads + 1
         probs = list(char_probs or [])
         if len(probs) != len(text):
             probs = [conf] * len(text)
@@ -102,6 +115,12 @@ class Track:
         conf = sum(wins) / len(wins)
         self._agreement = min(shares) * (n / len(self.reads))
         return Vote(text, conf * n, n, best[2], best[1])
+
+    def distribution(self, temperature: float = 1.0) -> np.ndarray | None:
+        """Everything the OCR believed about this plate, over all reads (positions x alphabet)."""
+        if self.log_sum is None:
+            return None
+        return decode.combine(self.log_sum, self.dist_reads, temperature)
 
     def margin(self) -> float:
         """How unanimous the consensus is (0..1): its weakest character's share of

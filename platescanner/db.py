@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS scan_log (
     vehicle_color TEXT,
     position      TEXT,
     acknowledged_at TEXT,
-    acknowledged_by TEXT
+    acknowledged_by TEXT,
+    source        TEXT
 );
 """
 
@@ -105,7 +106,7 @@ def init_schema(conn: sqlite3.Connection) -> None:
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(scan_log)")}
     for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
                        ("vehicle_color", "TEXT"), ("position", "TEXT"),
-                       ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT")):
+                       ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT"), ("source", "TEXT")):
         if name not in cols:
             conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
     conn.commit()
@@ -317,15 +318,17 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
 def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: LookupResult,
              confidence: float | None, crop_path: str | None, snapshot_path: str | None = None,
              vehicle_path: str | None = None, track_id: int | None = None,
-             vehicle_color: str | None = None, position: str | None = None) -> int:
+             vehicle_color: str | None = None, position: str | None = None,
+             source: str | None = None) -> int:
+    """source: where the scan came from when not the live gate camera, e.g. "video gate.mp4 at 0:23"."""
     cur = conn.execute(
         "INSERT INTO scan_log(ts, plate_read, matched_plate, result, confidence, approximate, "
         "vehicle_id, violation_ids, crop_path, snapshot_path, vehicle_path, track_id, vehicle_color, "
-        "position) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "position, source) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (ts, plate_read, result.matched_plate, result.status, confidence, int(result.approximate),
          result.vehicle["id"] if result.vehicle else None,
          json.dumps([v["id"] for v in result.violations]), crop_path, snapshot_path,
-         vehicle_path, track_id, vehicle_color, position),
+         vehicle_path, track_id, vehicle_color, position, source),
     )
     conn.commit()
     return int(cur.lastrowid)

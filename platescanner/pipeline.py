@@ -28,6 +28,7 @@ from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
 from . import db, plates
+from .decode import Decoding, PlateLexicon
 from .config import Config
 from .vision import identify
 from .vision.alpr import PlateEngine, merge_proposals, pad_box
@@ -70,6 +71,7 @@ class ScanResult:
     color: str | None = None
     position: str | None = None
     others_in_view: int = 0
+    source: str | None = None  # e.g. "video gate.mp4 at 0:23"; None for the live camera
 
 
 @dataclass
@@ -79,6 +81,12 @@ class NoPlateEvent:
     ts: datetime
     snapshot_path: str | None
     ocr_saw: list[str]
+    source: str | None = None
+
+
+def video_clock(seconds: float) -> str:
+    m, s = divmod(int(seconds), 60)
+    return f"{m // 60}:{m % 60:02d}:{s:02d}" if m >= 60 else f"{m}:{s:02d}"
 
 
 @dataclass
@@ -313,9 +321,19 @@ class RecognizerWorker(QThread):
         # Plate reads and the classical finder run here, in parallel with the detector.
         self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plate-read")
         self._detector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plate-detect")
+        self.video_name: str | None = None  # set when scanning a video file instead of the camera
+        self._lexicon: PlateLexicon | None = None
+
+    def _source(self, track: Track) -> str | None:
+        # In a video, frame timestamps are the time into the video.
+        return f"video {self.video_name} at {video_clock(track.first_seen)}" if self.video_name else None
 
     def stop(self) -> None:
         self._stop.set()
+
+    @property
+    def stopping(self) -> bool:
+        return self._stop.is_set()
 
     def _in_cooldown(self, key: str, now: float) -> bool:
         cooldown = self.cfg.scan.plate_cooldown_seconds
@@ -367,14 +385,9 @@ class RecognizerWorker(QThread):
 
         def drain() -> None:
             nonlocal pending
-            if pending is None:
-                return
-            f, fut = pending
-            pending = None
-            try:
-                self._apply(conn, f, fut.result())
-            except Exception:  # noqa: BLE001 - never let one bad frame kill the scanner
-                log.exception("Recognition failed")
+            if pending is not None:
+                self._apply_detected(conn, *pending)
+                pending = None
 
         try:
             while not self._stop.is_set():
@@ -403,6 +416,12 @@ class RecognizerWorker(QThread):
             self._detector.shutdown(wait=True)
             self._pool.shutdown(wait=True)
             conn.close()
+
+    def _apply_detected(self, conn, f: _Frame, detections) -> None:
+        try:
+            self._apply(conn, f, detections.result())
+        except Exception:  # noqa: BLE001 - never let one bad frame kill the scanner
+            log.exception("Recognition failed")
 
     def _expire(self, conn, now: float) -> None:
         _, ended = self.tracker.update([], now)
@@ -467,7 +486,7 @@ class RecognizerWorker(QThread):
             if not fixed or read.confidence < ocr.read_confidence:
                 track.unmatched.append(f"{read.text}({read.confidence:.0%})")
                 continue
-            track.add_vote(fixed, read.text, read.confidence, read.char_probs)
+            track.add_vote(fixed, read.text, read.confidence, read.char_probs, read.dist)
             score = read.confidence * (1.0 + 0.001 * sharpness(crop))
             if score > track.best_crop_score:
                 track.best_crop_score, track.best_crop = score, crop.copy()
@@ -485,17 +504,45 @@ class RecognizerWorker(QThread):
 
     # --- decisions ----------------------------------------------------------------
 
+    def _decode(self, conn, track: Track, color: str | None) -> Decoding | None:
+        """Score everything the OCR believed about this vehicle's plate against the registered plates."""
+        ocr = self.cfg.ocr
+        if not ocr.decode_with_database or self.engine is None or not self.engine.alphabet:
+            return None
+        dist = track.distribution(ocr.decode_temperature)
+        if dist is None:
+            return None
+        if self._lexicon is None:
+            self._lexicon = PlateLexicon(self.engine.alphabet, self.engine.pad_char, self.engine.slots,
+                                         ocr.plate_layouts, accept=ocr.decode_accept,
+                                         max_changes=ocr.decode_max_changes,
+                                         min_char_prob=ocr.decode_min_char_prob,
+                                         registered_prior=ocr.registered_prior,
+                                         colour_penalty=ocr.decode_colour_penalty)
+        self._lexicon.refresh(conn)
+        return self._lexicon.decode(dist, color)
+
     def _decide(self, conn, track: Track, final: bool) -> None:
         lead = track.leader()
         if lead is None:
             return
-        key = plates.plate_key(lead.text)
+        color = None
+        if track.best_frame is not None and track.best_frame_box is not None:
+            color = identify.vehicle_color(track.best_frame, track.best_frame_box)
+        dec = self._decode(conn, track, color)
+        decoded = dec is not None and dec.accepted
+        # A registered plate that the evidence clearly points to replaces the plain read.
+        text = dec.best.plate if decoded else lead.text
+        key = plates.plate_key(text)
         if key == track.emitted_key:
             return
         ocr = self.cfg.ocr
         avg = lead.score / lead.reads
-        result = db.lookup(conn, lead.text, fuzzy=self.cfg.scan.fuzzy_match)
-        clear_lead = track.margin() >= 0.6
+        result = db.lookup(conn, text, fuzzy=self.cfg.scan.fuzzy_match)
+        if decoded and plates.normalize(text) != plates.normalize(lead.text):
+            result.approximate = True  # the guard sees that this is not a letter-for-letter read
+        # Reads that disagree on a character are exactly what decoding resolves.
+        clear_lead = track.margin() >= 0.6 or decoded
         if track.emitted_key:
             # Already reported as another plate: only correct it on solid evidence.
             ready = lead.reads >= ocr.confirm_reads + 1 and clear_lead
@@ -512,12 +559,14 @@ class RecognizerWorker(QThread):
             return
 
         track.emitted_key = key
+        track.emitted_text = text
         track.status = result.status
-        if self._in_cooldown(plates.plate_key(result.matched_plate or lead.text), time.monotonic()):
+        # The frame's clock: the camera's time, or the time into a video.
+        if self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen):
             return
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
-        crop_path = self._save_jpeg(crop, ts, lead.text) if self.cfg.scan.save_captures else None
+        crop_path = self._save_jpeg(crop, ts, text) if self.cfg.scan.save_captures else None
         plate_box = track.best_frame_box or (0, 0, 1, 1)
         vehicle = color = pos = vehicle_path = snap = None
         if track.best_frame is not None:
@@ -526,18 +575,21 @@ class RecognizerWorker(QThread):
             color = identify.vehicle_color(frame, plate_box)
             pos = identify.position(plate_box, frame.shape)
             if self.cfg.scan.save_captures:
-                vehicle_path = self._save_jpeg(vehicle, ts, lead.text + "_vehicle", 640, 88)
-            snap = self._save_locator(track, ts, lead.text, f"#{track.track_id} {plates.display(lead.text)}",
+                vehicle_path = self._save_jpeg(vehicle, ts, text + "_vehicle", 640, 88)
+            snap = self._save_locator(track, ts, text, f"#{track.track_id} {plates.display(text)}",
                                       RESULT_BGR.get(result.status, READING_BGR))
-        read = PlateRead(lead.text, lead.raw, avg, crop, plate_box)
-        scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=lead.text,
+        read = PlateRead(text, lead.raw, avg, crop, plate_box)
+        source = self._source(track)
+        scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
                               result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
                               vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
-                              position=pos)
-        log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)", track.track_id, lead.text, result.status,
-                 lead.reads, avg * 100)
+                              position=pos, source=source)
+        log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)%s%s", track.track_id, text, result.status,
+                 lead.reads, avg * 100, f" in {source}" if source else "",
+                 f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
+                 if decoded and plates.normalize(text) != plates.normalize(lead.text) else "")
         self.scanned.emit(ScanResult(scan_id, ts, read, result, crop_path, snap, track.track_id, vehicle,
-                                     vehicle_path, color, pos, len(track.best_frame_others)))
+                                     vehicle_path, color, pos, len(track.best_frame_others), source))
 
     def _save_locator(self, track: Track, ts: datetime, name: str, label: str,
                       color: tuple[int, int, int]) -> str | None:
@@ -559,13 +611,14 @@ class RecognizerWorker(QThread):
         ts = datetime.now()
         snap = self._save_locator(track, ts, "noplate", f"#{track.track_id} plate not readable", (150, 150, 150))
         scan_id = None
+        source = self._source(track)
         if snap:
             scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read="",
                                   result=db.LookupResult(db.RESULT_NO_PLATE), confidence=None,
-                                  crop_path=None, snapshot_path=snap)
+                                  crop_path=None, snapshot_path=snap, source=source)
         log.info("Track #%d: plate not readable. OCR saw: %s", track.track_id,
                  ", ".join(track.unmatched[:6]) or "nothing")
-        self.unreadable.emit(NoPlateEvent(scan_id, ts, snap, track.unmatched[:6]))
+        self.unreadable.emit(NoPlateEvent(scan_id, ts, snap, track.unmatched[:6], source))
 
     def _push_overlays(self, roi: tuple[int, int, int, int] | None) -> None:
         if self.capture is None:
@@ -578,7 +631,7 @@ class RecognizerWorker(QThread):
             x, y, w, h = t.box
             lead = t.leader()
             if t.emitted_key and lead:
-                label = f"#{t.track_id} {plates.display(lead.text)} {lead.score / lead.reads:.0%}"
+                label = f"#{t.track_id} {plates.display(t.emitted_text or lead.text)} {lead.score / lead.reads:.0%}"
                 if t.status == db.RESULT_VIOLATION:
                     label += " VIOLATION"
                 color = RESULT_BGR.get(t.status or "", READING_BGR)
@@ -592,3 +645,54 @@ class RecognizerWorker(QThread):
             out.append(Overlay((x + rx, y + ry, w, h), label, color, trail, t.velocity, t.last_seen,
                                t.status == db.RESULT_VIOLATION))
         self.capture.set_overlays(out)
+
+
+class VideoScanWorker(RecognizerWorker):
+    """Scans every frame of a video file, none skipped, as fast as the computer allows.
+
+    Results go out through the same signals as the live scanner, tagged with
+    the video's name and the time into the video. For each vehicle, the frame
+    whose plate read was the most accurate becomes its snapshot.
+    """
+    progress = Signal(int, int)  # frames scanned, total frames (0 if unknown)
+
+    def __init__(self, cfg: Config, path: str, engine: PlateEngine):
+        super().__init__(cfg, FrameSlot(), None, engine)
+        self.path = path
+        self.video_name = Path(path).name
+
+    def run(self) -> None:
+        cap = cv2.VideoCapture(self.path)
+        if not cap.isOpened():
+            self.failed.emit(f"Could not open the video {self.video_name}")
+            return
+        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        total = max(0, int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0))
+        conn = db.connect(self.cfg.db_path)
+        db.init_schema(conn)
+        pending = None
+        index = 0
+        try:
+            while not self._stop.is_set():
+                ok, image = cap.read()
+                if not ok or image is None:
+                    break
+                h, w = image.shape[:2]  # the whole picture: the gate camera's ROI doesn't apply here
+                f = _Frame(index, image, (0, 0, w, h), True, index / fps)
+                nxt = (f, self._detector.submit(self._detect, f))
+                if pending is not None:
+                    self._apply_detected(conn, *pending)
+                pending = nxt
+                index += 1
+                if index % 10 == 0:
+                    self.progress.emit(index, total)
+            if pending is not None:
+                self._apply_detected(conn, *pending)
+            for t in self.tracker.flush():
+                self._finish(conn, t)
+            self.progress.emit(index, total)
+        finally:
+            cap.release()
+            self._detector.shutdown(wait=True)
+            self._pool.shutdown(wait=True)
+            conn.close()

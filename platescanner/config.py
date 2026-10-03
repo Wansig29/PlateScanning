@@ -123,6 +123,24 @@ class OcrConfig:
     # After a vehicle is reported, re-read it now and then (to catch a
     # misread) up to this many reads in total.
     max_reads_per_vehicle: int = 8
+    # Database-aware decoding: score the OCR's full character probabilities
+    # against the registered plates, so a plate one doubtful character away
+    # from a registered one is resolved by evidence (see decode.py).
+    decode_with_database: bool = True
+    # A registered plate replaces the plain read when its posterior reaches this...
+    decode_accept: float = 0.90
+    # ...and it differs from the plain read in at most this many characters.
+    decode_max_changes: int = 2
+    # ...and every character it changes was at least this likely to the OCR
+    # (after softening), so a confident read is never overridden.
+    decode_min_char_prob: float = 0.10
+    # >1 softens the OCR's overconfidence. Calibrate on real gate footage.
+    decode_temperature: float = 2.0
+    # Share of vehicles at the gate expected to be registered.
+    registered_prior: float = 0.7
+    # Multiplier on a candidate whose registered colour clearly differs from
+    # the colour seen at the gate (1.0 = ignore colour).
+    decode_colour_penalty: float = 0.3
     # Plate layouts: L = letter, D = digit. Philippine formats by default.
     plate_layouts: list[str] = field(default_factory=lambda: [
         "LLLDDDD",  # ABC 1234  (current private vehicles)
