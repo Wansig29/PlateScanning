@@ -39,6 +39,16 @@ The demo plates show every result type:
 - `XYZ789` is registered with no active violation.
 - `QWE4567` is not registered.
 
+## Using a normal 1080p webcam
+
+The scanner is built to work with an ordinary USB webcam, so the camera's own settings decide a lot:
+
+1. **Run the probe first**, with the camera mounted where it will stay, pointed at the lane, in the usual light: `python tools\camera_probe.py`. It measures the frame rate the camera really delivers in each video mode, sweeps the shutter speed (exposure), saves a sample picture of each and prints a `camera` block for `config.json`. Many webcams manage only a few frames per second at 1080p unless set to **MJPG**, which is now the default (`camera.fourcc`).
+2. **Shorter shutter = sharper plates.** Auto-exposure picks a slow shutter, the main cause of motion-blurred plates. Set `camera.exposure` (on Windows: -6 = 1/64 s, -7 = 1/128, -8 = 1/256, -9 = 1/512) to the shortest value at which the picture is still bright enough; `camera.gain` can brighten it at the cost of noise. The app logs what the driver actually accepted when the camera opens, and warns when it ignores a setting.
+3. **Fix the focus.** Autofocus can hunt as vehicles pass: set `camera.autofocus` to false and `camera.focus` once the camera is mounted.
+4. **Limits to expect.** A webcam shutter and no infrared mean reading is reliable in daylight at walking-to-slow-vehicle speeds, and degrades with speed, at night and in glare (see the speed figures under *Motion blur*). A lamp aimed at where plates pass, a slowdown at the gate and a camera close to the lane help more than any software setting. `health.py` warns when the picture gets too dark, blurred or slow.
+5. **Existing installs keep their saved `config.json`**, which says 1280x720 and no video format. Delete the `camera` block (or set `width` 1920, `height` 1080, `fourcc` "MJPG") to pick up the new defaults.
+
 ## Configuration
 
 On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. You can point it somewhere else with the `PLATESCANNER_HOME` environment variable. The same folder holds the database, the downloaded photos, the plate captures and the logs.

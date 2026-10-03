@@ -51,9 +51,25 @@ class ApiConfig:
 class CameraConfig:
     # Camera index ("0"), RTSP/HTTP stream URL, or a video file path for testing.
     source: str = "0"
-    width: int = 1280
-    height: int = 720
+    width: int = 1920
+    height: int = 1080
     preview_fps: int = 20
+    # Webcam video format. MJPG is what lets most USB webcams deliver full speed
+    # at 1080p (uncompressed modes are often limited to a few frames per second).
+    # "" = leave the camera's own choice.
+    fourcc: str = "MJPG"
+    fps: int = 30
+    # Manual shutter. None = the camera's auto-exposure, which picks a slow shutter
+    # and blurs moving plates. On Windows (DirectShow) the number is a power of two
+    # in seconds: -6 = 1/64 s, -7 = 1/128, -8 = 1/256, -9 = 1/512. Shorter = sharper
+    # but darker: find the shortest the picture can stand with tools/camera_probe.py.
+    exposure: float | None = None
+    # Sensor gain, used with a manual exposure to brighten a short shutter (adds noise).
+    gain: float | None = None
+    # Autofocus can hunt as vehicles pass. Turn it off and set `focus` once the
+    # camera is mounted (tools/camera_probe.py shows which value is sharpest).
+    autofocus: bool = True
+    focus: float | None = None
     # Optional [x, y, w, h] as fractions of the frame: only this region is
     # watched for motion and read for plates. None = whole frame.
     roi: list[float] | None = None

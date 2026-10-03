@@ -27,7 +27,7 @@ import numpy as np
 from PySide6.QtCore import QThread, Signal
 from PySide6.QtGui import QImage
 
-from . import db, plates
+from . import camera, db, plates
 from .decode import Decoding, PlateLexicon
 from .health import HealthMonitor, scene_stats
 from .config import Config
@@ -168,9 +168,8 @@ class CaptureWorker(QThread):
         src = self.cfg.camera.source.strip()
         if src.isdigit():
             cap = cv2.VideoCapture(int(src), cv2.CAP_DSHOW)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.cfg.camera.width)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.cfg.camera.height)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # always the newest frame, not a backlog
+            if cap.isOpened():
+                log.info("Camera opened: %s", camera.describe(camera.apply_settings(cap, self.cfg.camera)))
             is_file = False
         else:
             cap = cv2.VideoCapture(src)
