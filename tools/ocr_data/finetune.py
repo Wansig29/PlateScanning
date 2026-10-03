@@ -83,6 +83,12 @@ def is_verified(row: dict[str, str]) -> bool:
     return row.get("verified", "").strip() == "1" and bool(row.get("plate_text", "").strip())
 
 
+def is_pseudo(row: dict[str, str]) -> bool:
+    """A machine label (verified=2): the OCR was very confident. Used for training only,
+    never for validation or the test split, which stay human-verified."""
+    return row.get("verified", "").strip() == "2" and bool(row.get("plate_text", "").strip())
+
+
 def clean_text(row: dict[str, str]) -> str:
     return row.get("plate_text", "").strip().upper()
 
@@ -153,12 +159,61 @@ def assign_splits(rows: list[dict[str, str]], seed: int = 1, ratios=RATIOS,
         n_groups = len(texts) + sum(1 for t in placed if vehicle(t) == veh)
         if n_groups >= 3:                                  # make val and test non-empty first
             for s in ("test", "val"):
-                if not counts[veh][s] and texts:
+                if ratios[SPLITS.index(s)] > 0 and not counts[veh][s] and texts:
                     put(texts.pop(), s, veh)
         for text in texts:
             need = [ratios[i] * total - counts[veh][s] for i, s in enumerate(SPLITS)]
             put(text, SPLITS[need.index(max(need))], veh)
     return assigned
+
+
+def assign_pseudo(rows: list[dict[str, str]]) -> tuple[int, int]:
+    """Machine-labelled rows go to train, unless their plate also appears in val or test
+    (the same vehicle must not teach the model what it is examined on).
+    Returns (rows in train, rows kept out)."""
+    held = {clean_text(r) for r in rows if is_verified(r) and r.get("split") in ("val", "test")}
+    train = out = 0
+    for r in rows:
+        if not is_pseudo(r):
+            continue
+        if clean_text(r) in held:
+            r["split"], out = "", out + 1
+        else:
+            r["split"], train = "train", train + 1
+    return train, out
+
+
+def freeze_test(rows: list[dict[str, str]]) -> int:
+    """Everything verified so far (the random sample reviewed first) becomes the test set."""
+    n = 0
+    for r in rows:
+        if is_verified(r) and r.get("split") not in SPLITS:
+            r["split"], n = "test", n + 1
+    return n
+
+
+def pseudo_label(rows: list[dict[str, str]], layouts: list[str], min_conf: float) -> dict[str, float]:
+    """Mark confident, format-conforming OCR guesses as machine labels (verified=2).
+
+    Also measures, on the human-verified rows, how often such confident guesses are wrong,
+    so the label noise is known and not assumed."""
+    from platescanner import plates
+
+    def qualifies(r: dict[str, str]) -> bool:
+        t = (r.get("suggested_text") or "").strip().upper()
+        try:
+            conf = float(r.get("suggested_conf") or 0)
+        except ValueError:
+            return False
+        return bool(t) and conf >= min_conf and plates.best_layout_match(t, layouts) == t
+
+    checked = [r for r in rows if is_verified(r) and qualifies(r)]
+    wrong = sum(1 for r in checked if clean_text(r) != (r.get("suggested_text") or "").strip().upper())
+    marked = 0
+    for r in rows:
+        if r.get("verified", "").strip() in ("", "0") and not r.get("plate_text", "").strip() and qualifies(r):
+            r["plate_text"], r["verified"], marked = r["suggested_text"].strip().upper(), "2", marked + 1
+    return {"marked": marked, "checked": len(checked), "noise": wrong / len(checked) if checked else float("nan")}
 
 
 def split_summary(rows: list[dict[str, str]]) -> tuple[list[str], list[str]]:
@@ -196,13 +251,35 @@ def cmd_split(a: argparse.Namespace) -> int:
     for c in COLUMNS:
         if c not in fields:
             fields.append(c)
-    n = assign_splits(rows, a.seed, holdout_source=a.holdout_source, reassign=a.reassign)
+    if a.freeze_test:
+        print(f"froze {freeze_test(rows)} verified rows as the test set")
+    ratios = (0.9, 0.1, 0.0) if a.no_new_test else RATIOS
+    n = assign_splits(rows, a.seed, ratios=ratios, holdout_source=a.holdout_source, reassign=a.reassign)
+    train, out = assign_pseudo(rows)
+    print(f"machine-labelled rows: {train} in train, {out} kept out (same plate as a val/test plate)")
     if not a.dry_run:
         write_labels(path, fields, rows)
     lines, warns = split_summary(rows)
     print(f"{'would assign' if a.dry_run else 'assigned'} {n} rows (seed {a.seed})")
     print("\n".join(lines))
     print_warnings(warns)
+    return 0
+
+
+def cmd_pseudo(a: argparse.Namespace) -> int:
+    from platescanner.config import Config
+    path = Path(a.labels)
+    fields, rows = read_labels(path)
+    info = pseudo_label(rows, Config().ocr.plate_layouts, a.min_conf)
+    if not a.dry_run:
+        write_labels(path, fields, rows)
+    print(f"{'would mark' if a.dry_run else 'marked'} {info['marked']} rows as machine labels "
+          f"(conf >= {a.min_conf:.0%}, format-conforming)")
+    if info["checked"]:
+        print(f"label noise measured on {info['checked']} human-verified rows of the same kind: "
+              f"{info['noise']:.1%} wrong")
+    else:
+        print("no human-verified rows of this kind to measure the label noise on")
     return 0
 
 
@@ -269,7 +346,7 @@ def annotation_rows(rows: list[dict[str, str]], split: str, labels_dir: Path, ou
     """
     out, skipped = [], 0
     for r in rows:
-        if not is_verified(r) or r.get("split") != split:
+        if r.get("split") != split or not (is_verified(r) or (split == "train" and is_pseudo(r))):
             continue
         text, img = clean_text(r), resolve_image(labels_dir, r.get("image_path", ""))
         if not text or len(text) > MAX_SLOTS or not set(text) <= ALPHABET or not img.is_file():
@@ -659,7 +736,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--holdout-source", help="put this whole source dataset in test only")
     p.add_argument("--reassign", action="store_true", help="redo splits that are already assigned")
     p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--freeze-test", action="store_true",
+                   help="every verified row without a split becomes test (use right after the first random review)")
+    p.add_argument("--no-new-test", action="store_true",
+                   help="newly verified plates go to train/val only (90/10), never to test")
     p.set_defaults(fn=cmd_split)
+
+    p = sub.add_parser("pseudo-label", help="mark confident OCR guesses as machine labels (verified=2)")
+    common(p)
+    p.add_argument("--min-conf", type=float, default=0.95)
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_pseudo)
 
     p = sub.add_parser("prepare", help="write annotation CSVs and configs into runs/<name>/")
     common(p, name=True)

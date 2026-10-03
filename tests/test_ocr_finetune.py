@@ -251,3 +251,60 @@ def test_report_lists_regressions():
 @pytest.mark.skipif(not os.environ.get("PLATE_FT_SMOKE"), reason="slow end-to-end run; set PLATE_FT_SMOKE=1")
 def test_synthetic_smoke():
     assert ft.main(["--synthetic-smoke"]) == 0
+
+
+# ----- pseudo-labels and a frozen test set -----------------------------------
+
+def _row(text, verified="1", split="", suggested=None, conf="0.99", source="s"):
+    return {"image_path": f"images/{text}.jpg", "plate_text": text if verified in ("1", "2") else "",
+            "suggested_text": suggested or text, "suggested_conf": conf, "vehicle": "", "source": source,
+            "license": "", "orig_image": "", "box": "", "verified": verified, "split": split}
+
+
+def test_freeze_test_then_new_plates_never_reach_test():
+    import tools.ocr_data.finetune as ft
+    rows = [_row(f"AAA{i:04d}") for i in range(10)]
+    assert ft.freeze_test(rows) == 10 and all(r["split"] == "test" for r in rows)
+    new = [_row(f"BBB{i:04d}") for i in range(30)]
+    ft.assign_splits(rows + new, seed=1, ratios=(0.9, 0.1, 0.0))
+    assert {r["split"] for r in new} <= {"train", "val"} and any(r["split"] == "val" for r in new)
+    assert all(r["split"] == "test" for r in rows)                     # frozen rows stay put
+
+
+def test_pseudo_labels_follow_the_confidence_and_layout_rules():
+    import tools.ocr_data.finetune as ft
+    rows = [_row("ABC1234", "0", suggested="ABC1234", conf="0.99"),    # confident, fits LLLDDDD
+            _row("ABC123", "0", suggested="ABC123", conf="0.99"),      # fits LLLDDD
+            _row("XYZ5678", "0", suggested="XYZ5678", conf="0.80"),    # not confident enough
+            _row("ZZ", "0", suggested="ZZ", conf="0.99"),              # fits no layout
+            _row("QWE4567", "1", suggested="QWE4567", conf="0.99"),    # human-verified and right
+            _row("RTY9999", "1", suggested="RTY9990", conf="0.99")]    # confident but wrong
+    info = ft.pseudo_label(rows, ["LLLDDDD", "LLLDDD"], 0.95)
+    assert info["marked"] == 2 and info["checked"] == 2 and info["noise"] == 0.5
+    assert [r["verified"] for r in rows[:4]] == ["2", "2", "0", "0"] and rows[0]["plate_text"] == "ABC1234"
+
+
+def test_machine_labels_go_to_train_unless_the_plate_is_in_val_or_test():
+    import tools.ocr_data.finetune as ft
+    rows = [_row("TST1111", split="test"), _row("VAL2222", split="val"),
+            _row("TST1111", "2"), _row("VAL2222", "2"), _row("NEW3333", "2")]
+    assert ft.assign_pseudo(rows) == (1, 2)
+    assert [r["split"] for r in rows[2:]] == ["", "", "train"]
+
+
+def test_annotations_use_machine_labels_for_train_only(tmp_path):
+    import cv2
+    import numpy as np
+    import tools.ocr_data.finetune as ft
+    (tmp_path / "images").mkdir()
+    for name in ("A", "B"):
+        cv2.imwrite(str(tmp_path / "images" / f"{name}.jpg"), np.zeros((20, 60, 3), np.uint8))
+    rows = [dict(_row("A", "2", "train"), image_path="images/A.jpg", plate_text="ABC1234"),
+            dict(_row("B", "2", "val"), image_path="images/B.jpg", plate_text="ABC1235")]
+    assert len(ft.annotation_rows(rows, "train", tmp_path, tmp_path)[0]) == 1
+    assert ft.annotation_rows(rows, "val", tmp_path, tmp_path)[0] == []
+
+
+def test_review_queue_skips_machine_labelled_rows():
+    from tools.ocr_data.review import is_pending
+    assert is_pending({"verified": "0"}) and not is_pending({"verified": "2"})

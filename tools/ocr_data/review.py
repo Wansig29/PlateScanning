@@ -70,7 +70,7 @@ def conf_of(row: dict) -> float | None:
 
 
 def is_pending(row: dict) -> bool:
-    return verified_of(row) not in (1, -1)
+    return verified_of(row) not in (1, -1, 2)   # 2 = confident machine label (finetune.py pseudo-label)
 
 
 def matches_filter(row: dict, only: str) -> bool:
