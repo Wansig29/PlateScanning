@@ -87,6 +87,13 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         for v in violations:
             v["evidence_paths"] = [fetch(u) for u in v["evidence_urls"]]
 
+    if not full and not raw_vehicles and not raw_violations and not removed:
+        # Nothing new online: only note that we checked.
+        with conn:
+            db.set_state(conn, "last_sync_at", now.isoformat())
+        return {"full": False, "changed": False, "vehicles": 0, "violations": 0,
+                "at": now.isoformat(), **{f"total_{k}": n for k, n in db.counts(conn).items()}}
+
     progress("Saving…")
     with conn:  # single transaction: a failed sync leaves the old data intact
         if full:
@@ -98,5 +105,5 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
             db.remove_vehicles(conn, removed)
         db.set_state(conn, "last_sync_at", now.isoformat())
 
-    return {"full": full, "vehicles": len(vehicles), "violations": len(violations),
+    return {"full": full, "changed": True, "vehicles": len(vehicles), "violations": len(violations),
             "at": now.isoformat(), **{f"total_{k}": n for k, n in db.counts(conn).items()}}

@@ -234,8 +234,9 @@ class MainWindow(QMainWindow):
         self.sync_btn = QPushButton("↻  Sync Now")
         self.sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sync_btn.setObjectName("Primary")
-        self.sync_btn.setToolTip("Download the latest vehicle and violation records now")
-        self.sync_btn.clicked.connect(lambda: self._sync(False))
+        self.sync_btn.setToolTip("Match the local data to the online database now, including "
+                                 "removing vehicles and violations deleted online")
+        self.sync_btn.clicked.connect(lambda: self._sync(True))
         tl.addWidget(self.sync_btn)
         self.account_btn = QPushButton()
         self.account_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -423,8 +424,11 @@ class MainWindow(QMainWindow):
         self._sync_finished_ui()
         self.retry_timer.stop()
         kind = "Full sync" if summary.get("full") else "Sync"
-        self.statusBar().showMessage(
-            f"{kind} complete: {summary['vehicles']} vehicle and {summary['violations']} violation records updated", 8000)
+        if summary.get("changed", True):
+            self.statusBar().showMessage(
+                f"{kind} complete: {summary['vehicles']} vehicle and {summary['violations']} violation records updated", 8000)
+        else:
+            self.statusBar().showMessage("Checked for updates: nothing new", 5000)
         self._refresh_sync_label()
         if self.db_window is not None and self.db_window.isVisible():
             self.db_window.refresh()
@@ -437,6 +441,8 @@ class MainWindow(QMainWindow):
     def _auth_expired(self, msg: str) -> None:
         self._sync_finished_ui()
         clear_session(self.cfg.session_path)
+        if not summary.get("changed", True):
+            return
         self.session = None
         self.token_changed.emit("")
         self._update_account_btn()

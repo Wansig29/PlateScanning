@@ -59,7 +59,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
 | `scan.bring_to_front` | Bring the app to the front on every violation alert |
-| `sync.interval_hours` / `full_resync_hours` | Delta sync every 4 h; a full re-download every 24 h to drop records deleted online |
+| `sync.interval_hours` / `full_resync_hours` | Delta sync every 3 h (nothing is written when there are no new vehicles or violations); a full re-download every 24 h to drop records deleted online |
 
 Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full screen.
 

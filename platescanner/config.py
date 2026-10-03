@@ -165,7 +165,7 @@ class ScanConfig:
 
 @dataclass
 class SyncConfig:
-    interval_hours: float = 4.0
+    interval_hours: float = 3.0
     # Periodically do a full re-download so records deleted online disappear
     # locally too (deltas alone can't express deletions).
     full_resync_hours: float = 24.0
