@@ -51,6 +51,17 @@ class DashboardQueue:
             self.current = self.waiting.popleft()
         return done, self.current
 
+    def discard(self, scan_id: int) -> tuple[bool, Any]:
+        """Drop the violation of a scan a guard has since corrected to another plate.
+
+        Returns (it was the one on screen, the next one to show in its place).
+        """
+        self.waiting = deque(i for i in self.waiting if i[0] != scan_id)
+        if self.current is not None and self.current[0] == scan_id:
+            self.current = self.waiting.popleft() if self.waiting else None
+            return True, self.current
+        return False, None
+
     def back(self) -> Any:
         """"Back to violations" pressed while viewing an older scan. Returns the item to show."""
         self.viewing = False

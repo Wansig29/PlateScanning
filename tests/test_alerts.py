@@ -69,3 +69,15 @@ def test_acknowledgement_is_stored_and_survives_restart(conn):
     row = db.get_scan(conn, a)
     assert (row["acknowledged_by"], row["acknowledged_at"]) == ("Juan", "2026-09-27T10:01:00")
     assert clear not in [r["id"] for r in db.unacknowledged_violations(conn, "2026-01-01")]
+
+
+def test_a_corrected_violation_leaves_the_queue():
+    from platescanner.alerts import DashboardQueue
+    q = DashboardQueue()
+    q.on_violation((1, "A", None, None))
+    q.on_violation((2, "B", None, None))
+    q.on_violation((3, "C", None, None))
+    assert q.discard(2) == (False, None) and q.pending() == 2        # queued: just dropped
+    assert q.discard(1) == (True, (3, "C", None, None)) and q.pending() == 1  # on screen: next takes over
+    assert q.discard(3) == (True, None) and q.pending() == 0
+    assert q.discard(99) == (False, None)

@@ -74,6 +74,19 @@ CREATE TABLE IF NOT EXISTS scan_log (
     acknowledged_by TEXT,
     source        TEXT
 );
+
+-- What guards confirmed or fixed: ground truth for measuring and retraining the OCR.
+CREATE TABLE IF NOT EXISTS plate_corrections (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id    INTEGER NOT NULL,
+    ts         TEXT NOT NULL,
+    by         TEXT,
+    kind       TEXT NOT NULL,   -- 'confirmed' (the read was right) or 'corrected'
+    read_text  TEXT,
+    true_text  TEXT NOT NULL,
+    crop_path  TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_corrections_scan ON plate_corrections(scan_id);
 """
 
 VEHICLE_COLS = ["id", "plate", "plate_norm", "plate_key", "owner_name", "contact",
@@ -344,6 +357,34 @@ def acknowledge_scan(conn: sqlite3.Connection, scan_id: int, by: str, at: str) -
     conn.execute("UPDATE scan_log SET acknowledged_at=?, acknowledged_by=? WHERE id=? AND acknowledged_at IS NULL",
                  (at, by, scan_id))
     conn.commit()
+
+
+def correct_scan(conn: sqlite3.Connection, scan_id: int, true_text: str, by: str, at: str) -> LookupResult | None:
+    """A guard says what the plate really is. Looks it up again and records the answer.
+
+    The scan's plate, result and matched vehicle are replaced; what the OCR read
+    is kept in plate_corrections together with the plate crop. Returns the new
+    lookup, or None if the scan doesn't exist or the text is not a plate.
+    """
+    scan = get_scan(conn, scan_id)
+    true = plates.normalize(true_text)
+    if not scan or not 3 <= len(true) <= 10:
+        return None
+    result = lookup(conn, true, fuzzy=False)
+    read = plates.normalize(scan["plate_read"])
+    conn.execute("INSERT INTO plate_corrections(scan_id, ts, by, kind, read_text, true_text, crop_path) "
+                 "VALUES(?,?,?,?,?,?,?)",
+                 (scan_id, at, by, "confirmed" if read == true else "corrected", read, true, scan["crop_path"]))
+    conn.execute("UPDATE scan_log SET plate_read=?, matched_plate=?, result=?, approximate=0, vehicle_id=?, "
+                 "violation_ids=? WHERE id=?",
+                 (true, result.matched_plate, result.status, result.vehicle["id"] if result.vehicle else None,
+                  json.dumps([v["id"] for v in result.violations]), scan_id))
+    conn.commit()
+    return result
+
+
+def corrections(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    return [dict(r) for r in conn.execute("SELECT * FROM plate_corrections ORDER BY id")]
 
 
 def unacknowledged_violations(conn: sqlite3.Connection, since: str) -> list[dict[str, Any]]:

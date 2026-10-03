@@ -72,16 +72,6 @@ class MotionConfig:
     # ...in a picture that didn't change almost entirely at once (lighting,
     # clouds, the camera adjusting its exposure).
     max_area_ratio: float = 0.6
-    start_frames: int = 3
-    end_frames: int = 12
-    max_event_seconds: float = 6.0
-    top_k_frames: int = 3
-    # Distinct frames to try OCR on per event before giving up.
-    max_ocr_attempts: int = 3
-    # Early reads: while a vehicle is still moving, try OCR on the best frames
-    # so far every N seconds, so a violator is flagged before it's through
-    # the gate instead of after the motion ends. 0 = only read at the end.
-    early_ocr_seconds: float = 0.8
     warmup_frames: int = 45
     # Keep running plate detection this long after motion stops, so a
     # vehicle that halts in view is still read.

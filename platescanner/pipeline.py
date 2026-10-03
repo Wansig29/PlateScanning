@@ -29,6 +29,7 @@ from PySide6.QtGui import QImage
 
 from . import db, plates
 from .decode import Decoding, PlateLexicon
+from .health import HealthMonitor, scene_stats
 from .config import Config
 from .vision import identify
 from .vision.alpr import PlateEngine, merge_proposals, pad_box
@@ -39,6 +40,10 @@ from .vision.tracker import PlateTracker, Track
 log = logging.getLogger(__name__)
 
 PREVIEW_MAX_WIDTH = 1280
+
+# A plate touching the edge of the picture is not read until it has been followed this
+# many frames: a vehicle that stops there never moves fully in, and still needs reading.
+EDGE_PATIENCE_HITS = 8
 
 # BGR colors for overlays, matching the UI's result colors.
 RESULT_BGR = {
@@ -305,6 +310,7 @@ class RecognizerWorker(QThread):
     scanned = Signal(object)  # ScanResult
     unreadable = Signal(object)  # NoPlateEvent
     in_view = Signal(object)  # set of the track ids currently in the picture
+    health = Signal(str, str, str)  # code, severity ('warn' | 'bad' | 'ok'), message
 
     def __init__(self, cfg: Config, slot: FrameSlot, capture: CaptureWorker | None = None,
                  engine: PlateEngine | None = None):
@@ -314,7 +320,7 @@ class RecognizerWorker(QThread):
         self.capture = capture
         self.engine = engine
         self._stop = threading.Event()
-        self._last_seen: dict[str, float] = {}
+        self._last_seen: dict[str, tuple[float, str]] = {}  # plate key -> (last time, its result)
         self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
         self._in_view: set[int] = set()
         self.frames_processed = 0
@@ -323,6 +329,8 @@ class RecognizerWorker(QThread):
         self._detector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plate-detect")
         self.video_name: str | None = None  # set when scanning a video file instead of the camera
         self._lexicon: PlateLexicon | None = None
+        self._health = HealthMonitor()
+        self._next_health_check = 0.0
 
     def _source(self, track: Track) -> str | None:
         # In a video, frame timestamps are the time into the video.
@@ -331,18 +339,34 @@ class RecognizerWorker(QThread):
     def stop(self) -> None:
         self._stop.set()
 
+    def _feed_health(self, f: "_Frame", analysed: bool) -> None:
+        sharpness, brightness = scene_stats(f.image)
+        self._health.frame(sharpness, analysed, f.ts, brightness)
+
+    def _check_health(self, now: float) -> None:
+        """Every few seconds: tell the guard if the camera or the reading is getting worse."""
+        if now < self._next_health_check:
+            return
+        self._next_health_check = now + 5.0
+        for w in self._health.check(now):
+            log.log(logging.INFO if w.severity == "ok" else logging.WARNING, "Health: %s", w.message)
+            self.health.emit(w.code, w.severity, w.message)
+
     @property
     def stopping(self) -> bool:
         return self._stop.is_set()
 
-    def _in_cooldown(self, key: str, now: float) -> bool:
+    def _in_cooldown(self, key: str, now: float, status: str) -> bool:
+        """Is this plate a repeat of one just reported with the same result?
+
+        A changed result (e.g. a violation that arrived with the latest sync)
+        is never suppressed.
+        """
         cooldown = self.cfg.scan.plate_cooldown_seconds
-        self._last_seen = {k: t for k, t in self._last_seen.items() if now - t < cooldown}
-        if key in self._last_seen:
-            self._last_seen[key] = now  # vehicle still around: extend
-            return True
-        self._last_seen[key] = now
-        return False
+        self._last_seen = {k: v for k, v in self._last_seen.items() if now - v[0] < cooldown}
+        before = self._last_seen.get(key)
+        self._last_seen[key] = (now, status)  # vehicle still around: extend
+        return before is not None and before[1] == status
 
     def _save_jpeg(self, img: np.ndarray, ts: datetime, name: str, max_width: int = 0,
                    quality: int = 92) -> str | None:
@@ -392,6 +416,7 @@ class RecognizerWorker(QThread):
         try:
             while not self._stop.is_set():
                 f = self.slot.get_newer(seq, 0.3)
+                self._check_health(time.monotonic())
                 if f is None:
                     drain()
                     self._expire(conn, time.monotonic())
@@ -402,7 +427,9 @@ class RecognizerWorker(QThread):
                 # Only real plates keep it busy, not the classical finder's static
                 # guesses (signs, lane marks, windows).
                 following = any(t.neural_hits or t.reads for t in self.tracker.tracks.values())
-                if not f.motion and not following and f.ts - last_detect < 1.0:
+                idle = not f.motion and not following and f.ts - last_detect < 1.0
+                self._feed_health(f, not idle)
+                if idle:
                     drain()
                     continue
                 last_detect = f.ts
@@ -471,7 +498,7 @@ class RecognizerWorker(QThread):
                 continue
             if not track.neural_hits and not track.reads and track.reads_tried >= 3 and track.hits % 10:
                 continue  # a classical guess that never read as a plate: only recheck now and then
-            if box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2:
+            if (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2) and track.hits < EDGE_PATIENCE_HITS:
                 continue  # plate cut off by the edge of the picture: wait until it's fully in
             px, py, pw, ph = pad_box(box, 0.06, 0.10, work.shape)
             todo.append((track, i, px, py, pw, ph, work[py:py + ph, px:px + pw]))
@@ -562,7 +589,7 @@ class RecognizerWorker(QThread):
         track.emitted_text = text
         track.status = result.status
         # The frame's clock: the camera's time, or the time into a video.
-        if self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen):
+        if self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen, result.status):
             return
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
@@ -603,6 +630,8 @@ class RecognizerWorker(QThread):
         """The vehicle left the picture."""
         if not track.emitted_key:
             self._decide(conn, track, final=True)
+        if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
+            self._health.plate_seen(bool(track.emitted_key))
         # Only for real plates (seen by the neural detector), not for the
         # classical finder's guesses at windows, signs or lane marks.
         if track.emitted_key or track.neural_hits < self.cfg.scan.min_hits_for_unread:

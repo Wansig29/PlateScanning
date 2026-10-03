@@ -99,6 +99,9 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 - **Chat-style feeds**: Logs and Captured Plates add new entries at the bottom and auto-scroll. Scrolling up pauses this and shows a "▼ N new scans" button.
 - **Slow mode** (Logs header): adds at most one log entry per 2–10 s and queues the rest, so each can be read during busy periods. It only paces the Logs: the dashboard, captured plates and alerts are always immediate, violations skip the queue, and every entry keeps the time its vehicle was actually scanned.
 
+- **Guards can confirm or correct a plate**: *✎ Wrong plate? Confirm or correct it* under the dashboard banner shows the plate photo and lets the guard type what it really says. The scan, its Logs row and its Captured Plates card are rewritten and looked up again (a corrected violation raises the alert, a wrongly flagged one is withdrawn). Every answer is saved with the guard's name in `plate_corrections`; `tools/export_corrections.py out_folder` turns them into a labelled dataset (`labels.csv` + crops) for measuring and fine-tuning the OCR.
+- **Health warnings** (`health.py`): the status bar warns when the camera image is blurred or dirty, the frame or analysis rate drops, the picture freezes, the scene is too dark or overexposed, or more than half of the recent plates could not be read. Each warning shows once, a stalled feed also beeps, and a green *Recovered* follows when it clears.
+
 ### Measuring speed and accuracy
 
 ```powershell
@@ -106,6 +109,14 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 .\.venv\Scripts\python tools\bench_live.py rush.mp4
 .\.venv\Scripts\python tools\bench_live.py real_gate.mp4 --set camera.roi=[0.1,0.3,0.8,0.7]   # real footage: lists every read
 ```
+
+For accuracy on **real footage**, write a CSV of what each video really shows (`video, seconds_start, seconds_end, plate, condition`, with the condition free text such as `night` or `rain`) and run:
+
+```powershell
+.\.venv\Scripts\python tools\eval_footage.py footage_folder truth.csv --out eval_out
+```
+
+`eval_outeport.md` gives, per condition and overall, the vehicles read exactly right, read wrong (expected vs got), missed and falsely reported, plus the character error rate; `mismatches.csv` lists every miss. It runs on a temporary database and never touches the real scan log. `--selftest` shows the report format without any footage.
 
 `bench_live.py` plays a video in real time through the same threads the app uses and reports, for each vehicle, whether it was read, whether correctly, and how long after its plate appeared. Run it on footage from the actual gate camera before deploying, and use `--set section.name=value` to try settings.
 

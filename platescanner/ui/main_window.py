@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -26,10 +26,11 @@ from ..pipeline import (
 from ..session import clear_session, save_session
 from ..sync import run_sync
 from . import theme
+from .correct_dialog import CorrectPlateDialog
 from .database_view import DatabaseWindow
 from .login import LoginDialog
 from .widgets import (
-    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
+    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, PlateCard, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
     panel,
 )
 
@@ -165,6 +166,7 @@ class MainWindow(QMainWindow):
         self._in_view: set[int] = set()
         self._left_at: dict[int, float] = {}
         self._shown_track: int | None = None
+        self._shown_scan: int | None = None
         self._last_shown = 0.0
         self._slow_timer = QTimer(self, singleShot=True)
         self._slow_timer.timeout.connect(self._drain)
@@ -309,6 +311,7 @@ class MainWindow(QMainWindow):
         right.setMaximumWidth(640)
         self.identity = IdentityPanel()
         self.identity.acknowledged.connect(self._acknowledged)
+        self.identity.correct_requested.connect(self._correct_clicked)
         right.addWidget(self.identity)
         self.captured = CapturedPlatePanel()
         self.captured.setMinimumHeight(170)
@@ -331,12 +334,15 @@ class MainWindow(QMainWindow):
         self.cam_status = QLabel()
         self.ocr_status = QLabel()
         self.db_status = QLabel()
+        self.health_status = QLabel()
+        self.health_status.hide()
+        self._health_issues: dict[str, tuple[str, str]] = {}
         self.db_status.setCursor(Qt.CursorShape.PointingHandCursor)
         self.db_status.setToolTip("Browse the synced vehicles and violations")
         self.db_status.mousePressEvent = lambda _e: self._open_database()  # type: ignore[method-assign]
         self._set_status(self.cam_status, "Camera: starting", theme.AMBER)
         self._set_status(self.ocr_status, "OCR: loading", theme.AMBER)
-        for w in (self.cam_status, self.ocr_status):
+        for w in (self.cam_status, self.ocr_status, self.health_status):
             sb.addWidget(w)
         sb.addPermanentWidget(self.db_status)
         self.setStatusBar(sb)
@@ -370,6 +376,7 @@ class MainWindow(QMainWindow):
         self.recognizer.scanned.connect(self._on_scan)
         self.recognizer.unreadable.connect(self._on_no_plate)
         self.recognizer.in_view.connect(self._on_in_view)
+        self.recognizer.health.connect(self._on_health)
         self.live_timer = QTimer(self)
         self.live_timer.setInterval(1000)
         self.live_timer.timeout.connect(self._update_live)
@@ -383,6 +390,26 @@ class MainWindow(QMainWindow):
                          theme.GREEN if ok else theme.AMBER)
         if not ok:
             self.video.set_message(msg)
+
+    def _on_health(self, code: str, severity: str, msg: str) -> None:
+        """The scanner noticed the camera or the plate reading getting worse (or recovering)."""
+        if severity == "ok":
+            self._health_issues.pop(code, None)
+        else:
+            if severity == "bad" and code not in self._health_issues:
+                _beep()
+            self._health_issues[code] = (severity, msg)
+        if not self._health_issues:
+            self.health_status.hide()
+            return
+        worst = "bad" if any(s == "bad" for s, _ in self._health_issues.values()) else "warn"
+        first = next(iter(self._health_issues.values()))[1]
+        more = len(self._health_issues) - 1
+        self._set_status(self.health_status, "⚠ " + first + (f"  (+{more} more)" if more else ""),
+                         theme.RED if worst == "bad" else theme.AMBER)
+        self.health_status.setToolTip("
+".join(m for _, m in self._health_issues.values()))
+        self.health_status.show()
 
     def _ocr_failed(self, msg: str) -> None:
         self._set_status(self.ocr_status, msg, theme.RED)
@@ -629,7 +656,7 @@ class MainWindow(QMainWindow):
         ts = scan.ts.isoformat(timespec="seconds")
         seen = VehicleView(vehicle_pm, load_pixmap(scan.snapshot_path), scan.color, scan.position,
                            scan.others_in_view, scan.track_id,
-                           self._when(scan.ts.strftime('%H:%M:%S'), scan.source))
+                           self._when(scan.ts.strftime('%H:%M:%S'), scan.source), scan.scan_id)
         is_violation = res.status == db.RESULT_VIOLATION
         if is_violation:
             # Shown now, or queued behind the violator already on screen.
@@ -665,6 +692,47 @@ class MainWindow(QMainWindow):
         if nxt is not None:  # next violator in line
             self._show(*nxt[1:], needs_ack=True)
             self.identity.flash(4)
+        self._update_pending()
+
+    def _correct_clicked(self) -> None:
+        """A guard confirms or fixes the plate of the scan on the dashboard."""
+        scan = db.get_scan(self.conn, self._shown_scan) if self._shown_scan else None
+        if not scan or scan["result"] == db.RESULT_NO_PLATE:
+            return
+        dlg = CorrectPlateDialog(scan["plate_read"], load_pixmap(scan.get("crop_path")), self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        by = self._guard_name()
+        res = db.correct_scan(self.conn, scan["id"], dlg.plate(), by, datetime.now().isoformat(timespec="seconds"))
+        if res is None:
+            return
+        log.info("Scan #%s: %s %s -> %s (%s) by %s", scan["id"], "confirmed" if dlg.plate() == scan["plate_read"]
+                 else "corrected", scan["plate_read"], dlg.plate(), res.status, by)
+        scan = db.get_scan(self.conn, scan["id"])
+        shown = res.matched_plate or scan["plate_read"]
+        ack = (f"acknowledged by {scan['acknowledged_by']} at {format_ts(scan['acknowledged_at'])}"
+               if scan.get("acknowledged_at") else None)
+        self.logs.replace_entry(scan["id"], scan["ts"], shown, res.status,
+                                self._detail(res) if res.status == db.RESULT_VIOLATION else "", False,
+                                scan["confidence"], self._looks(scan.get("vehicle_color"), scan.get("position"),
+                                                                scan.get("source")), ack)
+        self.captured.replace_card(PlateCard(
+            scan["id"], scan["ts"], load_pixmap(scan.get("vehicle_path")) or load_pixmap(scan["crop_path"]),
+            shown, scan["confidence"], res.status, scan["snapshot_path"], scan.get("vehicle_color")))
+
+        # The old violation alert (if there was one) no longer applies to this plate.
+        was_on_screen, nxt = self.dash.discard(scan["id"])
+        if res.status == db.RESULT_VIOLATION and not scan.get("acknowledged_at"):
+            seen = VehicleView(load_pixmap(scan.get("vehicle_path")), load_pixmap(scan["snapshot_path"]),
+                               scan.get("vehicle_color"), scan.get("position"),
+                               when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan["id"])
+            if self.dash.on_violation((scan["id"], scan["plate_read"], res, seen)) is not None:
+                self._show(scan["plate_read"], res, seen, needs_ack=True)
+            self._alert()
+        elif was_on_screen and nxt is not None:
+            self._show(*nxt[1:], needs_ack=True)
+        else:
+            self._show_scan_from_log(scan["id"])
         self._update_pending()
 
     def _guard_name(self) -> str:
@@ -708,7 +776,7 @@ class MainWindow(QMainWindow):
             res.approximate = bool(r["approximate"])
             seen = VehicleView(load_pixmap(r.get("vehicle_path")), load_pixmap(r["snapshot_path"]),
                                r.get("vehicle_color"), r.get("position"),
-                               when=self._when(format_ts(r["ts"]), r.get("source")))
+                               when=self._when(format_ts(r["ts"]), r.get("source")), scan_id=r["id"])
             if self.dash.on_violation((r["id"], r["plate_read"], res, seen)) is not None:
                 self._show(r["plate_read"], res, seen, needs_ack=True)
         self._update_pending()
@@ -719,6 +787,7 @@ class MainWindow(QMainWindow):
               back: bool = False) -> None:
         self.identity.show_result(plate_read, res, needs_ack=needs_ack, back=back, seen=seen)
         self._shown_track = seen.track_id
+        self._shown_scan = seen.scan_id
         self._update_live()
 
     @staticmethod
@@ -782,7 +851,7 @@ class MainWindow(QMainWindow):
         pending = self.dash.view_other()
         seen = VehicleView(load_pixmap(scan.get("vehicle_path")), load_pixmap(scan["snapshot_path"]),
                            scan.get("vehicle_color"), scan.get("position"),
-                           when=self._when(format_ts(scan["ts"]), scan.get("source")))
+                           when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan_id)
         self._show(scan["plate_read"], res, seen, back=pending)
         self._update_pending()
         self.captured.select(scan_id)

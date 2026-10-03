@@ -37,6 +37,7 @@ class Vote:
     reads: int = 0
     best_conf: float = 0.0
     raw: str = ""
+    agreement: float = 0.0  # how unanimous the reads are (0..1)
 
 
 @dataclass
@@ -113,8 +114,7 @@ class Track:
         text = plates.best_layout_match(text, self.layouts) or text if self.layouts else text
         best = max(group, key=lambda r: r[2])
         conf = sum(wins) / len(wins)
-        self._agreement = min(shares) * (n / len(self.reads))
-        return Vote(text, conf * n, n, best[2], best[1])
+        return Vote(text, conf * n, n, best[2], best[1], min(shares) * (n / len(self.reads)))
 
     def distribution(self, temperature: float = 1.0) -> np.ndarray | None:
         """Everything the OCR believed about this plate, over all reads (positions x alphabet)."""
@@ -125,7 +125,8 @@ class Track:
     def margin(self) -> float:
         """How unanimous the consensus is (0..1): its weakest character's share of
         the vote, scaled down when some reads had a different length entirely."""
-        return getattr(self, "_agreement", 0.0) if self.reads else 0.0
+        lead = self.leader()
+        return lead.agreement if lead else 0.0
 
 
 class PlateTracker:

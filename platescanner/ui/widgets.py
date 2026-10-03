@@ -307,6 +307,7 @@ class VehicleView:
     others: int = 0                  # other vehicles in view at the time
     track_id: int | None = None      # the #number shown on the live feed (this session only)
     when: str = ""                   # e.g. "Scanned 10:03:53"
+    scan_id: int | None = None       # the scan this is a picture of (for corrections)
 
     def describe(self) -> str:
         parts = []
@@ -322,6 +323,7 @@ class VehicleView:
 class IdentityPanel(QFrame):
     """Owner + violation details for the most recent scan (right column)."""
     acknowledged = Signal()
+    correct_requested = Signal()
 
     ROTATE_MS = 4000    # time each violation stays on screen when there are several
     RESUME_MS = 15000   # auto-rotation pause after the guard pages manually
@@ -355,6 +357,16 @@ class IdentityPanel(QFrame):
         self.ack_btn.clicked.connect(self._acknowledge)
         self.ack_btn.hide()
         lay.addWidget(self.ack_btn)
+        self.correct_btn = QPushButton("✎  Wrong plate? Confirm or correct it")
+        self.correct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.correct_btn.setFlat(True)
+        self.correct_btn.setStyleSheet(f"QPushButton {{ color: {theme.MUTED}; text-align: left; padding: 2px 4px; }}"
+                                       f"QPushButton:hover {{ color: {theme.TEXT}; text-decoration: underline; }}")
+        self.correct_btn.setToolTip("Tell the scanner what the plate really says. Your answer fixes this scan "
+                                    "and is saved to help measure and improve plate reading.")
+        self.correct_btn.clicked.connect(self.correct_requested)
+        self.correct_btn.hide()
+        lay.addWidget(self.correct_btn)
         self._banner_color = ""
         self._back = False
         self._paint_banner("")
@@ -569,6 +581,7 @@ class IdentityPanel(QFrame):
         seen: what the camera saw of the vehicle (photo, where, colour...)."""
         self._back = back and not needs_ack
         self.ack_btn.setVisible(needs_ack or self._back)
+        self.correct_btn.setVisible(bool(seen and seen.scan_id))
         self.set_waiting(0)
         color = theme.RESULT_COLORS[result.status]
         label = theme.RESULT_LABELS[result.status]
@@ -841,6 +854,16 @@ class CapturedPlatePanel(QFrame):
         if self._cards:
             self._highlight(self._cards[-1].scan_id)
 
+    def replace_card(self, new: PlateCard) -> None:
+        """Swap the card of new.scan_id for an updated one (after a guard's correction)."""
+        for i, old in enumerate(self._cards):
+            if old.scan_id == new.scan_id:
+                new.clicked.connect(self._on_click)
+                self.list.replaceWidget(old, new)
+                old.deleteLater()
+                self._cards[i] = new
+                return
+
     def _highlight(self, scan_id: int) -> None:
         for card in self._cards:
             card.set_selected(card.scan_id == scan_id)
@@ -923,11 +946,12 @@ class LogsPanel(QFrame):
 
     def add_entry(self, scan_id: int, ts: str, plate: str, result: str, detail: str,
                   approximate: bool = False, confidence: float | None = None, vehicle: str = "",
-                  ack: str | None = None) -> None:
-        """ack (violations only): who acknowledged it, or None if nobody has yet."""
-        """Append at the bottom (newest last, like a chat)."""
+                  ack: str | None = None, at: int | None = None) -> None:
+        """Append at the bottom (newest last, like a chat), or insert at row `at`.
+
+        ack (violations only): who acknowledged it, or None if nobody has yet."""
         color = QColor(theme.RESULT_COLORS.get(result, theme.TEXT))
-        row = self.table.rowCount()
+        row = self.table.rowCount() if at is None else at
         self.table.insertRow(row)
         t = QTableWidgetItem(format_ts_short(ts))
         t.setData(Qt.ItemDataRole.UserRole, scan_id)
@@ -968,4 +992,14 @@ class LogsPanel(QFrame):
         while self.table.rowCount() > self.MAX_ROWS:
             self.table.removeRow(0)
         self._update_count()
-        self.follower.entry_added()
+        if at is None:
+            self.follower.entry_added()
+
+    def replace_entry(self, scan_id: int, *args, **kwargs) -> None:
+        """Rewrite the row of a scan in place (same arguments as add_entry, after the scan id)."""
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item and item.data(Qt.ItemDataRole.UserRole) == scan_id:
+                self.table.removeRow(row)
+                self.add_entry(scan_id, *args, at=row, **kwargs)
+                return
