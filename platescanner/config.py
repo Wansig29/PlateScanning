@@ -184,6 +184,12 @@ class ScanConfig:
     # recorded). Also logs motion events where no plate could be read.
     save_snapshots: bool = True
     snapshot_max_width: int = 1280
+    # Pictures older than this many days are moved (never deleted) from captures\\
+    # to the archive folder, and the Logs keep opening them. 0 = keep everything in place.
+    archive_after_days: int = 30
+    # Where they go. Empty = the "archive" folder next to captures\\; it can be
+    # on another drive, e.g. "D:\\PlateScannerArchive".
+    archive_dir: str = ""
     alert_sound: bool = True
     overlay_seconds: float = 4.0
     # Slow mode: add at most one entry per N seconds to the Logs (0 = off).
@@ -238,6 +244,10 @@ class Config:
     @property
     def captures_dir(self) -> Path:
         return self.home / "captures"
+
+    @property
+    def archive_path(self) -> Path:
+        return Path(self.scan.archive_dir) if self.scan.archive_dir.strip() else self.home / "archive"
 
     @property
     def photos_dir(self) -> Path:

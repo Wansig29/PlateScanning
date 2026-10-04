@@ -65,6 +65,8 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.ocr_model` | Plate OCR models, comma-separated. Each plate is read by all of them and the results are merged character by character |
 | `ocr.read_confidence`, `report_confidence`, `alert_confidence`, `confirm_reads` | When a vehicle is reported (see *Deciding a plate*) |
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
+| `scan.archive_after_days` | Pictures older than this many days are **moved** (never deleted) from `captures\` to the archive folder; the Logs still open them. Default 30; 0 keeps everything in `captures\` |
+| `scan.archive_dir` | Where the old pictures go. Empty = `archive\` next to `captures\`; can be another drive, e.g. `D:\\PlateScannerArchive` |
 | `scan.plate_cooldown_seconds` | Ignore repeat reads of the same plate while it's still at the gate |
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
 | `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |

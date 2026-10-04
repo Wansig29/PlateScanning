@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import db
+from .. import db, retention
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config
@@ -178,6 +178,7 @@ class MainWindow(QMainWindow):
         self._load_history()
         self._restore_unacknowledged()
         self._start_workers()
+        self._start_archiving()
         self._start_sync()
         self._refresh_sync_label()
 
@@ -365,6 +366,33 @@ class MainWindow(QMainWindow):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
     # --- workers ------------------------------------------------------------
+
+    def _start_archiving(self) -> None:
+        """Move old pictures to the archive folder: at start-up, then every 6 hours."""
+        self._archiving = False
+        self._archive_timer = QTimer(self)
+        self._archive_timer.setInterval(6 * 3600 * 1000)
+        self._archive_timer.timeout.connect(self._archive_now)
+        self._archive_timer.start()
+        QTimer.singleShot(20_000, self._archive_now)  # after the camera and models are up
+
+    def _archive_now(self) -> None:
+        if self._archiving or self.cfg.scan.archive_after_days <= 0:
+            return
+        self._archiving = True
+
+        def work() -> None:
+            conn = db.connect(self.cfg.db_path)  # its own connection: this is not the UI thread
+            try:
+                retention.archive_old_captures(conn, self.cfg.captures_dir, self.cfg.archive_path,
+                                               self.cfg.scan.archive_after_days)
+            except Exception:  # noqa: BLE001 - housekeeping must never disturb scanning
+                log.exception("Archiving old pictures failed")
+            finally:
+                conn.close()
+                self._archiving = False
+
+        threading.Thread(target=work, daemon=True, name="archive-pictures").start()
 
     def _start_workers(self) -> None:
         slot = FrameSlot()
