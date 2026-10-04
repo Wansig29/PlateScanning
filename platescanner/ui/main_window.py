@@ -26,7 +26,6 @@ from ..pipeline import (
 from ..session import clear_session, save_session
 from ..sync import run_sync
 from . import theme
-from .correct_dialog import CorrectPlateDialog
 from .database_view import DatabaseWindow
 from .login import LoginDialog
 from .widgets import (
@@ -165,8 +164,6 @@ class MainWindow(QMainWindow):
         # Which vehicles (#ids) are in the picture right now, and when the others left it.
         self._in_view: set[int] = set()
         self._left_at: dict[int, float] = {}
-        self._shown_track: int | None = None
-        self._shown_scan: int | None = None
         self._last_shown = 0.0
         self._slow_timer = QTimer(self, singleShot=True)
         self._slow_timer.timeout.connect(self._drain)
@@ -312,7 +309,6 @@ class MainWindow(QMainWindow):
         right.setMaximumWidth(640)
         self.identity = IdentityPanel()
         self.identity.acknowledged.connect(self._acknowledged)
-        self.identity.correct_requested.connect(self._correct_clicked)
         right.addWidget(self.identity)
         self.captured = CapturedPlatePanel()
         self.captured.setMinimumHeight(170)
@@ -694,47 +690,6 @@ class MainWindow(QMainWindow):
             self.identity.flash(4)
         self._update_pending()
 
-    def _correct_clicked(self) -> None:
-        """A guard confirms or fixes the plate of the scan on the dashboard."""
-        scan = db.get_scan(self.conn, self._shown_scan) if self._shown_scan else None
-        if not scan or scan["result"] == db.RESULT_NO_PLATE:
-            return
-        dlg = CorrectPlateDialog(scan["plate_read"], load_pixmap(scan.get("crop_path")), self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        by = self._guard_name()
-        res = db.correct_scan(self.conn, scan["id"], dlg.plate(), by, datetime.now().isoformat(timespec="seconds"))
-        if res is None:
-            return
-        log.info("Scan #%s: %s %s -> %s (%s) by %s", scan["id"], "confirmed" if dlg.plate() == scan["plate_read"]
-                 else "corrected", scan["plate_read"], dlg.plate(), res.status, by)
-        scan = db.get_scan(self.conn, scan["id"])
-        shown = res.matched_plate or scan["plate_read"]
-        ack = (f"acknowledged by {scan['acknowledged_by']} at {format_ts(scan['acknowledged_at'])}"
-               if scan.get("acknowledged_at") else None)
-        self.logs.replace_entry(scan["id"], scan["ts"], shown, res.status,
-                                self._detail(res) if res.status == db.RESULT_VIOLATION else "", False,
-                                scan["confidence"], self._looks(scan.get("vehicle_color"), scan.get("position"),
-                                                                scan.get("source")), ack)
-        self.captured.replace_card(PlateCard(
-            scan["id"], scan["ts"], load_pixmap(scan.get("vehicle_path")) or load_pixmap(scan["crop_path"]),
-            shown, scan["confidence"], res.status, scan["snapshot_path"], scan.get("vehicle_color")))
-
-        # The old violation alert (if there was one) no longer applies to this plate.
-        was_on_screen, nxt = self.dash.discard(scan["id"])
-        if res.status == db.RESULT_VIOLATION and not scan.get("acknowledged_at"):
-            seen = VehicleView(load_pixmap(scan.get("vehicle_path")), load_pixmap(scan["snapshot_path"]),
-                               scan.get("vehicle_color"), scan.get("position"),
-                               when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan["id"])
-            if self.dash.on_violation((scan["id"], scan["plate_read"], res, seen)) is not None:
-                self._show(scan["plate_read"], res, seen, needs_ack=self.dash.require_ack)
-            self._alert()
-        elif was_on_screen and nxt is not None:
-            self._show(*nxt[1:], needs_ack=self.dash.require_ack)
-        else:
-            self._show_scan_from_log(scan["id"])
-        self._update_pending()
-
     def _guard_name(self) -> str:
         user = (self.session or {}).get("user") or {}
         return user.get("name") or user.get("email") or "guard on duty (offline mode)"
@@ -790,8 +745,6 @@ class MainWindow(QMainWindow):
     def _show(self, plate_read: str, res: db.LookupResult, seen: VehicleView, needs_ack: bool = False,
               back: bool = False) -> None:
         self.identity.show_result(plate_read, res, needs_ack=needs_ack, back=back, seen=seen)
-        self._shown_track = seen.track_id
-        self._shown_scan = seen.scan_id
         self._update_live()
 
     @staticmethod
@@ -817,15 +770,7 @@ class MainWindow(QMainWindow):
         self._update_live()
 
     def _update_live(self) -> None:
-        tid = self._shown_track
-        if tid is None:
-            return  # an older scan: the dashboard shows when it was scanned
-        if tid in self._in_view:
-            self.identity.set_live("", True)
-        elif tid in self._left_at:
-            secs = int(time.monotonic() - self._left_at[tid])
-            ago = f"{secs} s" if secs < 90 else f"{secs // 60} min"
-            self.identity.set_live(f"Left the picture {ago} ago", False)
+        self.identity.refresh_live(self._in_view, self._left_at)
 
     def _alert(self) -> None:
         self.identity.set_collapsed(False)
