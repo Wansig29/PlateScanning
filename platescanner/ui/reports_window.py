@@ -44,6 +44,7 @@ class ReportsWindow(QDialog):
         for key, label in PERIODS:
             b = QPushButton(label)
             b.setCheckable(True)
+            b.setMinimumWidth(84)   # room for the bold text of the selected button
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(f"QPushButton:checked {{ background: {theme.ACCENT}; border-color: {theme.ACCENT};"
                             "color: white; font-weight: 700; }")
@@ -167,7 +168,7 @@ class ReportsWindow(QDialog):
         for row, s in enumerate(scans):
             looks = ", ".join(x for x in (s.get("vehicle_color"), s.get("position")) if x)
             conf = f"{s['confidence']:.0%}" if s.get("confidence") is not None else "—"
-            folder = db.CAPTURE_FOLDERS.get(s["result"], "")
+            folder = export.pictures_folder(s) or "no pictures saved"
             cells = [format_ts(s["ts"]), plates.display(s.get("matched_plate") or s["plate_read"]) or "—",
                      theme.RESULT_LABELS.get(s["result"], s["result"]), conf, looks or "—", folder]
             for col, text in enumerate(cells):

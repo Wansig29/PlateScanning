@@ -12,6 +12,12 @@ HEADER = ["time", "plate", "result", "confidence", "approximate", "vehicle colou
           "source", "pictures folder", "snapshot"]
 
 
+def pictures_folder(scan: dict[str, Any]) -> str:
+    """The folder a scan's pictures are in, or "" if none were saved for it."""
+    has = any(scan.get(c) for c in ("crop_path", "snapshot_path", "vehicle_path"))
+    return db.CAPTURE_FOLDERS.get(scan["result"], "") if has else ""
+
+
 def write_csv(path: Path, scans: list[dict[str, Any]]) -> None:
     """One row per scan (UTF-8 with a BOM, so Excel opens it correctly)."""
     with path.open("w", newline="", encoding="utf-8-sig") as f:
@@ -23,4 +29,4 @@ def write_csv(path: Path, scans: list[dict[str, Any]]) -> None:
                         "" if s.get("confidence") is None else f"{s['confidence']:.2f}",
                         "yes" if s.get("approximate") else "", s.get("vehicle_color") or "",
                         s.get("position") or "", s.get("source") or "",
-                        db.CAPTURE_FOLDERS.get(s["result"], ""), s.get("snapshot_path") or ""])
+                        pictures_folder(s), s.get("snapshot_path") or ""])

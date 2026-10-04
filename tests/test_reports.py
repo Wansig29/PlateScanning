@@ -45,9 +45,13 @@ def test_report_windows_are_daily_weekly_monthly_yearly(conn, now):
 def test_csv_export(tmp_path, conn, now):
     pytest.importorskip("PySide6.QtWidgets")
     from platescanner.export import write_csv
-    _scan(conn, now, db.RESULT_VIOLATION)
+    sid = _scan(conn, now, db.RESULT_VIOLATION)
+    conn.execute("UPDATE scan_log SET snapshot_path='x.jpg' WHERE id=?", (sid,))
+    _scan(conn, now, db.RESULT_CLEAR)                      # no pictures saved for this one
     out = tmp_path / "r.csv"
     write_csv(out, db.scan_report(conn, "daily", now)["scans"])
     text = out.read_text(encoding="utf-8-sig")
     assert text.splitlines()[0].startswith("time,plate,result")
-    assert "VIOLATION" in text and "violation" in text.splitlines()[1]
+    lines = text.splitlines()
+    assert any("VIOLATION" in l and l.split(",")[-2] == "violation" for l in lines)
+    assert any("NO VIOLATION" in l and l.split(",")[-2] == "" for l in lines)
