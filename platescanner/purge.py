@@ -103,7 +103,9 @@ class DeletePlan:
 def plan_delete_before(conn: sqlite3.Connection, roots: list[Path], before: str) -> DeletePlan:
     """The scans (every result, violations too) dated before `before` (YYYY-MM-DD), and their pictures."""
     from datetime import date
-    date.fromisoformat(before)  # reject anything that is not a date, before it can reach a query
+    # Python also accepts "20261001" and "2026-W40-1"; scan times are "YYYY-MM-DDTHH:MM:SS" text, so
+    # compare against the canonical form only. A non-date raises ValueError before reaching a query.
+    before = date.fromisoformat(before).isoformat()
     plan = DeletePlan(before)
     seen: set[Path] = set()
     for row in conn.execute(f"SELECT id, result, {', '.join(_PATH_COLUMNS)} FROM scan_log WHERE ts < ?", (before,)):

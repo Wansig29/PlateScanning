@@ -82,3 +82,10 @@ def test_delete_before_a_date_removes_old_scans_with_their_pictures(conn, tmp_pa
 def test_delete_before_rejects_a_bad_date(conn, tmp_path):
     with pytest.raises(ValueError):
         purge.plan_delete_before(conn, [tmp_path], "2026-10-01'; DROP TABLE scan_log; --")
+
+
+@pytest.mark.parametrize("spelling", ["20261001", "2026-W40-4", "2026-10-01"])
+def test_delete_before_uses_the_canonical_date_whatever_the_spelling(conn, tmp_path, spelling):
+    _scan(conn, tmp_path / "a.jpg", db.RESULT_CLEAR, "2026-09-30T23:59:59")
+    _scan(conn, tmp_path / "b.jpg", db.RESULT_CLEAR, "2026-10-01T00:00:01")
+    assert len(purge.plan_delete_before(conn, [tmp_path], spelling).scan_ids) == 1
