@@ -1053,16 +1053,6 @@ class CapturedPlatePanel(QFrame):
         if self._cards:
             self._highlight(self._cards[-1].scan_id)
 
-    def replace_card(self, new: PlateCard) -> None:
-        """Swap the card of new.scan_id for an updated one (after a guard's correction)."""
-        for i, old in enumerate(self._cards):
-            if old.scan_id == new.scan_id:
-                new.clicked.connect(self._on_click)
-                self.list.replaceWidget(old, new)
-                old.deleteLater()
-                self._cards[i] = new
-                return
-
     def _highlight(self, scan_id: int) -> None:
         for card in self._cards:
             card.set_selected(card.scan_id == scan_id)
@@ -1146,12 +1136,12 @@ class LogsPanel(QFrame):
 
     def add_entry(self, scan_id: int, ts: str, plate: str, result: str, detail: str,
                   approximate: bool = False, confidence: float | None = None, vehicle: str = "",
-                  ack: str | None = None, at: int | None = None) -> None:
-        """Append at the bottom (newest last, like a chat), or insert at row `at`.
+                  ack: str | None = None) -> None:
+        """Append at the bottom (newest last, like a chat).
 
         ack (violations only): who acknowledged it, or None if nobody has yet."""
         color = QColor(theme.RESULT_COLORS.get(result, theme.TEXT))
-        row = self.table.rowCount() if at is None else at
+        row = self.table.rowCount()
         self.table.insertRow(row)
         t = QTableWidgetItem(format_ts_short(ts))
         t.setData(Qt.ItemDataRole.UserRole, scan_id)
@@ -1195,14 +1185,4 @@ class LogsPanel(QFrame):
         while self.table.rowCount() > self.MAX_ROWS:
             self.table.removeRow(0)
         self._update_count()
-        if at is None:
-            self.follower.entry_added()
-
-    def replace_entry(self, scan_id: int, *args, **kwargs) -> None:
-        """Rewrite the row of a scan in place (same arguments as add_entry, after the scan id)."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(Qt.ItemDataRole.UserRole) == scan_id:
-                self.table.removeRow(row)
-                self.add_entry(scan_id, *args, at=row, **kwargs)
-                return
+        self.follower.entry_added()

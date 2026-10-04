@@ -1,5 +1,4 @@
 """Scan reports by period, and the separate picture folders per result."""
-import os
 from datetime import datetime, timedelta
 
 import pytest

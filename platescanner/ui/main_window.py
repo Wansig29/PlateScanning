@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -30,7 +30,7 @@ from .database_view import DatabaseWindow
 from .reports_window import ReportsWindow
 from .login import LoginDialog
 from .widgets import (
-    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, PlateCard, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
+    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
     panel,
 )
 
@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
         self.pending_btn.setToolTip("Violation alerts no guard has acknowledged yet. Click to review them.")
         self.pending_btn.setStyleSheet(
             f"QPushButton {{ background: {theme.RED}; border: 1px solid {theme.RED}; color: white;"
-            "font-weight: 800; padding: 7px 14px; border-radius: 7px; }}")
+            "font-weight: 800; padding: 7px 14px; border-radius: 7px; }")
         self.pending_btn.clicked.connect(self._review_pending)
         self.pending_btn.hide()
         tl.addWidget(self.pending_btn)
@@ -370,6 +370,8 @@ class MainWindow(QMainWindow):
     def _start_archiving(self) -> None:
         """Move old pictures to the archive folder: at start-up, then every 6 hours."""
         self._archiving = False
+        self._archive_stop = threading.Event()   # set when the window closes
+        self._archive_thread: threading.Thread | None = None
         self._archive_timer = QTimer(self)
         self._archive_timer.setInterval(6 * 3600 * 1000)
         self._archive_timer.timeout.connect(self._archive_now)
@@ -386,7 +388,7 @@ class MainWindow(QMainWindow):
             conn = db.connect(self.cfg.db_path)  # its own connection: this is not the UI thread
             try:
                 retention.archive_old_captures(conn, self.cfg.captures_dir, self.cfg.archive_path,
-                                               sc.archive_after_days)
+                                               sc.archive_after_days, should_stop=self._archive_stop.is_set)
                 if sc.archive_ended_academic_year:
                     retention.archive_ended_years(conn, self.cfg.archive_path, sc.academic_year_start_month)
             except Exception:  # noqa: BLE001 - housekeeping must never disturb scanning
@@ -395,7 +397,8 @@ class MainWindow(QMainWindow):
                 conn.close()
                 self._archiving = False
 
-        threading.Thread(target=work, daemon=True, name="archive-pictures").start()
+        self._archive_thread = threading.Thread(target=work, daemon=True, name="archive-pictures")
+        self._archive_thread.start()
 
     def _start_workers(self) -> None:
         slot = FrameSlot()
@@ -876,6 +879,9 @@ class MainWindow(QMainWindow):
     # --- shutdown -------------------------------------------------------------
 
     def closeEvent(self, e) -> None:  # noqa: N802
+        self._archive_stop.set()          # let a picture move in progress finish its log update
+        if self._archive_thread is not None:
+            self._archive_thread.join(timeout=5)
         self.reminder.stop()
         self.sound.cancel()
         self.capture.stop()

@@ -97,7 +97,6 @@ class MotionConfig:
 
 @dataclass
 class OcrConfig:
-    use_gpu: str = "auto"  # "auto" | "yes" | "no"
     # Directory holding the model files (in an "alpr" subfolder). Empty =
     # <bundle>/models if present, else the libraries' download cache. The
     # gate laptop is offline, so the models must be bundled or pre-fetched
@@ -130,8 +129,6 @@ class OcrConfig:
     # read_confidence: missing a violator is worse than a doubtful alert).
     # Below it, the vehicle is logged as "plate not readable" with a snapshot.
     report_confidence: float = 0.50
-    # (Confidence threshold of the classical text-assembly helpers.)
-    min_confidence: float = 0.30
     # A violation alerts on one read this confident; otherwise, and for
     # every other result, `confirm_reads` agreeing reads are required.
     alert_confidence: float = 0.75
@@ -202,7 +199,6 @@ class ScanConfig:
     archive_ended_academic_year: bool = True
     academic_year_start_month: int = 8
     alert_sound: bool = True
-    overlay_seconds: float = 4.0
     # Slow mode: add at most one entry per N seconds to the Logs (0 = off).
     # Only the Logs are paced; violations always skip the queue.
     slow_mode_seconds: float = 0.0

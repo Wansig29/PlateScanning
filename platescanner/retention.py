@@ -13,6 +13,7 @@ import shutil
 import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from typing import Callable
 
 from . import export
 
@@ -42,8 +43,12 @@ def _old_day_folders(captures: Path, cutoff: date) -> list[Path]:
 
 
 def archive_old_captures(conn: sqlite3.Connection, captures: Path, archive: Path, days: int,
-                         today: date | None = None) -> int:
-    """Returns how many pictures were moved. days <= 0 turns this off."""
+                         today: date | None = None, should_stop: Callable[[], bool] = lambda: False) -> int:
+    """Returns how many pictures were moved. days <= 0 turns this off.
+
+    should_stop is checked before every file: when it turns true (the app is closing) the log is
+    brought up to date for what was moved so far and the rest is left for the next run.
+    """
     if days <= 0:
         return 0
     cutoff = (today or date.today()) - timedelta(days=days)
@@ -59,6 +64,9 @@ def archive_old_captures(conn: sqlite3.Connection, captures: Path, archive: Path
             log.warning("Cannot use archive folder %s: %s", archive, e)
             return moved
         for f in [p for p in folder.iterdir() if p.is_file()]:
+            if should_stop():
+                conn.commit()
+                return moved
             target = dest_dir / f.name
             if target.exists():
                 target = dest_dir / f"{f.stem}_{int(f.stat().st_mtime)}{f.suffix}"

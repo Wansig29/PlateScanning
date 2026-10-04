@@ -18,8 +18,8 @@ from .config import CameraConfig
 
 log = logging.getLogger(__name__)
 
-# DirectShow / V4L: 0.25 asks for manual exposure, 0.75 for automatic.
-AUTO_EXPOSURE_MANUAL, AUTO_EXPOSURE_AUTO = 0.25, 0.75
+# DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).
+AUTO_EXPOSURE_MANUAL = 0.25
 
 
 def fourcc_text(value: float) -> str:

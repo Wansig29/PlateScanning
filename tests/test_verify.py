@@ -20,12 +20,10 @@ def test_approximate_matches_are_always_flagged():
     assert needs_verification(5, 0.99, True, OCR)
 
 
-def test_flag_is_stored_and_cleared_by_a_guard_confirming():
+def test_flag_is_stored_with_the_scan():
     conn = db.connect(":memory:")
     db.init_schema(conn)
     conn.execute("INSERT INTO vehicles(id, plate, plate_norm, plate_key) VALUES('1','ABC 1234','ABC1234','A8C1234')")
     sid = db.add_scan(conn, ts="2026-01-01T10:00:00", plate_read="ABC1234", result=db.LookupResult(db.RESULT_CLEAR),
                       confidence=0.7, crop_path=None, verify=True)
     assert db.get_scan(conn, sid)["verify"] == 1
-    db.correct_scan(conn, sid, "ABC1234", "Juan", "2026-01-01T10:01:00")
-    assert db.get_scan(conn, sid)["verify"] == 0
