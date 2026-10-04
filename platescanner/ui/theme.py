@@ -16,7 +16,6 @@ VIDEO_BG = "#05080b"
 RED = "#ef4444"
 GREEN = "#22c55e"
 AMBER = "#f59e0b"
-GREY = "#5b6776"
 
 MONO = '"Cascadia Mono", Consolas, monospace'
 

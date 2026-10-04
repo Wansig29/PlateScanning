@@ -40,6 +40,7 @@ class ApiConfig:
     login_path: str = "/api/login"
     vehicles_path: str = "/api/security/gate/vehicles"
     violations_path: str = "/api/security/gate/violations"
+    school_years_path: str = "/api/security/gate/school-years"
     # Query parameter used for delta sync, sent as an ISO-8601 UTC timestamp.
     updated_since_param: str = "updated_since"
     page_size: int = 200
@@ -96,7 +97,6 @@ class MotionConfig:
 
 @dataclass
 class OcrConfig:
-    use_gpu: str = "auto"  # "auto" | "yes" | "no"
     # Directory holding the model files (in an "alpr" subfolder). Empty =
     # <bundle>/models if present, else the libraries' download cache. The
     # gate laptop is offline, so the models must be bundled or pre-fetched
@@ -129,8 +129,6 @@ class OcrConfig:
     # read_confidence: missing a violator is worse than a doubtful alert).
     # Below it, the vehicle is logged as "plate not readable" with a snapshot.
     report_confidence: float = 0.50
-    # (Confidence threshold of the classical text-assembly helpers.)
-    min_confidence: float = 0.30
     # A violation alerts on one read this confident; otherwise, and for
     # every other result, `confirm_reads` agreeing reads are required.
     alert_confidence: float = 0.75
@@ -180,19 +178,38 @@ class ScanConfig:
     # Allow a 1-character-off match when there is exactly one candidate.
     fuzzy_match: bool = True
     save_captures: bool = True
+    # Which results get pictures saved (the log row is always kept). Pictures are what take
+    # the disk space, so by default only violations (the evidence) get them. Add "no_plate"
+    # to keep a snapshot of every unreadable plate, or "clear" / "not_registered" for those.
+    save_pictures_for: list[str] = field(default_factory=lambda: ["violation"])
     # Save one JPEG of the best frame per motion event (no video is ever
     # recorded). Also logs motion events where no plate could be read.
     save_snapshots: bool = True
     snapshot_max_width: int = 1280
+    # Pictures older than this many days are moved (never deleted) from captures\\
+    # to the archive folder, and the Logs keep opening them. 0 = keep everything in place.
+    archive_after_days: int = 30
+    # Where they go. Empty = the "archive" folder next to captures\\; it can be
+    # on another drive, e.g. "D:\\PlateScannerArchive".
+    archive_dir: str = ""
+    # Once an academic year has ended, its scan log is archived automatically: a CSV in the
+    # archive folder, and the scans move from the Logs to Reports -> Archive. The year is
+    # taken to start on the 1st of this month (8 = August; 1 = a calendar year). Only a
+    # fallback: once the school years have been synced from psau-security, its dates are used.
+    archive_ended_academic_year: bool = True
+    academic_year_start_month: int = 8
     alert_sound: bool = True
-    overlay_seconds: float = 4.0
     # Slow mode: add at most one entry per N seconds to the Logs (0 = off).
     # Only the Logs are paced; violations always skip the queue.
     slow_mode_seconds: float = 0.0
-    # A violation alert stays until a guard acknowledges it. Until then the
+    # Off (default): a violation alert flashes and sounds once, then clears by
+    # itself when the next vehicle is scanned. Every scan is still logged.
+    # On: the alert stays until a guard acknowledges it. Until then the
     # alarm repeats every N seconds (0 = alert once only)...
+    require_acknowledge: bool = False
     reminder_seconds: float = 15.0
-    # ...and the app brings itself to the front if another window covers it.
+    # ...and the app brings itself to the front if another window covers it
+    # (only used when require_acknowledge is on).
     bring_to_front: bool = True
     # On start-up, re-raise violations nobody acknowledged within this many hours.
     unacknowledged_lookback_hours: float = 24.0
@@ -234,6 +251,10 @@ class Config:
     @property
     def captures_dir(self) -> Path:
         return self.home / "captures"
+
+    @property
+    def archive_path(self) -> Path:
+        return Path(self.scan.archive_dir) if self.scan.archive_dir.strip() else self.home / "archive"
 
     @property
     def photos_dir(self) -> Path:

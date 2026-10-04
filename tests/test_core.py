@@ -182,7 +182,7 @@ class FakeClient:
 
     def fetch_all(self, path, since=None):
         self.calls.append((path, since))
-        return self.data[path]
+        return self.data.get(path, [])   # (the school-years path has no data in most tests)
 
     def download(self, url, dest):
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -217,7 +217,7 @@ def test_sync_full_then_delta(tmp_path):
     client.data["/x"] = [{"id": 9, "vehicle_id": 1, "plate_number": "NBC1234", "status": "resolved"}]
     client.data["/v"] = []
     s2 = sync.run_sync(cfg, client, c)
-    assert not s2["full"] and client.calls[-1][1] is not None
+    assert not s2["full"] and [c for c in client.calls if c[0] == "/x"][-1][1] is not None
     assert db.lookup(c, "NBC1234").status == "clear"
 
 

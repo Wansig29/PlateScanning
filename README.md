@@ -65,8 +65,14 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.ocr_model` | Plate OCR models, comma-separated. Each plate is read by all of them and the results are merged character by character |
 | `ocr.read_confidence`, `report_confidence`, `alert_confidence`, `confirm_reads` | When a vehicle is reported (see *Deciding a plate*) |
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
+| `scan.archive_after_days` | Pictures older than this many days are **moved** (never deleted) from `captures\` to the archive folder; the Logs still open them. Default 30; 0 keeps everything in `captures\` |
+| `scan.archive_dir` | Where the old pictures go. Empty = `archive\` next to `captures\`; can be another drive, e.g. `D:\\PlateScannerArchive` |
+| `scan.archive_ended_academic_year` | `true` (default): once an academic year has ended, its scan log is archived automatically: a CSV in `archive\<year>\`, and its scans leave the Logs and appear under *Reports → Archive*. Nothing is deleted |
+| `scan.academic_year_start_month` | Fallback only, used until the school years have synced from psau-security: the month the academic year starts (default 8 = August; 1 = a calendar year) |
+| `scan.save_pictures_for` | Which results get pictures saved (the log row is always kept). Default `["violation"]`: pictures are what take the disk space, so only the evidence is kept. Add `"no_plate"`, `"clear"` or `"not_registered"` to keep those too |
 | `scan.plate_cooldown_seconds` | Ignore repeat reads of the same plate while it's still at the gate |
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
+| `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
 | `scan.bring_to_front` | Bring the app to the front on every violation alert |
 | `sync.interval_hours` / `full_resync_hours` | Delta sync every 3 h (nothing is written when there are no new vehicles or violations); a full re-download every 24 h to drop records deleted online |
@@ -91,6 +97,7 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 - **Database-aware decoding** (`decode.py`): the OCR models output a probability for every character at every position, not just the winner. These are kept, combined over the vehicle's reads (repeat frames count for less, since their errors are correlated) and scored against every registered plate, weighing "one of our vehicles" against "a visitor". A registered plate replaces the plain read only if **all** hold: it wins with at least `ocr.decode_accept` (0.90) certainty; it differs from the plain read in at most `decode_max_changes` (2) characters; every character it changes was at least `decode_min_char_prob` (10%) likely to the OCR itself, so a confident read is never overridden by a nearby registered plate; and its registered colour doesn't clearly contradict the colour seen at the gate (a mild penalty, `decode_colour_penalty`). The result is flagged *approximate*. This resolves two reads that disagree on one doubtful character without waiting for the vehicle to leave. `decode_temperature` (2.0) softens the OCR's overconfidence and should be calibrated on real gate footage. Set `decode_with_database` to false to turn it off.
 - **Lookup** (`db.py`): plates are matched on a confusion-folded key (O/0, I/1, B/8, S/5…), so a slightly misread plate still finds its record. Only local SQLite is queried, never the API.
 - **Live feed**: every tracked vehicle gets a box, a trail and a label (`#12 ABC 1234 98%`, or `#13 reading...` until decided). Between recognitions, boxes move with the vehicle's measured speed so they stay on the plate. While a **violator** is in view the rest of the picture is dimmed and the violator's whole vehicle gets a thick, blinking red frame, so it stands out from the cars around it.
+- **Several violators at once**: when acknowledgement is not required (the default), each violator in view gets its own card on the Identity Dashboard (up to 3, newest first), with its photo, owner, violation and suspension dates. A "2 violators in view  ‹ ›" bar above the cards jumps between them when they do not all fit. A card stays while its vehicle is in view and for 10 s after; a clear or unregistered vehicle never pushes a violator off the screen. Everything is still logged.
 - **Which vehicle is it?** (`vision/identify.py`): with several cars at the gate a plate number alone is hard to match to a moving car, so the dashboard leads with:
   - **This vehicle**: a photo of the vehicle itself, cut from the camera frame;
   - **Where it was**: the whole scene at that moment with only this vehicle highlighted (others outlined in grey);
@@ -98,19 +105,19 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
   - the banner names the vehicle number (`VEHICLE #12`) that labels it on the live feed.
 
   Owner, violation and suspension follow in one compact card; the violation's evidence photos open from a link. The Logs and Captured Plates show the colour and position too (*Red, left side · Illegal parking*), and all of it is saved with the scan, so reopening a scan from the Logs shows the same pictures.
-- **No violator goes unnoticed**: every violation alert stays open until a guard acknowledges it.
+- **No violator goes unnoticed** (only when `scan.require_acknowledge` is `true`; off by default, in which case the alert clears itself and the scan is just logged): every violation alert stays open until a guard acknowledges it.
   - The alert itself: the dashboard banner turns red and flashes, an alarm sounds, the taskbar flashes, the dashboard expands if collapsed, and the app **brings itself to the front** if another window covers it (`scan.bring_to_front`; Windows may only flash the taskbar when another program has the focus).
   - While anything is unacknowledged: a **pulsing red frame** runs around the whole window (visible from across the booth), a red **"⚠ N unacknowledged violations"** counter sits in the top bar, and the whole alert **repeats every `scan.reminder_seconds`** (15 s) until someone responds.
   - The violator **stays on the dashboard** until acknowledged; however much traffic follows, other vehicles never replace it.
   - **Several violators at once**: each gets its own alarm (played one after another, never on top of each other). The dashboard shows the first and queues the rest (*Acknowledge violation · 2 more waiting*); each Acknowledge brings up the next. Opening an older scan from the Logs keeps the queue and offers *Back to violations*.
   - **Who acknowledged what, and when** is stored with the scan (the signed-in guard's name) and shown in the Logs (*✓ acknowledged by Juan at 10:05:12*, or a red *⚠ NOT ACKNOWLEDGED*).
   - It **survives a restart**: violations nobody acknowledged in the last `scan.unacknowledged_lookback_hours` (24 h) are raised again when the app starts (unless the violation was resolved online in the meantime).
-- **Snapshots, not video**: no video is recorded. Each reported vehicle saves one JPEG of its best frame, plus the plate crop, to `captures\YYYY-MM-DD\`. Plates that were seen but never readable are logged too; click the row to see the snapshot.
+- **Snapshots, not video**: no video is recorded. Each reported violator saves three JPEGs (the plate crop, the vehicle photo and the scene with the vehicle highlighted, `…_scene.jpg`) to `captures\<result>\YYYY-MM-DD\`, where `<result>` is `violation`, `no_violation`, `not_registered` (the plate is not in the database) or `no_plate_read`.
+- **Reports** (status bar → *Reports*): the scans of the last day, week, month or year (the same periods as psau-security's violation map), with a count per result, a filter, *Open pictures folder* and *Export to CSV*. The **Archive** button lists the academic years that were archived automatically after they ended. Plates that were seen but never readable are logged too; click the row to see the snapshot.
 - **Chat-style feeds**: Logs and Captured Plates add new entries at the bottom and auto-scroll. Scrolling up pauses this and shows a "▼ N new scans" button.
 - **Slow mode** (Logs header): adds at most one log entry per 2–10 s and queues the rest, so each can be read during busy periods. It only paces the Logs: the dashboard, captured plates and alerts are always immediate, violations skip the queue, and every entry keeps the time its vehicle was actually scanned.
 
-- **Guards can confirm or correct a plate**: *✎ Wrong plate? Confirm or correct it* under the dashboard banner shows the plate photo and lets the guard type what it really says. The scan, its Logs row and its Captured Plates card are rewritten and looked up again (a corrected violation raises the alert, a wrongly flagged one is withdrawn). Every answer is saved with the guard's name in `plate_corrections`; `tools/export_corrections.py out_folder` turns them into a labelled dataset (`labels.csv` + crops) for measuring and fine-tuning the OCR.
-- **"Verify plate" alerts**: a violation that rests on a doubtful read (an approximate or decoded match, an average confidence under `ocr.verify_below_confidence` (0.60), or a single read under `ocr.verify_single_read_below` (0.90)) is still raised at once, but its banner and Logs row say **VERIFY PLATE**, so the guard compares the plate with the photo instead of trusting it blindly. Confirming or correcting the plate clears the mark.
+- **"Verify plate" alerts**: a violation that rests on a doubtful read (an approximate or decoded match, an average confidence under `ocr.verify_below_confidence` (0.60), or a single read under `ocr.verify_single_read_below` (0.90)) is still raised at once, but its banner and Logs row say **VERIFY PLATE**, so the guard compares the plate with the photo of the vehicle instead of trusting it blindly.
 - **Health warnings** (`health.py`): the status bar warns when the camera image is blurred or dirty, the frame or analysis rate drops, the picture freezes, the scene is too dark or overexposed, or more than half of the recent plates could not be read. Each warning shows once, a stalled feed also beeps, and a green *Recovered* follows when it clears.
 
 ### Measuring speed and accuracy
@@ -129,9 +136,30 @@ For accuracy on **real footage**, write a CSV of what each video really shows (`
 .\.venv\Scripts\python tools\eval_footage.py footage_folder truth.csv --out eval_out
 ```
 
-`eval_outeport.md` gives, per condition and overall, the vehicles read exactly right, read wrong (expected vs got), missed and falsely reported, plus the character error rate; `mismatches.csv` lists every miss. It runs on a temporary database and never touches the real scan log. `--selftest` shows the report format without any footage.
+`eval_out
+eport.md` gives, per condition and overall, the vehicles read exactly right, read wrong (expected vs got), missed and falsely reported, plus the character error rate; `mismatches.csv` lists every miss. It runs on a temporary database and never touches the real scan log. `--selftest` shows the report format without any footage.
 
 `bench_live.py` plays a video in real time through the same threads the app uses and reports, for each vehicle, whether it was read, whether correctly, and how long after its plate appeared. Run it on footage from the actual gate camera before deploying, and use `--set section.name=value` to try settings.
+
+### Freeing disk space: delete pictures of non-violations
+
+Pictures of clear, unregistered and unreadable scans are no longer saved (`scan.save_pictures_for`). To delete the ones saved earlier, with the scanner closed:
+
+```powershell
+.\.venv\Scripts\python tools\purge_pictures.py          # shows what would be deleted, deletes nothing
+.\.venv\Scripts\python tools\purge_pictures.py --yes    # deletes it
+```
+
+Only pictures go. The log rows stay, so the Logs, Reports and CSV exports are unchanged, and violation pictures are never touched. It searches `captures\` and the archive folder.
+
+To clear test scans entirely, the log rows and all pictures (violations too) dated before a day:
+
+```powershell
+.\.venv\Scripts\python tools\purge_pictures.py --delete-before 2026-10-01          # shows what would go
+.\.venv\Scripts\python tools\purge_pictures.py --delete-before 2026-10-01 --yes    # deletes it
+```
+
+This cannot be undone. Vehicles, violations and the sync data are not touched, only the scanner's own scan log. Archived CSV files are not edited.
 
 ### Resolution: does 1080p read better than 720p or 480p?
 
@@ -160,6 +188,7 @@ The scanner gets its data from the **psau-security** system (`native-app`, on Ra
   |---|---|
   | `GET /api/security/gate/vehicles?updated_since=&page=&per_page=` | vehicles with owner name, contact, photo, colour/make/model, registration status. Deltas include removed vehicles (`removed: true`) |
   | `GET /api/security/gate/violations?updated_since=&page=&per_page=` | full sync: every **unsettled** violation. Deltas: every violation or sanction that changed, with `is_active`, so lifted suspensions, approved appeals and deletions clear on the laptop too |
+  | `GET /api/security/gate/school-years` | every school year with its start and end date (the ones the admin manages in Utilities), fetched on every sync. A year is archived once its end date has passed. If the server doesn't have this endpoint yet the scanner keeps working with `scan.academic_year_start_month` |
   | `GET /api/security/gate/owner-photo/{userId}`, `.../violation-photo/{violationId}` | photos, downloaded once for offline use |
 
 - **Who triggers the alert**: the same rule as psau-security's `SanctionService::hasUnsettledFor()`: a violation still waiting for its sanction, or an active Suspended/Revoked sanction. A suspension stops alerting once its end date has passed, on the server and on the laptop (even if it has not synced since).

@@ -18,7 +18,10 @@ from typing import Any
 
 
 class DashboardQueue:
-    def __init__(self):
+    def __init__(self, require_ack: bool = True):
+        # False: nothing is held on screen or queued; a violation is shown at
+        # once and replaced by the next scan. (Scans are logged either way.)
+        self.require_ack = require_ack
         self.current: Any = None      # unacknowledged violation on screen
         self.waiting: deque = deque()  # violations queued behind it
         self.viewing = False           # the guard opened another scan from the Logs
@@ -33,6 +36,8 @@ class DashboardQueue:
 
     def on_violation(self, item: Any) -> Any:
         """Returns the item to show now, or None if it was queued."""
+        if not self.require_ack:
+            return item
         if self.locked():
             self.waiting.append(item)
             return None
@@ -50,17 +55,6 @@ class DashboardQueue:
         if self.waiting:
             self.current = self.waiting.popleft()
         return done, self.current
-
-    def discard(self, scan_id: int) -> tuple[bool, Any]:
-        """Drop the violation of a scan a guard has since corrected to another plate.
-
-        Returns (it was the one on screen, the next one to show in its place).
-        """
-        self.waiting = deque(i for i in self.waiting if i[0] != scan_id)
-        if self.current is not None and self.current[0] == scan_id:
-            self.current = self.waiting.popleft() if self.waiting else None
-            return True, self.current
-        return False, None
 
     def back(self) -> Any:
         """"Back to violations" pressed while viewing an older scan. Returns the item to show."""

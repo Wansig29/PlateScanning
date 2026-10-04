@@ -1,6 +1,7 @@
 """Dashboard panels: live feed, identity dashboard, captured plate, logs."""
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -321,28 +322,23 @@ class VehicleView:
         return "  \u00b7  ".join(parts)
 
 
-class IdentityPanel(QFrame):
-    """Owner + violation details for the most recent scan (right column)."""
+class IdentityCard(QFrame):
+    """Owner + violation details for one scanned vehicle (one card of the Identity Dashboard)."""
     acknowledged = Signal()
-    correct_requested = Signal()
 
     ROTATE_MS = 4000    # time each violation stays on screen when there are several
     RESUME_MS = 15000   # auto-rotation pause after the guard pages manually
 
     def __init__(self):
         super().__init__()
-        frame, lay, header = panel("Identity Dashboard")
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(frame)
+        self.setObjectName("DetailCard")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(10, 10, 10, 10)
+        lay.setSpacing(8)
 
-        self.collapse_btn = QToolButton()
-        self.collapse_btn.setText("▾")
-        self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.collapse_btn.setToolTip("Collapse / expand")
-        self.collapse_btn.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
-        header.addWidget(self.collapse_btn)
-
+        self.track_id: int | None = None   # the vehicle this card is about (None: an older scan)
+        self.is_violation = False
+        self.shown_at = 0.0               # when it was last filled in
         self.banner = QLabel("Waiting for vehicle…")
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.banner.setMinimumHeight(50)
@@ -358,16 +354,6 @@ class IdentityPanel(QFrame):
         self.ack_btn.clicked.connect(self._acknowledge)
         self.ack_btn.hide()
         lay.addWidget(self.ack_btn)
-        self.correct_btn = QPushButton("✎  Wrong plate? Confirm or correct it")
-        self.correct_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.correct_btn.setFlat(True)
-        self.correct_btn.setStyleSheet(f"QPushButton {{ color: {theme.MUTED}; text-align: left; padding: 2px 4px; }}"
-                                       f"QPushButton:hover {{ color: {theme.TEXT}; text-decoration: underline; }}")
-        self.correct_btn.setToolTip("Tell the scanner what the plate really says. Your answer fixes this scan "
-                                    "and is saved to help measure and improve plate reading.")
-        self.correct_btn.clicked.connect(self.correct_requested)
-        self.correct_btn.hide()
-        lay.addWidget(self.correct_btn)
         self._banner_color = ""
         self._back = False
         self._paint_banner("")
@@ -381,19 +367,26 @@ class IdentityPanel(QFrame):
         self.fields: dict[str, QLabel] = {}
 
         # 1) WHICH vehicle: a photo of it, and the scene with only it highlighted.
-        pics = QHBoxLayout()
+        self.pics_w = QWidget()
+        pics = QHBoxLayout(self.pics_w)
+        pics.setContentsMargins(0, 0, 0, 0)
         pics.setSpacing(8)
         self.vehicle_img = ImageSlot("Photo of the vehicle", QSize(140, 100))
         self.where_img = ImageSlot("Where it was", QSize(140, 100))
-        for caption, slot in (("THIS VEHICLE", self.vehicle_img), ("WHERE IT WAS", self.where_img)):
-            col = QVBoxLayout()
+        self.where_col = QWidget()  # hidden in compact mode (several vehicles on screen)
+        self.pic_captions: list[QLabel] = []
+        for caption, slot, holder in (("THIS VEHICLE", self.vehicle_img, None),
+                                      ("WHERE IT WAS", self.where_img, self.where_col)):
+            col = QVBoxLayout(holder) if holder else QVBoxLayout()
+            col.setContentsMargins(0, 0, 0, 0)
             col.setSpacing(4)
             cap = QLabel(caption)
             cap.setObjectName("Faint")
+            self.pic_captions.append(cap)
             col.addWidget(cap)
             col.addWidget(slot, 1)
-            pics.addLayout(col, 1)
-        body.addLayout(pics, 1)
+            pics.addWidget(holder, 1) if holder else pics.addLayout(col, 1)
+        body.addWidget(self.pics_w, 1)
 
         # 2) How to recognise it: plate, colour, position, and whether it is still in view.
         facts = QHBoxLayout()
@@ -494,7 +487,6 @@ class IdentityPanel(QFrame):
         self._evidence: list[QPixmap] = []
         body.addWidget(card, 0)
 
-        self._collapsed = False
         self._violations: list[dict] = []
         self._vi = 0
         self._flash = QTimer(self)
@@ -534,12 +526,14 @@ class IdentityPanel(QFrame):
         self._flash_left = times
         self._flash.start()
 
-    def set_collapsed(self, collapsed: bool) -> None:
-        self._collapsed = collapsed
-        self.body.setVisible(not collapsed)
-        self.collapse_btn.setText("▸" if collapsed else "▾")
-        self.setSizePolicy(QSizePolicy.Policy.Preferred,
-                           QSizePolicy.Policy.Maximum if collapsed else QSizePolicy.Policy.Expanding)
+    def set_compact(self, compact: bool) -> None:
+        """Several vehicles on screen: keep the photo of the vehicle, drop the wide scene picture."""
+        self.where_col.setVisible(not compact)
+        for cap in self.pic_captions:
+            cap.setVisible(not compact)
+        self.banner.setMinimumHeight(38 if compact else 50)
+        self.pics_w.setMaximumHeight(76 if compact else 16777215)
+        self.vehicle_img.setMinimumSize(QSize(100, 60) if compact else QSize(140, 100))
 
     def _open_evidence(self) -> None:
         dlg = QDialog(self.window())
@@ -582,7 +576,6 @@ class IdentityPanel(QFrame):
         seen: what the camera saw of the vehicle (photo, where, colour...)."""
         self._back = back and not needs_ack
         self.ack_btn.setVisible(needs_ack or self._back)
-        self.correct_btn.setVisible(bool(seen and seen.scan_id))
         self.set_waiting(0)
         color = theme.RESULT_COLORS[result.status]
         label = theme.RESULT_LABELS[result.status]
@@ -590,11 +583,14 @@ class IdentityPanel(QFrame):
         if result.status == db.RESULT_VIOLATION and len(result.violations) > 1:
             label = f"{len(result.violations)} VIOLATIONS"
         seen = seen or VehicleView()
+        self.track_id = seen.track_id
+        self.is_violation = result.status == db.RESULT_VIOLATION
+        self.shown_at = time.monotonic()
         self._banner_color = color
         vehicle_no = f"   \u00b7   VEHICLE #{seen.track_id}" if seen.track_id else ""
         verify = "   ·   VERIFY PLATE" if seen.verify and result.status == db.RESULT_VIOLATION else ""
-        self.banner.setToolTip("The plate was read with some doubt. Compare it with the photo and press "
-                               "Confirm or correct." if verify else "")
+        self.banner.setToolTip("The plate was read with some doubt. Compare it with the photo of the "
+                               "vehicle." if verify else "")
         self.banner.setText(f"{theme.RESULT_ICONS.get(result.status, '')}  {label}{vehicle_no}{verify}")
         self._paint_banner(color)
         self.vehicle_img.set_pixmap(seen.vehicle)
@@ -646,6 +642,205 @@ class IdentityPanel(QFrame):
         when = fmt_date(v.get("occurred_at"))
         dots = " ".join("●" if i == self._vi else "○" for i in range(len(vs)))
         self.pager_label.setText(f"{dots}   Violation {self._vi + 1} of {len(vs)}" + (f" · {when}" if when else ""))
+
+
+class IdentityPanel(QFrame):
+    """The Identity Dashboard: one card per vehicle that needs the guard's attention.
+
+    Normally one card shows the most recent scan. When several violators are in
+    view together (and acknowledgement is not required) each gets its own card,
+    stacked newest first, so none of them hides the others. A violator's card
+    stays while its vehicle is in view and for KEEP_SECONDS after it leaves; a
+    clear or unregistered vehicle never pushes a violator off the screen.
+    """
+    acknowledged = Signal()
+
+    MAX_CARDS = 3
+    KEEP_SECONDS = 10.0   # how long a violator's card stays after its vehicle left the picture
+
+    def __init__(self):
+        super().__init__()
+        frame, lay, header = panel("Identity Dashboard")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(frame)
+
+        self.collapse_btn = QToolButton()
+        self.collapse_btn.setText("▾")
+        self.collapse_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.collapse_btn.setToolTip("Collapse / expand")
+        self.collapse_btn.clicked.connect(lambda: self.set_collapsed(not self._collapsed))
+        header.addWidget(self.collapse_btn)
+        self._collapsed = False
+
+        # "N violators in view  ‹ ›": jumps between the cards when they don't all fit.
+        self.nav = QWidget()
+        nl = QHBoxLayout(self.nav)
+        nl.setContentsMargins(0, 0, 0, 0)
+        self.nav_label = QLabel()
+        self.nav_label.setObjectName("Muted")
+        self.nav_prev, self.nav_next = QToolButton(), QToolButton()
+        self.nav_prev.setText("‹")
+        self.nav_next.setText("›")
+        for b in (self.nav_prev, self.nav_next):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav_prev.setToolTip("Previous violator")
+        self.nav_next.setToolTip("Next violator")
+        self.nav_prev.clicked.connect(lambda: self._jump(-1))
+        self.nav_next.clicked.connect(lambda: self._jump(+1))
+        nl.addWidget(self.nav_label, 1)
+        nl.addWidget(self.nav_prev)
+        nl.addWidget(self.nav_next)
+        self.nav.hide()
+        lay.addWidget(self.nav)
+
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        holder = QWidget()
+        self._cards_lay = QVBoxLayout(holder)
+        self._cards_lay.setContentsMargins(0, 0, 0, 0)
+        self._cards_lay.setSpacing(10)
+        self.scroll.setWidget(holder)
+        lay.addWidget(self.scroll, 1)
+
+        self.cards: list[IdentityCard] = []
+        self._in_view: set = set()
+        self._left_at: dict = {}
+        self._add_card()  # the idle "Waiting for vehicle…" card
+
+        self._expiry = QTimer(self)
+        self._expiry.setInterval(1000)
+        self._expiry.timeout.connect(self._expire)
+        self._expiry.start()
+
+    # --- cards ----------------------------------------------------------------
+
+    def _add_card(self) -> IdentityCard:
+        card = IdentityCard()
+        card.acknowledged.connect(self.acknowledged)
+        self.cards.append(card)
+        self._cards_lay.addWidget(card, 1)
+        return card
+
+    def _remove_card(self, card: IdentityCard) -> None:
+        self.cards.remove(card)
+        self._cards_lay.removeWidget(card)
+        card.deleteLater()
+
+    def _layout_changed(self) -> None:
+        compact = len(self.cards) > 1
+        for c in self.cards:
+            c.set_compact(compact)
+            c.setMinimumHeight(300 if compact else 0)
+        n = sum(c.is_violation for c in self.cards)
+        self.nav.setVisible(n > 1 and not self._collapsed)
+        self.nav_label.setText(f"{n} violators in view")
+
+    def _jump(self, delta: int) -> None:
+        """Scroll to the previous / next card (the one nearest the top is the current one)."""
+        bar = self.scroll.verticalScrollBar()
+        tops = [c.y() for c in self.cards]
+        here = min(range(len(tops)), key=lambda i: abs(tops[i] - bar.value()))
+        bar.setValue(tops[max(0, min(len(tops) - 1, here + delta))])
+
+    def _active(self, card: IdentityCard) -> bool:
+        """A violator's card is kept while its vehicle is in view, or just left."""
+        t = card.track_id
+        if not card.is_violation or t is None:
+            return False
+        if t in self._in_view:
+            return True
+        now = time.monotonic()
+        left = self._left_at.get(t, card.shown_at)  # not reported in view yet: counts from when shown
+        return now - max(left, card.shown_at) < self.KEEP_SECONDS
+
+    def _expire(self) -> None:
+        changed = False
+        for c in list(self.cards):
+            if len(self.cards) > 1 and c.is_violation and not self._active(c):
+                self._remove_card(c)
+                changed = True
+        if changed:
+            self._layout_changed()
+
+    # --- the dashboard's interface --------------------------------------------
+
+    def show_result(self, plate_read: str, result: db.LookupResult, needs_ack: bool = False,
+                    back: bool = False, seen: "VehicleView | None" = None) -> None:
+        seen = seen or VehicleView()
+        violation = result.status == db.RESULT_VIOLATION
+        if needs_ack or back or seen.track_id is None:
+            # One card: a guard acknowledging, or opening an older scan from the Logs.
+            for c in self.cards[1:]:
+                self._remove_card(c)
+            card = self.cards[0]
+        else:
+            card = next((c for c in self.cards if c.track_id == seen.track_id), None)
+            if card is None:
+                card = self._card_for_new(violation)
+            if card is None:  # full of violators: the scan is still logged
+                return
+        card.show_result(plate_read, result, needs_ack=needs_ack, back=back, seen=seen)
+        if card is not self.cards[0] and violation:  # newest violator on top
+            self._cards_lay.removeWidget(card)
+            self.cards.remove(card)
+            self.cards.insert(0, card)
+            self._cards_lay.insertWidget(0, card, 1)
+        self._layout_changed()
+
+    def _card_for_new(self, violation: bool) -> "IdentityCard | None":
+        """The card a newly scanned vehicle takes, or None if it must not push a violator off."""
+        keep = [c for c in self.cards if self._active(c)]   # violators still on show
+        if not keep:  # nothing to protect: the newest scan replaces what is on screen
+            for c in self.cards[1:]:
+                self._remove_card(c)
+            return self.cards[0]
+        others = [c for c in self.cards if c not in keep]
+        if violation:
+            for c in others:
+                self._remove_card(c)
+            if len(keep) >= self.MAX_CARDS:  # full: the oldest violator makes room
+                self._remove_card(keep[-1])
+            return self._add_card()
+        # A clear or unregistered vehicle gets one slot below the violators.
+        for c in others[1:]:
+            self._remove_card(c)
+        if others:
+            return others[0]
+        return self._add_card() if len(keep) < self.MAX_CARDS else None
+
+    def refresh_live(self, in_view: set, left_at: dict) -> None:
+        """Tell each card whether its vehicle is still in the picture."""
+        self._in_view, self._left_at = in_view, left_at
+        now = time.monotonic()
+        for c in self.cards:
+            t = c.track_id
+            if t is None:
+                continue  # an older scan: the card shows when it was scanned
+            if t in in_view:
+                c.set_live("", True)
+            elif t in left_at:
+                secs = int(now - left_at[t])
+                ago = f"{secs} s" if secs < 90 else f"{secs // 60} min"
+                c.set_live(f"Left the picture {ago} ago", False)
+
+    def set_waiting(self, n: int) -> None:
+        self.cards[0].set_waiting(n)
+
+    def flash(self, times: int = 8) -> None:
+        for c in self.cards:
+            if c.is_violation:
+                c.flash(times)
+
+    def set_collapsed(self, collapsed: bool) -> None:
+        self._collapsed = collapsed
+        self.scroll.setVisible(not collapsed)
+        self._layout_changed()
+        self.collapse_btn.setText("▸" if collapsed else "▾")
+        self.setSizePolicy(QSizePolicy.Policy.Preferred,
+                           QSizePolicy.Policy.Maximum if collapsed else QSizePolicy.Policy.Expanding)
 
 
 class FeedFollower(QObject):
@@ -858,16 +1053,6 @@ class CapturedPlatePanel(QFrame):
         if self._cards:
             self._highlight(self._cards[-1].scan_id)
 
-    def replace_card(self, new: PlateCard) -> None:
-        """Swap the card of new.scan_id for an updated one (after a guard's correction)."""
-        for i, old in enumerate(self._cards):
-            if old.scan_id == new.scan_id:
-                new.clicked.connect(self._on_click)
-                self.list.replaceWidget(old, new)
-                old.deleteLater()
-                self._cards[i] = new
-                return
-
     def _highlight(self, scan_id: int) -> None:
         for card in self._cards:
             card.set_selected(card.scan_id == scan_id)
@@ -924,6 +1109,7 @@ class LogsPanel(QFrame):
         self.follower = FeedFollower(self.table)
 
     AWAITING = "⚠ NOT ACKNOWLEDGED"
+    show_ack = True  # False when acknowledgement is not required: no "not acknowledged" mark
 
     def mark_acknowledged(self, scan_id: int, ack: str) -> None:
         for row in range(self.table.rowCount()):
@@ -950,12 +1136,12 @@ class LogsPanel(QFrame):
 
     def add_entry(self, scan_id: int, ts: str, plate: str, result: str, detail: str,
                   approximate: bool = False, confidence: float | None = None, vehicle: str = "",
-                  ack: str | None = None, at: int | None = None) -> None:
-        """Append at the bottom (newest last, like a chat), or insert at row `at`.
+                  ack: str | None = None) -> None:
+        """Append at the bottom (newest last, like a chat).
 
         ack (violations only): who acknowledged it, or None if nobody has yet."""
         color = QColor(theme.RESULT_COLORS.get(result, theme.TEXT))
-        row = self.table.rowCount() if at is None else at
+        row = self.table.rowCount()
         self.table.insertRow(row)
         t = QTableWidgetItem(format_ts_short(ts))
         t.setData(Qt.ItemDataRole.UserRole, scan_id)
@@ -977,7 +1163,7 @@ class LogsPanel(QFrame):
             db.RESULT_VIOLATION: detail or "Active violation",
             db.RESULT_CLEAR: "Registered, no active violation",
             db.RESULT_NOT_REGISTERED: "Not in the database",
-            db.RESULT_NO_PLATE: "Motion detected, no plate read (click for snapshot)",
+            db.RESULT_NO_PLATE: "Motion detected, no plate read",
         }.get(result, "")
         if vehicle:  # colour and position, to tell it apart from the vehicles around it
             text = f"{vehicle}  ·  {text}"
@@ -986,9 +1172,12 @@ class LogsPanel(QFrame):
         if approximate:
             text += "  ·  approximate match"
         if result == db.RESULT_VIOLATION:
-            text += f"  ·  ✓ {ack}" if ack else f"  ·  {self.AWAITING}"
+            if ack:
+                text += f"  ·  ✓ {ack}"
+            elif self.show_ack:
+                text += f"  ·  {self.AWAITING}"
         d = QTableWidgetItem(text)
-        unacked = result == db.RESULT_VIOLATION and not ack
+        unacked = result == db.RESULT_VIOLATION and not ack and self.show_ack
         d.setForeground(QColor(theme.RED if unacked else theme.TEXT if result == db.RESULT_VIOLATION
                                else theme.MUTED))
         for col, item in enumerate((t, p, s, d)):
@@ -996,14 +1185,4 @@ class LogsPanel(QFrame):
         while self.table.rowCount() > self.MAX_ROWS:
             self.table.removeRow(0)
         self._update_count()
-        if at is None:
-            self.follower.entry_added()
-
-    def replace_entry(self, scan_id: int, *args, **kwargs) -> None:
-        """Rewrite the row of a scan in place (same arguments as add_entry, after the scan id)."""
-        for row in range(self.table.rowCount()):
-            item = self.table.item(row, 0)
-            if item and item.data(Qt.ItemDataRole.UserRole) == scan_id:
-                self.table.removeRow(row)
-                self.add_entry(scan_id, *args, at=row, **kwargs)
-                return
+        self.follower.entry_added()

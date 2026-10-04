@@ -108,3 +108,29 @@ def test_defaults_point_at_psau_security():
     assert api.login_path == "/api/login"
     assert api.vehicles_path == "/api/security/gate/vehicles"
     assert api.violations_path == "/api/security/gate/violations"
+
+
+def test_school_years_are_synced_and_an_old_server_without_them_is_tolerated(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.api.school_years_path = "/sy"
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    client = FakeClient([vehicle(1, "NBC 1234", "Juan")], [])
+    client.data["/sy"] = [
+        {"year_label": "2025-2026", "start_date": "2025-08-01", "end_date": "2026-06-30", "is_active": False},
+        {"year_label": "2026-2027", "start_date": "2026-08-01", "end_date": "2027-06-30", "is_active": True},
+        {"year_label": "broken", "start_date": "nope", "end_date": "2027-06-30"},        # skipped
+    ]
+    sync.run_sync(cfg, client, conn)
+    assert [(y["year_label"], y["end_date"], y["is_active"]) for y in db.school_years(conn)] == [
+        ("2025-2026", "2026-06-30", 0), ("2026-2027", "2027-06-30", 1)]
+
+    class OldServer(FakeClient):                     # no such endpoint: HTTP 404 -> ApiError
+        def fetch_all(self, path, since=None):
+            if path == "/sy":
+                from platescanner.api import ApiError
+                raise ApiError("GET /sy failed (HTTP 404)")
+            return super().fetch_all(path, since)
+
+    sync.run_sync(cfg, OldServer([vehicle(1, "NBC 1234", "Juan")], []), conn, force_full=True)
+    assert len(db.school_years(conn)) == 2           # kept as they were

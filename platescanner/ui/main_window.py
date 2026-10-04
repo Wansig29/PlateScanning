@@ -12,11 +12,11 @@ from datetime import datetime, timedelta, timezone
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
 from PySide6.QtGui import QActionGroup, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QDialog, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import db
+from .. import db, retention
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config
@@ -26,11 +26,11 @@ from ..pipeline import (
 from ..session import clear_session, save_session
 from ..sync import run_sync
 from . import theme
-from .correct_dialog import CorrectPlateDialog
 from .database_view import DatabaseWindow
+from .reports_window import ReportsWindow
 from .login import LoginDialog
 from .widgets import (
-    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, PlateCard, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
+    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
     panel,
 )
 
@@ -160,17 +160,16 @@ class MainWindow(QMainWindow):
 
         self._pending: deque = deque()
         # Which violator the dashboard shows, and who is queued behind it.
-        self.dash = DashboardQueue()
+        self.dash = DashboardQueue(self.cfg.scan.require_acknowledge)
         self.sound = AlertSound()
         # Which vehicles (#ids) are in the picture right now, and when the others left it.
         self._in_view: set[int] = set()
         self._left_at: dict[int, float] = {}
-        self._shown_track: int | None = None
-        self._shown_scan: int | None = None
         self._last_shown = 0.0
         self._slow_timer = QTimer(self, singleShot=True)
         self._slow_timer.timeout.connect(self._drain)
         self.db_window: DatabaseWindow | None = None
+        self.reports_window: ReportsWindow | None = None
         self.video_scan: VideoScanWorker | None = None
         self._video_found = 0
 
@@ -179,6 +178,7 @@ class MainWindow(QMainWindow):
         self._load_history()
         self._restore_unacknowledged()
         self._start_workers()
+        self._start_archiving()
         self._start_sync()
         self._refresh_sync_label()
 
@@ -217,7 +217,7 @@ class MainWindow(QMainWindow):
         self.pending_btn.setToolTip("Violation alerts no guard has acknowledged yet. Click to review them.")
         self.pending_btn.setStyleSheet(
             f"QPushButton {{ background: {theme.RED}; border: 1px solid {theme.RED}; color: white;"
-            "font-weight: 800; padding: 7px 14px; border-radius: 7px; }}")
+            "font-weight: 800; padding: 7px 14px; border-radius: 7px; }")
         self.pending_btn.clicked.connect(self._review_pending)
         self.pending_btn.hide()
         tl.addWidget(self.pending_btn)
@@ -280,6 +280,7 @@ class MainWindow(QMainWindow):
         feed_lay.addWidget(self.video)
         left.addWidget(feed_frame)
         self.logs = LogsPanel()
+        self.logs.show_ack = self.cfg.scan.require_acknowledge
         self.logs.scan_selected.connect(self._show_scan_from_log)
         self.slow_btn = QToolButton()
         self.slow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -311,7 +312,6 @@ class MainWindow(QMainWindow):
         right.setMaximumWidth(640)
         self.identity = IdentityPanel()
         self.identity.acknowledged.connect(self._acknowledged)
-        self.identity.correct_requested.connect(self._correct_clicked)
         right.addWidget(self.identity)
         self.captured = CapturedPlatePanel()
         self.captured.setMinimumHeight(170)
@@ -340,10 +340,15 @@ class MainWindow(QMainWindow):
         self.db_status.setCursor(Qt.CursorShape.PointingHandCursor)
         self.db_status.setToolTip("Browse the synced vehicles and violations")
         self.db_status.mousePressEvent = lambda _e: self._open_database()  # type: ignore[method-assign]
+        self.reports_status = QLabel("Reports")
+        self.reports_status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reports_status.setToolTip("Scans of the last day / week / month / year, by result")
+        self.reports_status.mousePressEvent = lambda _e: self._open_reports()  # type: ignore[method-assign]
         self._set_status(self.cam_status, "Camera: starting", theme.AMBER)
         self._set_status(self.ocr_status, "OCR: loading", theme.AMBER)
         for w in (self.cam_status, self.ocr_status, self.health_status):
             sb.addWidget(w)
+        sb.addPermanentWidget(self.reports_status)
         sb.addPermanentWidget(self.db_status)
         self.setStatusBar(sb)
         self._update_account_btn()
@@ -361,6 +366,39 @@ class MainWindow(QMainWindow):
         self.showNormal() if self.isFullScreen() else self.showFullScreen()
 
     # --- workers ------------------------------------------------------------
+
+    def _start_archiving(self) -> None:
+        """Move old pictures to the archive folder: at start-up, then every 6 hours."""
+        self._archiving = False
+        self._archive_stop = threading.Event()   # set when the window closes
+        self._archive_thread: threading.Thread | None = None
+        self._archive_timer = QTimer(self)
+        self._archive_timer.setInterval(6 * 3600 * 1000)
+        self._archive_timer.timeout.connect(self._archive_now)
+        self._archive_timer.start()
+        QTimer.singleShot(20_000, self._archive_now)  # after the camera and models are up
+
+    def _archive_now(self) -> None:
+        sc = self.cfg.scan
+        if self._archiving or (sc.archive_after_days <= 0 and not sc.archive_ended_academic_year):
+            return
+        self._archiving = True
+
+        def work() -> None:
+            conn = db.connect(self.cfg.db_path)  # its own connection: this is not the UI thread
+            try:
+                retention.archive_old_captures(conn, self.cfg.captures_dir, self.cfg.archive_path,
+                                               sc.archive_after_days, should_stop=self._archive_stop.is_set)
+                if sc.archive_ended_academic_year:
+                    retention.archive_ended_years(conn, self.cfg.archive_path, sc.academic_year_start_month)
+            except Exception:  # noqa: BLE001 - housekeeping must never disturb scanning
+                log.exception("Archiving old pictures failed")
+            finally:
+                conn.close()
+                self._archiving = False
+
+        self._archive_thread = threading.Thread(target=work, daemon=True, name="archive-pictures")
+        self._archive_thread.start()
 
     def _start_workers(self) -> None:
         slot = FrameSlot()
@@ -509,6 +547,14 @@ class MainWindow(QMainWindow):
         self.db_window.show()
         self.db_window.raise_()
         self.db_window.activateWindow()
+
+    def _open_reports(self) -> None:
+        if self.reports_window is None:
+            self.reports_window = ReportsWindow(self.conn, self.cfg.captures_dir, self)
+        self.reports_window.refresh()
+        self.reports_window.show()
+        self.reports_window.raise_()
+        self.reports_window.activateWindow()
 
     # --- scanning a video file ---------------------------------------------------
 
@@ -660,7 +706,7 @@ class MainWindow(QMainWindow):
         if is_violation:
             # Shown now, or queued behind the violator already on screen.
             if self.dash.on_violation((scan.scan_id, scan.read.text, res, seen)) is not None:
-                self._show(scan.read.text, res, seen, needs_ack=True)
+                self._show(scan.read.text, res, seen, needs_ack=self.dash.require_ack)
         elif self.dash.on_clear():
             self._show(scan.read.text, res, seen)
         self._update_pending()
@@ -679,7 +725,7 @@ class MainWindow(QMainWindow):
         if self.dash.viewing:  # "Back to violations": not an acknowledgement
             item = self.dash.back()
             if item is not None:
-                self._show(*item[1:], needs_ack=True)
+                self._show(*item[1:], needs_ack=self.dash.require_ack)
             self._update_pending()
             return
         done, nxt = self.dash.acknowledge()
@@ -689,49 +735,8 @@ class MainWindow(QMainWindow):
             self.logs.mark_acknowledged(done[0], f"acknowledged by {by} at {at.strftime('%H:%M:%S')}")
             log.info("Violation scan #%s (%s) acknowledged by %s", done[0], done[1], by)
         if nxt is not None:  # next violator in line
-            self._show(*nxt[1:], needs_ack=True)
+            self._show(*nxt[1:], needs_ack=self.dash.require_ack)
             self.identity.flash(4)
-        self._update_pending()
-
-    def _correct_clicked(self) -> None:
-        """A guard confirms or fixes the plate of the scan on the dashboard."""
-        scan = db.get_scan(self.conn, self._shown_scan) if self._shown_scan else None
-        if not scan or scan["result"] == db.RESULT_NO_PLATE:
-            return
-        dlg = CorrectPlateDialog(scan["plate_read"], load_pixmap(scan.get("crop_path")), self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        by = self._guard_name()
-        res = db.correct_scan(self.conn, scan["id"], dlg.plate(), by, datetime.now().isoformat(timespec="seconds"))
-        if res is None:
-            return
-        log.info("Scan #%s: %s %s -> %s (%s) by %s", scan["id"], "confirmed" if dlg.plate() == scan["plate_read"]
-                 else "corrected", scan["plate_read"], dlg.plate(), res.status, by)
-        scan = db.get_scan(self.conn, scan["id"])
-        shown = res.matched_plate or scan["plate_read"]
-        ack = (f"acknowledged by {scan['acknowledged_by']} at {format_ts(scan['acknowledged_at'])}"
-               if scan.get("acknowledged_at") else None)
-        self.logs.replace_entry(scan["id"], scan["ts"], shown, res.status,
-                                self._detail(res) if res.status == db.RESULT_VIOLATION else "", False,
-                                scan["confidence"], self._looks(scan.get("vehicle_color"), scan.get("position"),
-                                                                scan.get("source")), ack)
-        self.captured.replace_card(PlateCard(
-            scan["id"], scan["ts"], load_pixmap(scan.get("vehicle_path")) or load_pixmap(scan["crop_path"]),
-            shown, scan["confidence"], res.status, scan["snapshot_path"], scan.get("vehicle_color")))
-
-        # The old violation alert (if there was one) no longer applies to this plate.
-        was_on_screen, nxt = self.dash.discard(scan["id"])
-        if res.status == db.RESULT_VIOLATION and not scan.get("acknowledged_at"):
-            seen = VehicleView(load_pixmap(scan.get("vehicle_path")), load_pixmap(scan["snapshot_path"]),
-                               scan.get("vehicle_color"), scan.get("position"),
-                               when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan["id"])
-            if self.dash.on_violation((scan["id"], scan["plate_read"], res, seen)) is not None:
-                self._show(scan["plate_read"], res, seen, needs_ack=True)
-            self._alert()
-        elif was_on_screen and nxt is not None:
-            self._show(*nxt[1:], needs_ack=True)
-        else:
-            self._show_scan_from_log(scan["id"])
         self._update_pending()
 
     def _guard_name(self) -> str:
@@ -748,7 +753,8 @@ class MainWindow(QMainWindow):
         self.alert_frame.set_active(n > 0)
         if n == 0:
             self.reminder.stop()
-            self.sound.cancel()
+            if self.dash.require_ack:
+                self.sound.cancel()
         elif self.cfg.scan.reminder_seconds > 0 and not self.reminder.isActive():
             self.reminder.start()
 
@@ -767,6 +773,8 @@ class MainWindow(QMainWindow):
 
     def _restore_unacknowledged(self) -> None:
         """Violations nobody confirmed before the app was closed are raised again."""
+        if not self.dash.require_ack:
+            return
         since = (datetime.now() - timedelta(hours=self.cfg.scan.unacknowledged_lookback_hours))
         for r in db.unacknowledged_violations(self.conn, since.isoformat(timespec="seconds")):
             res = db.lookup(self.conn, r["matched_plate"] or r["plate_read"], fuzzy=False)
@@ -778,7 +786,7 @@ class MainWindow(QMainWindow):
                                when=self._when(format_ts(r["ts"]), r.get("source")), scan_id=r["id"],
                                verify=bool(r.get("verify")))
             if self.dash.on_violation((r["id"], r["plate_read"], res, seen)) is not None:
-                self._show(r["plate_read"], res, seen, needs_ack=True)
+                self._show(r["plate_read"], res, seen, needs_ack=self.dash.require_ack)
         self._update_pending()
         if self.dash.pending():
             QTimer.singleShot(1500, lambda: self.dash.pending() and self._alert())
@@ -786,8 +794,6 @@ class MainWindow(QMainWindow):
     def _show(self, plate_read: str, res: db.LookupResult, seen: VehicleView, needs_ack: bool = False,
               back: bool = False) -> None:
         self.identity.show_result(plate_read, res, needs_ack=needs_ack, back=back, seen=seen)
-        self._shown_track = seen.track_id
-        self._shown_scan = seen.scan_id
         self._update_live()
 
     @staticmethod
@@ -813,15 +819,7 @@ class MainWindow(QMainWindow):
         self._update_live()
 
     def _update_live(self) -> None:
-        tid = self._shown_track
-        if tid is None:
-            return  # an older scan: the dashboard shows when it was scanned
-        if tid in self._in_view:
-            self.identity.set_live("", True)
-        elif tid in self._left_at:
-            secs = int(time.monotonic() - self._left_at[tid])
-            ago = f"{secs} s" if secs < 90 else f"{secs // 60} min"
-            self.identity.set_live(f"Left the picture {ago} ago", False)
+        self.identity.refresh_live(self._in_view, self._left_at)
 
     def _alert(self) -> None:
         self.identity.set_collapsed(False)
@@ -829,7 +827,7 @@ class MainWindow(QMainWindow):
         QApplication.alert(self, 0)
         if self.cfg.scan.alert_sound:
             self.sound.play()
-        if self.cfg.scan.bring_to_front:
+        if self.dash.require_ack and self.cfg.scan.bring_to_front:
             if self.isMinimized():
                 self.showNormal()
             self.raise_()
@@ -881,6 +879,9 @@ class MainWindow(QMainWindow):
     # --- shutdown -------------------------------------------------------------
 
     def closeEvent(self, e) -> None:  # noqa: N802
+        self._archive_stop.set()          # let a picture move in progress finish its log update
+        if self._archive_thread is not None:
+            self._archive_thread.join(timeout=5)
         self.reminder.stop()
         self.sound.cancel()
         self.capture.stop()

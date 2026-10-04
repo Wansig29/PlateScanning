@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS violations (
 CREATE INDEX IF NOT EXISTS ix_violations_vehicle ON violations(vehicle_id);
 CREATE INDEX IF NOT EXISTS ix_violations_key ON violations(plate_key);
 
+-- School years as set in psau-security (Utilities), synced so the scan log can be archived when one ends.
+CREATE TABLE IF NOT EXISTS school_years (
+    year_label TEXT PRIMARY KEY,   -- e.g. "2025-2026"
+    start_date TEXT NOT NULL,      -- YYYY-MM-DD
+    end_date   TEXT NOT NULL,
+    is_active  INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -76,7 +84,7 @@ CREATE TABLE IF NOT EXISTS scan_log (
     verify        INTEGER NOT NULL DEFAULT 0
 );
 
--- What guards confirmed or fixed: ground truth for measuring and retraining the OCR.
+-- Legacy: written by the removed "confirm or correct the plate" button; kept so old data is not lost.
 CREATE TABLE IF NOT EXISTS plate_corrections (
     id         INTEGER PRIMARY KEY AUTOINCREMENT,
     scan_id    INTEGER NOT NULL,
@@ -101,9 +109,15 @@ RESULT_CLEAR = "clear"
 RESULT_NOT_REGISTERED = "not_registered"
 RESULT_NO_PLATE = "no_plate"  # motion event where no plate could be read
 
-
-def utcnow_iso() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+# Where each kind of scan's pictures go: captures\<folder>\YYYY-MM-DD\
+CAPTURE_FOLDERS = {
+    RESULT_VIOLATION: "violation",
+    RESULT_CLEAR: "no_violation",
+    RESULT_NOT_REGISTERED: "not_registered",   # the plate is not in the database
+    RESULT_NO_PLATE: "no_plate_read",
+}
+# Report periods, the same rolling windows as psau-security's violation map.
+REPORT_PERIODS = {"daily": 1, "weekly": 7, "monthly": 30, "yearly": 365}
 
 
 def connect(path: Path | str) -> sqlite3.Connection:
@@ -121,10 +135,37 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
                        ("vehicle_color", "TEXT"), ("position", "TEXT"),
                        ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT"), ("source", "TEXT"),
-                       ("verify", "INTEGER NOT NULL DEFAULT 0")):
+                       ("verify", "INTEGER NOT NULL DEFAULT 0"),
+                       ("archived_year", "TEXT")):  # e.g. "2025-2026": set when that academic year was archived
         if name not in cols:
             conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
     conn.commit()
+
+
+# --- school years ---------------------------------------------------------
+
+def replace_school_years(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
+    """Store psau-security's school years (a handful of rows, always replaced as a whole).
+    Rows without a label or valid dates are skipped. Returns how many were stored."""
+    good = []
+    for r in rows:
+        label, start, end = r.get("year_label"), str(r.get("start_date") or "")[:10], str(r.get("end_date") or "")[:10]
+        try:
+            datetime.strptime(start, "%Y-%m-%d"), datetime.strptime(end, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if label:
+            good.append((str(label), start, end, 1 if r.get("is_active") else 0))
+    if good:
+        conn.execute("DELETE FROM school_years")
+        conn.executemany("INSERT OR REPLACE INTO school_years(year_label, start_date, end_date, is_active) "
+                         "VALUES(?,?,?,?)", good)
+    return len(good)
+
+
+def school_years(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The synced school years, oldest first."""
+    return [dict(r) for r in conn.execute("SELECT * FROM school_years ORDER BY start_date")]
 
 
 # --- sync state -----------------------------------------------------------
@@ -351,7 +392,9 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
 
 
 def recent_scans(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
-    rows = conn.execute("SELECT * FROM scan_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    """The newest scans of the current academic year (archived years live under Reports -> Archive)."""
+    rows = conn.execute("SELECT * FROM scan_log WHERE archived_year IS NULL ORDER BY id DESC LIMIT ?",
+                        (limit,)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -360,34 +403,6 @@ def acknowledge_scan(conn: sqlite3.Connection, scan_id: int, by: str, at: str) -
     conn.execute("UPDATE scan_log SET acknowledged_at=?, acknowledged_by=? WHERE id=? AND acknowledged_at IS NULL",
                  (at, by, scan_id))
     conn.commit()
-
-
-def correct_scan(conn: sqlite3.Connection, scan_id: int, true_text: str, by: str, at: str) -> LookupResult | None:
-    """A guard says what the plate really is. Looks it up again and records the answer.
-
-    The scan's plate, result and matched vehicle are replaced; what the OCR read
-    is kept in plate_corrections together with the plate crop. Returns the new
-    lookup, or None if the scan doesn't exist or the text is not a plate.
-    """
-    scan = get_scan(conn, scan_id)
-    true = plates.normalize(true_text)
-    if not scan or not 3 <= len(true) <= 10:
-        return None
-    result = lookup(conn, true, fuzzy=False)
-    read = plates.normalize(scan["plate_read"])
-    conn.execute("INSERT INTO plate_corrections(scan_id, ts, by, kind, read_text, true_text, crop_path) "
-                 "VALUES(?,?,?,?,?,?,?)",
-                 (scan_id, at, by, "confirmed" if read == true else "corrected", read, true, scan["crop_path"]))
-    conn.execute("UPDATE scan_log SET plate_read=?, matched_plate=?, result=?, approximate=0, verify=0, vehicle_id=?, "
-                 "violation_ids=? WHERE id=?",
-                 (true, result.matched_plate, result.status, result.vehicle["id"] if result.vehicle else None,
-                  json.dumps([v["id"] for v in result.violations]), scan_id))
-    conn.commit()
-    return result
-
-
-def corrections(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    return [dict(r) for r in conn.execute("SELECT * FROM plate_corrections ORDER BY id")]
 
 
 def unacknowledged_violations(conn: sqlite3.Connection, since: str) -> list[dict[str, Any]]:
@@ -400,3 +415,37 @@ def unacknowledged_violations(conn: sqlite3.Connection, since: str) -> list[dict
 def get_scan(conn: sqlite3.Connection, scan_id: int) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM scan_log WHERE id=?", (scan_id,)).fetchone()
     return dict(row) if row else None
+
+
+def scan_report(conn: sqlite3.Connection, period: str, now: datetime | None = None) -> dict[str, Any]:
+    """Counts per result and the scans of the last day / week / month / year, newest first."""
+    now = now or datetime.now()
+    days = REPORT_PERIODS.get(period, 7)
+    since = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM scan_log WHERE ts >= ? ORDER BY ts DESC, id DESC", (since,)).fetchall()]
+    return _report(period, since, now.isoformat(timespec="seconds"), rows)
+
+
+def _report(period: str, since: str, until: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    counts = {k: 0 for k in CAPTURE_FOLDERS}
+    for r in rows:
+        counts[r["result"]] = counts.get(r["result"], 0) + 1
+    return {"period": period, "since": since, "until": until, "total": len(rows), "counts": counts,
+            "scans": rows}
+
+
+def archived_years(conn: sqlite3.Connection) -> list[str]:
+    """Academic years whose scans were archived, newest first, e.g. ["2025-2026", "2024-2025"]."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT archived_year FROM scan_log WHERE archived_year IS NOT NULL "
+        "ORDER BY archived_year DESC")]
+
+
+def archive_report(conn: sqlite3.Connection, year: str) -> dict[str, Any]:
+    """Counts and scans of one archived academic year."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM scan_log WHERE archived_year=? ORDER BY ts DESC, id DESC", (year,)).fetchall()]
+    first = rows[-1]["ts"] if rows else ""
+    last = rows[0]["ts"] if rows else ""
+    return _report("archive", first, last, rows)
