@@ -67,6 +67,8 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
 | `scan.archive_after_days` | Pictures older than this many days are **moved** (never deleted) from `captures\` to the archive folder; the Logs still open them. Default 30; 0 keeps everything in `captures\` |
 | `scan.archive_dir` | Where the old pictures go. Empty = `archive\` next to `captures\`; can be another drive, e.g. `D:\\PlateScannerArchive` |
+| `scan.archive_ended_academic_year` | `true` (default): once an academic year has ended, its scan log is archived automatically: a CSV in `archive\<year>\`, and its scans leave the Logs and appear under *Reports → Archive*. Nothing is deleted |
+| `scan.academic_year_start_month` | The month the academic year starts (default 8 = August, so the year runs Aug 1 – Jul 31; 1 = a calendar year) |
 | `scan.plate_cooldown_seconds` | Ignore repeat reads of the same plate while it's still at the gate |
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
 | `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
@@ -110,7 +112,7 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
   - **Who acknowledged what, and when** is stored with the scan (the signed-in guard's name) and shown in the Logs (*✓ acknowledged by Juan at 10:05:12*, or a red *⚠ NOT ACKNOWLEDGED*).
   - It **survives a restart**: violations nobody acknowledged in the last `scan.unacknowledged_lookback_hours` (24 h) are raised again when the app starts (unless the violation was resolved online in the meantime).
 - **Snapshots, not video**: no video is recorded. Each reported vehicle saves one JPEG of its best frame, plus the plate crop, to `captures\<result>\YYYY-MM-DD\`, where `<result>` is `violation`, `no_violation`, `not_registered` (the plate is not in the database) or `no_plate_read`.
-- **Reports** (status bar → *Reports*): the scans of the last day, week, month or year (the same periods as psau-security's violation map), with a count per result, a filter, *Open pictures folder* and *Export to CSV*. Plates that were seen but never readable are logged too; click the row to see the snapshot.
+- **Reports** (status bar → *Reports*): the scans of the last day, week, month or year (the same periods as psau-security's violation map), with a count per result, a filter, *Open pictures folder* and *Export to CSV*. The **Archive** button lists the academic years that were archived automatically after they ended. Plates that were seen but never readable are logged too; click the row to see the snapshot.
 - **Chat-style feeds**: Logs and Captured Plates add new entries at the bottom and auto-scroll. Scrolling up pauses this and shows a "▼ N new scans" button.
 - **Slow mode** (Logs header): adds at most one log entry per 2–10 s and queues the rest, so each can be read during busy periods. It only paces the Logs: the dashboard, captured plates and alerts are always immediate, violations skip the queue, and every entry keeps the time its vehicle was actually scanned.
 

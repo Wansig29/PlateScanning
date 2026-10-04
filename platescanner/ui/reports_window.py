@@ -1,7 +1,6 @@
 """Scan reports: the scans of the last day / week / month / year, by result (like psau-security's periods)."""
 from __future__ import annotations
 
-import csv
 import sqlite3
 from pathlib import Path
 
@@ -12,11 +11,12 @@ from PySide6.QtWidgets import (
     QTableWidget, QTableWidgetItem, QVBoxLayout,
 )
 
-from .. import db, plates
+from .. import db, export, plates
 from . import theme
 from .widgets import format_ts
 
-PERIODS = [("daily", "Daily"), ("weekly", "Weekly"), ("monthly", "Monthly"), ("yearly", "Yearly")]
+PERIODS = [("daily", "Daily"), ("weekly", "Weekly"), ("monthly", "Monthly"), ("yearly", "Yearly"),
+           ("archive", "Archive")]
 FILTERS = [(None, "All results"), (db.RESULT_VIOLATION, "Violation"), (db.RESULT_CLEAR, "No violation"),
            (db.RESULT_NOT_REGISTERED, "Not registered"), (db.RESULT_NO_PLATE, "No plate read")]
 HEADERS = ["TIME", "PLATE", "RESULT", "CONFIDENCE", "VEHICLE", "PICTURES"]
@@ -50,6 +50,11 @@ class ReportsWindow(QDialog):
             b.clicked.connect(lambda _c=False, k=key: self.set_period(k))
             self.period_btns[key] = b
             top.addWidget(b)
+        self.year_box = QComboBox()   # archived academic years, shown with the Archive button
+        self.year_box.setToolTip("Academic years whose scan log was archived")
+        self.year_box.currentIndexChanged.connect(lambda _i: self.period == "archive" and self.set_period("archive"))
+        top.insertWidget(1, self.year_box)
+        self.year_box.hide()
         lay.addLayout(top)
 
         self.range_label = QLabel()
@@ -115,10 +120,38 @@ class ReportsWindow(QDialog):
         self.period = period
         for k, b in self.period_btns.items():
             b.setChecked(k == period)
+        self.year_box.setVisible(period == "archive")
+        if period == "archive":
+            self._load_archive()
+            return
         self.report = db.scan_report(self.conn, period)
         r = self.report
         self.range_label.setText(f"{format_ts(r['since'])}  →  {format_ts(r['until'])}"
                                  f"   ·   last {db.REPORT_PERIODS[period]} day{'s' if db.REPORT_PERIODS[period] != 1 else ''}")
+        self._show_report()
+
+    def _load_archive(self) -> None:
+        years = db.archived_years(self.conn)
+        current = self.year_box.currentText()
+        self.year_box.blockSignals(True)
+        self.year_box.clear()
+        self.year_box.addItems(years)
+        if current in years:
+            self.year_box.setCurrentText(current)
+        self.year_box.blockSignals(False)
+        if not years:
+            self.report = db.archive_report(self.conn, "")
+            self.range_label.setText("No academic year has been archived yet. A year is archived "
+                                     "automatically once it has ended.")
+        else:
+            self.report = db.archive_report(self.conn, self.year_box.currentText())
+            r = self.report
+            self.range_label.setText(f"Academic year {self.year_box.currentText()} (archived)   ·   "
+                                     f"{format_ts(r['since'])}  →  {format_ts(r['until'])}")
+        self._show_report()
+
+    def _show_report(self) -> None:
+        r = self.report
         self.tiles["total"].setText(str(r["total"]))
         for key, n in r["counts"].items():
             self.tiles[key].setText(str(n))
@@ -153,19 +186,4 @@ class ReportsWindow(QDialog):
         name = f"scan_report_{self.period}_{self.report['until'][:10]}.csv"
         path, _ = QFileDialog.getSaveFileName(self, "Export scan report", name, "CSV files (*.csv)")
         if path:
-            write_csv(Path(path), self._visible_scans())
-
-
-def write_csv(path: Path, scans: list[dict]) -> None:
-    """One row per scan (UTF-8 with a BOM, so Excel opens it correctly)."""
-    with path.open("w", newline="", encoding="utf-8-sig") as f:
-        w = csv.writer(f)
-        w.writerow(["time", "plate", "result", "confidence", "approximate", "vehicle colour", "position",
-                    "source", "pictures folder", "snapshot"])
-        for s in scans:
-            w.writerow([s["ts"], s.get("matched_plate") or s["plate_read"],
-                        theme.RESULT_LABELS.get(s["result"], s["result"]),
-                        "" if s.get("confidence") is None else f"{s['confidence']:.2f}",
-                        "yes" if s.get("approximate") else "", s.get("vehicle_color") or "",
-                        s.get("position") or "", s.get("source") or "",
-                        db.CAPTURE_FOLDERS.get(s["result"], ""), s.get("snapshot_path") or ""])
+            export.write_csv(Path(path), self._visible_scans())

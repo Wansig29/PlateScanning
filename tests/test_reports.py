@@ -44,7 +44,7 @@ def test_report_windows_are_daily_weekly_monthly_yearly(conn, now):
 
 def test_csv_export(tmp_path, conn, now):
     pytest.importorskip("PySide6.QtWidgets")
-    from platescanner.ui.reports_window import write_csv
+    from platescanner.export import write_csv
     _scan(conn, now, db.RESULT_VIOLATION)
     out = tmp_path / "r.csv"
     write_csv(out, db.scan_report(conn, "daily", now)["scans"])

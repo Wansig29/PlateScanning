@@ -131,7 +131,8 @@ def init_schema(conn: sqlite3.Connection) -> None:
     for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
                        ("vehicle_color", "TEXT"), ("position", "TEXT"),
                        ("acknowledged_at", "TEXT"), ("acknowledged_by", "TEXT"), ("source", "TEXT"),
-                       ("verify", "INTEGER NOT NULL DEFAULT 0")):
+                       ("verify", "INTEGER NOT NULL DEFAULT 0"),
+                       ("archived_year", "TEXT")):  # e.g. "2025-2026": set when that academic year was archived
         if name not in cols:
             conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
     conn.commit()
@@ -361,7 +362,9 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
 
 
 def recent_scans(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
-    rows = conn.execute("SELECT * FROM scan_log ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+    """The newest scans of the current academic year (archived years live under Reports -> Archive)."""
+    rows = conn.execute("SELECT * FROM scan_log WHERE archived_year IS NULL ORDER BY id DESC LIMIT ?",
+                        (limit,)).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -419,8 +422,28 @@ def scan_report(conn: sqlite3.Connection, period: str, now: datetime | None = No
     since = (now - timedelta(days=days)).isoformat(timespec="seconds")
     rows = [dict(r) for r in conn.execute(
         "SELECT * FROM scan_log WHERE ts >= ? ORDER BY ts DESC, id DESC", (since,)).fetchall()]
+    return _report(period, since, now.isoformat(timespec="seconds"), rows)
+
+
+def _report(period: str, since: str, until: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
     counts = {k: 0 for k in CAPTURE_FOLDERS}
     for r in rows:
         counts[r["result"]] = counts.get(r["result"], 0) + 1
-    return {"period": period, "since": since, "until": now.isoformat(timespec="seconds"),
-            "total": len(rows), "counts": counts, "scans": rows}
+    return {"period": period, "since": since, "until": until, "total": len(rows), "counts": counts,
+            "scans": rows}
+
+
+def archived_years(conn: sqlite3.Connection) -> list[str]:
+    """Academic years whose scans were archived, newest first, e.g. ["2025-2026", "2024-2025"]."""
+    return [r[0] for r in conn.execute(
+        "SELECT DISTINCT archived_year FROM scan_log WHERE archived_year IS NOT NULL "
+        "ORDER BY archived_year DESC")]
+
+
+def archive_report(conn: sqlite3.Connection, year: str) -> dict[str, Any]:
+    """Counts and scans of one archived academic year."""
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM scan_log WHERE archived_year=? ORDER BY ts DESC, id DESC", (year,)).fetchall()]
+    first = rows[-1]["ts"] if rows else ""
+    last = rows[0]["ts"] if rows else ""
+    return _report("archive", first, last, rows)

@@ -58,3 +58,44 @@ def test_same_file_name_in_archive_is_not_overwritten(conn, tmp_path):
     retention.archive_old_captures(conn, cap, arc, 30, today=date(2026, 10, 4))
     assert (arc / "violation/2026-08-01/a.jpg").read_bytes() == b"first"
     assert len(list((arc / "violation/2026-08-01").iterdir())) == 2
+
+
+# --- ended academic years ----------------------------------------------------------------
+
+def _scan_at(conn, ts, status=db.RESULT_VIOLATION):
+    return db.add_scan(conn, ts=ts, plate_read="ABC1234", result=db.LookupResult(status), confidence=0.9,
+                       crop_path=None)
+
+
+def test_academic_year_runs_august_to_july():
+    assert retention.academic_year_start(date(2026, 7, 31), 8) == 2025
+    assert retention.academic_year_start(date(2026, 8, 1), 8) == 2026
+    assert retention.academic_year_label(2025, 8) == "2025-2026"
+    assert retention.academic_year_label(2026, 1) == "2026"
+
+
+def test_ended_year_is_archived_and_current_year_is_not(conn, tmp_path):
+    a = _scan_at(conn, "2025-09-10T09:00:00")                       # AY 2025-2026 (ended)
+    b = _scan_at(conn, "2026-07-30T09:00:00", db.RESULT_CLEAR)      # still AY 2025-2026
+    c = _scan_at(conn, "2026-08-15T09:00:00")                       # AY 2026-2027 (current)
+    arc = tmp_path / "archive"
+
+    assert retention.archive_ended_years(conn, arc, 8, today=date(2026, 10, 4)) == ["2025-2026"]
+
+    csv = (arc / "2025-2026" / "scan_log_2025-2026.csv").read_text(encoding="utf-8-sig")
+    assert len(csv.strip().splitlines()) == 3                         # header + 2 scans
+    assert db.archived_years(conn) == ["2025-2026"]
+    assert {s["id"] for s in db.recent_scans(conn)} == {c}            # Logs show only the current year
+    report = db.archive_report(conn, "2025-2026")
+    assert report["total"] == 2 and report["counts"]["violation"] == 1 and report["counts"]["clear"] == 1
+    # Nothing is deleted, and running again changes nothing.
+    assert conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0] == 3
+    assert retention.archive_ended_years(conn, arc, 8, today=date(2026, 10, 4)) == []
+
+
+def test_year_stays_in_logs_if_the_archive_cannot_be_written(conn, tmp_path):
+    _scan_at(conn, "2025-09-10T09:00:00")
+    blocker = tmp_path / "not_a_folder"
+    blocker.write_text("x")
+    assert retention.archive_ended_years(conn, blocker, 8, today=date(2026, 10, 4)) == []
+    assert db.archived_years(conn) == [] and len(db.recent_scans(conn)) == 1

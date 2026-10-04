@@ -377,7 +377,8 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(20_000, self._archive_now)  # after the camera and models are up
 
     def _archive_now(self) -> None:
-        if self._archiving or self.cfg.scan.archive_after_days <= 0:
+        sc = self.cfg.scan
+        if self._archiving or (sc.archive_after_days <= 0 and not sc.archive_ended_academic_year):
             return
         self._archiving = True
 
@@ -385,7 +386,9 @@ class MainWindow(QMainWindow):
             conn = db.connect(self.cfg.db_path)  # its own connection: this is not the UI thread
             try:
                 retention.archive_old_captures(conn, self.cfg.captures_dir, self.cfg.archive_path,
-                                               self.cfg.scan.archive_after_days)
+                                               sc.archive_after_days)
+                if sc.archive_ended_academic_year:
+                    retention.archive_ended_years(conn, self.cfg.archive_path, sc.academic_year_start_month)
             except Exception:  # noqa: BLE001 - housekeeping must never disturb scanning
                 log.exception("Archiving old pictures failed")
             finally:

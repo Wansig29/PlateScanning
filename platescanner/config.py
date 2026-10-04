@@ -190,6 +190,11 @@ class ScanConfig:
     # Where they go. Empty = the "archive" folder next to captures\\; it can be
     # on another drive, e.g. "D:\\PlateScannerArchive".
     archive_dir: str = ""
+    # Once an academic year has ended, its scan log is archived automatically: a CSV in the
+    # archive folder, and the scans move from the Logs to Reports -> Archive. The year is
+    # taken to start on the 1st of this month (8 = August; 1 = a calendar year).
+    archive_ended_academic_year: bool = True
+    academic_year_start_month: int = 8
     alert_sound: bool = True
     overlay_seconds: float = 4.0
     # Slow mode: add at most one entry per N seconds to the Logs (0 = off).

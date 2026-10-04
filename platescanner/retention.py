@@ -14,6 +14,8 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
+from . import export
+
 log = logging.getLogger(__name__)
 
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -78,3 +80,51 @@ def archive_old_captures(conn: sqlite3.Connection, captures: Path, archive: Path
     if moved:
         log.info("Archived %d old pictures to %s", moved, archive)
     return moved
+
+
+# --- ended academic years ------------------------------------------------------------
+
+def academic_year_start(d: date, start_month: int) -> int:
+    """The calendar year in which the academic year containing `d` began."""
+    return d.year if d.month >= start_month else d.year - 1
+
+
+def academic_year_label(start_year: int, start_month: int) -> str:
+    """"2025-2026" for a year that runs across two calendar years, "2026" if it starts in January."""
+    return str(start_year) if start_month == 1 else f"{start_year}-{start_year + 1}"
+
+
+def archive_ended_years(conn: sqlite3.Connection, archive: Path, start_month: int,
+                        today: date | None = None) -> list[str]:
+    """Archive the scan log of every academic year that has ended. Returns their labels.
+
+    For each ended year a CSV of all its scans is written to archive\\<year>\\ and its scans are
+    marked archived: they leave the Logs panel and are found under Reports -> Archive. Nothing is
+    deleted. If the CSV cannot be written (e.g. the archive drive is missing) the year is left for
+    the next run.
+    """
+
+    today = today or date.today()
+    current = date(academic_year_start(today, start_month), start_month, 1)
+    rows = conn.execute("SELECT ts FROM scan_log WHERE archived_year IS NULL AND ts < ?",
+                        (current.isoformat(),)).fetchall()
+    years = sorted({academic_year_start(datetime.fromisoformat(r["ts"]).date(), start_month) for r in rows})
+    done = []
+    for sy in years:
+        label = academic_year_label(sy, start_month)
+        lo, hi = date(sy, start_month, 1).isoformat(), date(sy + 1, start_month, 1).isoformat()
+        scans = [dict(r) for r in conn.execute(
+            "SELECT * FROM scan_log WHERE ts >= ? AND ts < ? ORDER BY ts", (lo, hi)).fetchall()]
+        try:
+            folder = archive / label
+            folder.mkdir(parents=True, exist_ok=True)
+            export.write_csv(folder / f"scan_log_{label}.csv", scans)
+        except OSError as e:
+            log.warning("Cannot archive academic year %s to %s: %s", label, archive, e)
+            continue
+        conn.execute("UPDATE scan_log SET archived_year=? WHERE ts >= ? AND ts < ? AND archived_year IS NULL",
+                     (label, lo, hi))
+        conn.commit()
+        log.info("Archived academic year %s: %d scans", label, len(scans))
+        done.append(label)
+    return done
