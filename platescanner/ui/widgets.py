@@ -1173,7 +1173,7 @@ class LogsPanel(QFrame):
             db.RESULT_VIOLATION: detail or "Active violation",
             db.RESULT_CLEAR: "Registered, no active violation",
             db.RESULT_NOT_REGISTERED: "Not in the database",
-            db.RESULT_NO_PLATE: "Motion detected, no plate read (click for snapshot)",
+            db.RESULT_NO_PLATE: "Motion detected, no plate read",
         }.get(result, "")
         if vehicle:  # colour and position, to tell it apart from the vehicles around it
             text = f"{vehicle}  ·  {text}"

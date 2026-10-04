@@ -181,6 +181,10 @@ class ScanConfig:
     # Allow a 1-character-off match when there is exactly one candidate.
     fuzzy_match: bool = True
     save_captures: bool = True
+    # Which results get pictures saved (the log row is always kept). Pictures are what take
+    # the disk space, so by default only violations (the evidence) get them. Add "no_plate"
+    # to keep a snapshot of every unreadable plate, or "clear" / "not_registered" for those.
+    save_pictures_for: list[str] = field(default_factory=lambda: ["violation"])
     # Save one JPEG of the best frame per motion event (no video is ever
     # recorded). Also logs motion events where no plate could be read.
     save_snapshots: bool = True
