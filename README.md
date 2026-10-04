@@ -67,6 +67,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
 | `scan.plate_cooldown_seconds` | Ignore repeat reads of the same plate while it's still at the gate |
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
+| `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
 | `scan.bring_to_front` | Bring the app to the front on every violation alert |
 | `sync.interval_hours` / `full_resync_hours` | Delta sync every 3 h (nothing is written when there are no new vehicles or violations); a full re-download every 24 h to drop records deleted online |
@@ -98,7 +99,7 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
   - the banner names the vehicle number (`VEHICLE #12`) that labels it on the live feed.
 
   Owner, violation and suspension follow in one compact card; the violation's evidence photos open from a link. The Logs and Captured Plates show the colour and position too (*Red, left side · Illegal parking*), and all of it is saved with the scan, so reopening a scan from the Logs shows the same pictures.
-- **No violator goes unnoticed**: every violation alert stays open until a guard acknowledges it.
+- **No violator goes unnoticed** (only when `scan.require_acknowledge` is `true`; off by default, in which case the alert clears itself and the scan is just logged): every violation alert stays open until a guard acknowledges it.
   - The alert itself: the dashboard banner turns red and flashes, an alarm sounds, the taskbar flashes, the dashboard expands if collapsed, and the app **brings itself to the front** if another window covers it (`scan.bring_to_front`; Windows may only flash the taskbar when another program has the focus).
   - While anything is unacknowledged: a **pulsing red frame** runs around the whole window (visible from across the booth), a red **"⚠ N unacknowledged violations"** counter sits in the top bar, and the whole alert **repeats every `scan.reminder_seconds`** (15 s) until someone responds.
   - The violator **stays on the dashboard** until acknowledged; however much traffic follows, other vehicles never replace it.
@@ -129,7 +130,8 @@ For accuracy on **real footage**, write a CSV of what each video really shows (`
 .\.venv\Scripts\python tools\eval_footage.py footage_folder truth.csv --out eval_out
 ```
 
-`eval_outeport.md` gives, per condition and overall, the vehicles read exactly right, read wrong (expected vs got), missed and falsely reported, plus the character error rate; `mismatches.csv` lists every miss. It runs on a temporary database and never touches the real scan log. `--selftest` shows the report format without any footage.
+`eval_out
+eport.md` gives, per condition and overall, the vehicles read exactly right, read wrong (expected vs got), missed and falsely reported, plus the character error rate; `mismatches.csv` lists every miss. It runs on a temporary database and never touches the real scan log. `--selftest` shows the report format without any footage.
 
 `bench_live.py` plays a video in real time through the same threads the app uses and reports, for each vehicle, whether it was read, whether correctly, and how long after its plate appeared. Run it on footage from the actual gate camera before deploying, and use `--set section.name=value` to try settings.
 

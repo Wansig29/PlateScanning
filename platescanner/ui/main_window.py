@@ -160,7 +160,7 @@ class MainWindow(QMainWindow):
 
         self._pending: deque = deque()
         # Which violator the dashboard shows, and who is queued behind it.
-        self.dash = DashboardQueue()
+        self.dash = DashboardQueue(self.cfg.scan.require_acknowledge)
         self.sound = AlertSound()
         # Which vehicles (#ids) are in the picture right now, and when the others left it.
         self._in_view: set[int] = set()
@@ -280,6 +280,7 @@ class MainWindow(QMainWindow):
         feed_lay.addWidget(self.video)
         left.addWidget(feed_frame)
         self.logs = LogsPanel()
+        self.logs.show_ack = self.cfg.scan.require_acknowledge
         self.logs.scan_selected.connect(self._show_scan_from_log)
         self.slow_btn = QToolButton()
         self.slow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -660,7 +661,7 @@ class MainWindow(QMainWindow):
         if is_violation:
             # Shown now, or queued behind the violator already on screen.
             if self.dash.on_violation((scan.scan_id, scan.read.text, res, seen)) is not None:
-                self._show(scan.read.text, res, seen, needs_ack=True)
+                self._show(scan.read.text, res, seen, needs_ack=self.dash.require_ack)
         elif self.dash.on_clear():
             self._show(scan.read.text, res, seen)
         self._update_pending()
@@ -679,7 +680,7 @@ class MainWindow(QMainWindow):
         if self.dash.viewing:  # "Back to violations": not an acknowledgement
             item = self.dash.back()
             if item is not None:
-                self._show(*item[1:], needs_ack=True)
+                self._show(*item[1:], needs_ack=self.dash.require_ack)
             self._update_pending()
             return
         done, nxt = self.dash.acknowledge()
@@ -689,7 +690,7 @@ class MainWindow(QMainWindow):
             self.logs.mark_acknowledged(done[0], f"acknowledged by {by} at {at.strftime('%H:%M:%S')}")
             log.info("Violation scan #%s (%s) acknowledged by %s", done[0], done[1], by)
         if nxt is not None:  # next violator in line
-            self._show(*nxt[1:], needs_ack=True)
+            self._show(*nxt[1:], needs_ack=self.dash.require_ack)
             self.identity.flash(4)
         self._update_pending()
 
@@ -726,10 +727,10 @@ class MainWindow(QMainWindow):
                                scan.get("vehicle_color"), scan.get("position"),
                                when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan["id"])
             if self.dash.on_violation((scan["id"], scan["plate_read"], res, seen)) is not None:
-                self._show(scan["plate_read"], res, seen, needs_ack=True)
+                self._show(scan["plate_read"], res, seen, needs_ack=self.dash.require_ack)
             self._alert()
         elif was_on_screen and nxt is not None:
-            self._show(*nxt[1:], needs_ack=True)
+            self._show(*nxt[1:], needs_ack=self.dash.require_ack)
         else:
             self._show_scan_from_log(scan["id"])
         self._update_pending()
@@ -748,7 +749,8 @@ class MainWindow(QMainWindow):
         self.alert_frame.set_active(n > 0)
         if n == 0:
             self.reminder.stop()
-            self.sound.cancel()
+            if self.dash.require_ack:
+                self.sound.cancel()
         elif self.cfg.scan.reminder_seconds > 0 and not self.reminder.isActive():
             self.reminder.start()
 
@@ -767,6 +769,8 @@ class MainWindow(QMainWindow):
 
     def _restore_unacknowledged(self) -> None:
         """Violations nobody confirmed before the app was closed are raised again."""
+        if not self.dash.require_ack:
+            return
         since = (datetime.now() - timedelta(hours=self.cfg.scan.unacknowledged_lookback_hours))
         for r in db.unacknowledged_violations(self.conn, since.isoformat(timespec="seconds")):
             res = db.lookup(self.conn, r["matched_plate"] or r["plate_read"], fuzzy=False)
@@ -778,7 +782,7 @@ class MainWindow(QMainWindow):
                                when=self._when(format_ts(r["ts"]), r.get("source")), scan_id=r["id"],
                                verify=bool(r.get("verify")))
             if self.dash.on_violation((r["id"], r["plate_read"], res, seen)) is not None:
-                self._show(r["plate_read"], res, seen, needs_ack=True)
+                self._show(r["plate_read"], res, seen, needs_ack=self.dash.require_ack)
         self._update_pending()
         if self.dash.pending():
             QTimer.singleShot(1500, lambda: self.dash.pending() and self._alert())
@@ -829,7 +833,7 @@ class MainWindow(QMainWindow):
         QApplication.alert(self, 0)
         if self.cfg.scan.alert_sound:
             self.sound.play()
-        if self.cfg.scan.bring_to_front:
+        if self.dash.require_ack and self.cfg.scan.bring_to_front:
             if self.isMinimized():
                 self.showNormal()
             self.raise_()

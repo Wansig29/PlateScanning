@@ -189,10 +189,14 @@ class ScanConfig:
     # Slow mode: add at most one entry per N seconds to the Logs (0 = off).
     # Only the Logs are paced; violations always skip the queue.
     slow_mode_seconds: float = 0.0
-    # A violation alert stays until a guard acknowledges it. Until then the
+    # Off (default): a violation alert flashes and sounds once, then clears by
+    # itself when the next vehicle is scanned. Every scan is still logged.
+    # On: the alert stays until a guard acknowledges it. Until then the
     # alarm repeats every N seconds (0 = alert once only)...
+    require_acknowledge: bool = False
     reminder_seconds: float = 15.0
-    # ...and the app brings itself to the front if another window covers it.
+    # ...and the app brings itself to the front if another window covers it
+    # (only used when require_acknowledge is on).
     bring_to_front: bool = True
     # On start-up, re-raise violations nobody acknowledged within this many hours.
     unacknowledged_lookback_hours: float = 24.0

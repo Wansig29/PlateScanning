@@ -924,6 +924,7 @@ class LogsPanel(QFrame):
         self.follower = FeedFollower(self.table)
 
     AWAITING = "⚠ NOT ACKNOWLEDGED"
+    show_ack = True  # False when acknowledgement is not required: no "not acknowledged" mark
 
     def mark_acknowledged(self, scan_id: int, ack: str) -> None:
         for row in range(self.table.rowCount()):
@@ -986,9 +987,12 @@ class LogsPanel(QFrame):
         if approximate:
             text += "  ·  approximate match"
         if result == db.RESULT_VIOLATION:
-            text += f"  ·  ✓ {ack}" if ack else f"  ·  {self.AWAITING}"
+            if ack:
+                text += f"  ·  ✓ {ack}"
+            elif self.show_ack:
+                text += f"  ·  {self.AWAITING}"
         d = QTableWidgetItem(text)
-        unacked = result == db.RESULT_VIOLATION and not ack
+        unacked = result == db.RESULT_VIOLATION and not ack and self.show_ack
         d.setForeground(QColor(theme.RED if unacked else theme.TEXT if result == db.RESULT_VIOLATION
                                else theme.MUTED))
         for col, item in enumerate((t, p, s, d)):

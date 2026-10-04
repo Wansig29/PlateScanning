@@ -81,3 +81,11 @@ def test_a_corrected_violation_leaves_the_queue():
     assert q.discard(1) == (True, (3, "C", None, None)) and q.pending() == 1  # on screen: next takes over
     assert q.discard(3) == (True, None) and q.pending() == 0
     assert q.discard(99) == (False, None)
+
+
+def test_without_required_acknowledgement_nothing_blocks():
+    q = DashboardQueue(require_ack=False)
+    assert q.on_violation("A") == "A"
+    assert q.on_violation("B") == "B"  # shown at once, never queued
+    assert q.pending() == 0
+    assert q.on_clear()  # the next clear car may replace the violator on screen
