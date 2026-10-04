@@ -6,6 +6,11 @@
 
 By default it keeps the results listed in scan.save_pictures_for (["violation"]). Close the
 scanner first.
+
+Delete test scans entirely (the log rows too, violations included), by date:
+
+    python tools\purge_pictures.py --delete-before 2026-10-01          # shows what would go
+    python tools\purge_pictures.py --delete-before 2026-10-01 --yes    # deletes scans dated before Oct 1
 """
 from __future__ import annotations
 
@@ -18,9 +23,27 @@ from platescanner import db, purge  # noqa: E402
 from platescanner.config import load_config  # noqa: E402
 
 
+def delete_before(conn, roots, before: str, yes: bool) -> None:
+    try:
+        plan = purge.plan_delete_before(conn, roots, before)
+    except ValueError:
+        sys.exit(f"'{before}' is not a date: use YYYY-MM-DD, e.g. 2026-10-01")
+    breakdown = ", ".join(f"{n} {db.CAPTURE_FOLDERS.get(r, r)}" for r, n in sorted(plan.by_result.items()))
+    print(f"Scans dated before {before}: {len(plan.scan_ids)}" + (f" ({breakdown})" if breakdown else ""))
+    print(f"{len(plan.files)} pictures ({plan.bytes / 1_000_000:.1f} MB) go with them. "
+          "The scan records are deleted too, violations included.")
+    if not yes:
+        print("Nothing was deleted. Run again with --yes to delete.")
+        return
+    scans, pictures = purge.run_delete_before(conn, plan, roots)
+    print(f"Deleted {scans} scans and {pictures} pictures.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--keep", nargs="*", help="results whose pictures are kept (default: scan.save_pictures_for)")
+    ap.add_argument("--delete-before", metavar="YYYY-MM-DD",
+                    help="delete every scan dated before this day, with its pictures (instead of purging pictures)")
     ap.add_argument("--yes", action="store_true", help="really delete (without it, only report)")
     args = ap.parse_args()
 
@@ -29,6 +52,9 @@ def main() -> None:
     roots = [cfg.captures_dir, cfg.archive_path]
     conn = db.connect(cfg.db_path)
     db.init_schema(conn)
+    if args.delete_before:
+        delete_before(conn, roots, args.delete_before, args.yes)
+        return
     plan = purge.plan_purge(conn, roots, keep)
     print(f"Keeping pictures of: {', '.join(sorted(keep)) or 'nothing'}")
     print(f"Folders searched: {', '.join(str(r) for r in roots)}")

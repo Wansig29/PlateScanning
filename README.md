@@ -152,6 +152,15 @@ Pictures of clear, unregistered and unreadable scans are no longer saved (`scan.
 
 Only pictures go. The log rows stay, so the Logs, Reports and CSV exports are unchanged, and violation pictures are never touched. It searches `captures\` and the archive folder.
 
+To clear test scans entirely, the log rows and all pictures (violations too) dated before a day:
+
+```powershell
+.\.venv\Scripts\python tools\purge_pictures.py --delete-before 2026-10-01          # shows what would go
+.\.venv\Scripts\python tools\purge_pictures.py --delete-before 2026-10-01 --yes    # deletes it
+```
+
+This cannot be undone. Vehicles, violations and the sync data are not touched, only the scanner's own scan log. Archived CSV files are not edited.
+
 ### Resolution: does 1080p read better than 720p or 480p?
 
 `tools/bench_resolution.py` renders one synthetic traffic scene at 1080p and downscales it (same field of view) to 720p, 480p and 360p, scans each through the real pipeline, and measures the single-crop reading rate against plate width in pixels. On that scene (10 cars, plates 59-270 px wide): exact reads 1080p 60%, 720p 60%, 480p 50%, 360p 30%, and **720p with a narrower field of view 80%**. Single crops first read 80-90% of the time at about 80-96 px plate width, and voting over several frames read some plates down to about 46 px. So what matters is the **pixels across the plate**, not the camera's resolution on its own: a tighter shot of the lane beats a wider shot at higher resolution. Keep the camera close, point it at the lane and set `camera.roi` to the lane (the detector sees only that area, so plates are bigger to it). The status bar warns when the median plate is narrower than `ocr.min_plate_width_px` (80). Caveats: the footage is synthetic and its rendered cars suit the plate detector poorly (most reads came from the classical finder), so re-measure on real footage before quoting these figures.

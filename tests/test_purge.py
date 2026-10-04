@@ -55,3 +55,30 @@ def test_files_outside_the_picture_folders_are_never_touched(conn, tmp_path):
     plan = purge.plan_purge(conn, [cap], {"violation"})
     assert plan.files == [] and plan.scan_ids == []
     assert outside.exists()
+
+
+def test_delete_before_a_date_removes_old_scans_with_their_pictures(conn, tmp_path):
+    cap = tmp_path / "captures"
+    old_v = cap / "violation/2026-09-01/a.jpg"
+    old_c = cap / "no_violation/2026-09-02/b.jpg"
+    new_v = cap / "violation/2026-10-05/c.jpg"
+    a = _scan(conn, old_v, db.RESULT_VIOLATION, "2026-09-01T10:00:00")
+    b = _scan(conn, old_c, db.RESULT_CLEAR, "2026-09-02T10:00:00")
+    c = _scan(conn, new_v, db.RESULT_VIOLATION, "2026-10-05T10:00:00")
+    conn.execute("INSERT INTO plate_corrections(scan_id, ts, kind, true_text) VALUES(?,?,?,?)",
+                 (a, "2026-09-01T11:00:00", "confirmed", "ABC1234"))
+
+    plan = purge.plan_delete_before(conn, [cap], "2026-10-01")
+    assert sorted(plan.scan_ids) == sorted([a, b]) and plan.by_result == {"violation": 1, "clear": 1}
+    assert old_v.exists()                                       # planning deletes nothing
+
+    assert purge.run_delete_before(conn, plan, [cap]) == (2, 2)
+    assert not old_v.exists() and not old_c.exists() and new_v.exists()
+    assert [r["id"] for r in conn.execute("SELECT id FROM scan_log")] == [c]
+    assert conn.execute("SELECT COUNT(*) FROM plate_corrections").fetchone()[0] == 0
+    assert not (cap / "no_violation").exists()                  # emptied folders are removed
+
+
+def test_delete_before_rejects_a_bad_date(conn, tmp_path):
+    with pytest.raises(ValueError):
+        purge.plan_delete_before(conn, [tmp_path], "2026-10-01'; DROP TABLE scan_log; --")

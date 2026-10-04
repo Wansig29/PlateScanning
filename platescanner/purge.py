@@ -87,3 +87,58 @@ def run_purge(conn: sqlite3.Connection, plan: PurgePlan, roots: list[Path]) -> i
                 except OSError:
                     pass
     return deleted
+
+
+# --- delete scans before a date ------------------------------------------------------------
+
+@dataclass
+class DeletePlan:
+    before: str                                   # YYYY-MM-DD: scans with an earlier date go
+    scan_ids: list[int] = field(default_factory=list)
+    by_result: dict[str, int] = field(default_factory=dict)
+    files: list[Path] = field(default_factory=list)
+    bytes: int = 0
+
+
+def plan_delete_before(conn: sqlite3.Connection, roots: list[Path], before: str) -> DeletePlan:
+    """The scans (every result, violations too) dated before `before` (YYYY-MM-DD), and their pictures."""
+    from datetime import date
+    date.fromisoformat(before)  # reject anything that is not a date, before it can reach a query
+    plan = DeletePlan(before)
+    seen: set[Path] = set()
+    for row in conn.execute(f"SELECT id, result, {', '.join(_PATH_COLUMNS)} FROM scan_log WHERE ts < ?", (before,)):
+        plan.scan_ids.append(row["id"])
+        plan.by_result[row["result"]] = plan.by_result.get(row["result"], 0) + 1
+        for col in _PATH_COLUMNS:
+            if row[col]:
+                f = Path(row[col])
+                if _inside(f, roots) and f.resolve() not in seen and f.is_file():
+                    seen.add(f.resolve())
+                    plan.files.append(f)
+                    plan.bytes += f.stat().st_size
+    return plan
+
+
+def run_delete_before(conn: sqlite3.Connection, plan: DeletePlan, roots: list[Path]) -> tuple[int, int]:
+    """Delete the planned scan rows and their pictures. Returns (scans deleted, pictures deleted)."""
+    pictures = 0
+    for f in plan.files:
+        try:
+            f.unlink()
+            pictures += 1
+        except OSError:
+            pass
+    for i in range(0, len(plan.scan_ids), 500):
+        chunk = plan.scan_ids[i:i + 500]
+        marks = ",".join("?" * len(chunk))
+        conn.execute(f"DELETE FROM plate_corrections WHERE scan_id IN ({marks})", chunk)
+        conn.execute(f"DELETE FROM scan_log WHERE id IN ({marks})", chunk)
+    conn.commit()
+    for root in roots:
+        if root.is_dir():
+            for d in sorted((p for p in root.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
+                try:
+                    d.rmdir()
+                except OSError:
+                    pass
+    return len(plan.scan_ids), pictures
