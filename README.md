@@ -141,6 +141,17 @@ eport.md` gives, per condition and overall, the vehicles read exactly right, rea
 
 `bench_live.py` plays a video in real time through the same threads the app uses and reports, for each vehicle, whether it was read, whether correctly, and how long after its plate appeared. Run it on footage from the actual gate camera before deploying, and use `--set section.name=value` to try settings.
 
+### Freeing disk space: delete pictures of non-violations
+
+Pictures of clear, unregistered and unreadable scans are no longer saved (`scan.save_pictures_for`). To delete the ones saved earlier, with the scanner closed:
+
+```powershell
+.\.venv\Scripts\python tools\purge_pictures.py          # shows what would be deleted, deletes nothing
+.\.venv\Scripts\python tools\purge_pictures.py --yes    # deletes it
+```
+
+Only pictures go. The log rows stay, so the Logs, Reports and CSV exports are unchanged, and violation pictures are never touched. It searches `captures\` and the archive folder.
+
 ### Resolution: does 1080p read better than 720p or 480p?
 
 `tools/bench_resolution.py` renders one synthetic traffic scene at 1080p and downscales it (same field of view) to 720p, 480p and 360p, scans each through the real pipeline, and measures the single-crop reading rate against plate width in pixels. On that scene (10 cars, plates 59-270 px wide): exact reads 1080p 60%, 720p 60%, 480p 50%, 360p 30%, and **720p with a narrower field of view 80%**. Single crops first read 80-90% of the time at about 80-96 px plate width, and voting over several frames read some plates down to about 46 px. So what matters is the **pixels across the plate**, not the camera's resolution on its own: a tighter shot of the lane beats a wider shot at higher resolution. Keep the camera close, point it at the lane and set `camera.roi` to the lane (the detector sees only that area, so plates are bigger to it). The status bar warns when the median plate is narrower than `ocr.min_plate_width_px` (80). Caveats: the footage is synthetic and its rendered cars suit the plate detector poorly (most reads came from the classical finder), so re-measure on real footage before quoting these figures.
