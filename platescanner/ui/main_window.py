@@ -27,6 +27,7 @@ from ..session import clear_session, save_session
 from ..sync import run_sync
 from . import theme
 from .database_view import DatabaseWindow
+from .reports_window import ReportsWindow
 from .login import LoginDialog
 from .widgets import (
     AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, PlateCard, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
@@ -168,6 +169,7 @@ class MainWindow(QMainWindow):
         self._slow_timer = QTimer(self, singleShot=True)
         self._slow_timer.timeout.connect(self._drain)
         self.db_window: DatabaseWindow | None = None
+        self.reports_window: ReportsWindow | None = None
         self.video_scan: VideoScanWorker | None = None
         self._video_found = 0
 
@@ -337,10 +339,15 @@ class MainWindow(QMainWindow):
         self.db_status.setCursor(Qt.CursorShape.PointingHandCursor)
         self.db_status.setToolTip("Browse the synced vehicles and violations")
         self.db_status.mousePressEvent = lambda _e: self._open_database()  # type: ignore[method-assign]
+        self.reports_status = QLabel("Reports")
+        self.reports_status.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reports_status.setToolTip("Scans of the last day / week / month / year, by result")
+        self.reports_status.mousePressEvent = lambda _e: self._open_reports()  # type: ignore[method-assign]
         self._set_status(self.cam_status, "Camera: starting", theme.AMBER)
         self._set_status(self.ocr_status, "OCR: loading", theme.AMBER)
         for w in (self.cam_status, self.ocr_status, self.health_status):
             sb.addWidget(w)
+        sb.addPermanentWidget(self.reports_status)
         sb.addPermanentWidget(self.db_status)
         self.setStatusBar(sb)
         self._update_account_btn()
@@ -506,6 +513,14 @@ class MainWindow(QMainWindow):
         self.db_window.show()
         self.db_window.raise_()
         self.db_window.activateWindow()
+
+    def _open_reports(self) -> None:
+        if self.reports_window is None:
+            self.reports_window = ReportsWindow(self.conn, self.cfg.captures_dir, self)
+        self.reports_window.refresh()
+        self.reports_window.show()
+        self.reports_window.raise_()
+        self.reports_window.activateWindow()
 
     # --- scanning a video file ---------------------------------------------------
 

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -100,6 +100,16 @@ RESULT_VIOLATION = "violation"
 RESULT_CLEAR = "clear"
 RESULT_NOT_REGISTERED = "not_registered"
 RESULT_NO_PLATE = "no_plate"  # motion event where no plate could be read
+
+# Where each kind of scan's pictures go: captures\<folder>\YYYY-MM-DD\
+CAPTURE_FOLDERS = {
+    RESULT_VIOLATION: "violation",
+    RESULT_CLEAR: "no_violation",
+    RESULT_NOT_REGISTERED: "not_registered",   # the plate is not in the database
+    RESULT_NO_PLATE: "no_plate_read",
+}
+# Report periods, the same rolling windows as psau-security's violation map.
+REPORT_PERIODS = {"daily": 1, "weekly": 7, "monthly": 30, "yearly": 365}
 
 
 def utcnow_iso() -> str:
@@ -400,3 +410,17 @@ def unacknowledged_violations(conn: sqlite3.Connection, since: str) -> list[dict
 def get_scan(conn: sqlite3.Connection, scan_id: int) -> dict[str, Any] | None:
     row = conn.execute("SELECT * FROM scan_log WHERE id=?", (scan_id,)).fetchone()
     return dict(row) if row else None
+
+
+def scan_report(conn: sqlite3.Connection, period: str, now: datetime | None = None) -> dict[str, Any]:
+    """Counts per result and the scans of the last day / week / month / year, newest first."""
+    now = now or datetime.now()
+    days = REPORT_PERIODS.get(period, 7)
+    since = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM scan_log WHERE ts >= ? ORDER BY ts DESC, id DESC", (since,)).fetchall()]
+    counts = {k: 0 for k in CAPTURE_FOLDERS}
+    for r in rows:
+        counts[r["result"]] = counts.get(r["result"], 0) + 1
+    return {"period": period, "since": since, "until": now.isoformat(timespec="seconds"),
+            "total": len(rows), "counts": counts, "scans": rows}

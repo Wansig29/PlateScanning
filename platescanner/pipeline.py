@@ -374,9 +374,10 @@ class RecognizerWorker(QThread):
         self._last_seen[key] = (now, status)  # vehicle still around: extend
         return before is not None and before[1] == status
 
-    def _save_jpeg(self, img: np.ndarray, ts: datetime, name: str, max_width: int = 0,
+    def _save_jpeg(self, img: np.ndarray, ts: datetime, name: str, status: str, max_width: int = 0,
                    quality: int = 92) -> str | None:
-        day = self.cfg.captures_dir / ts.strftime("%Y-%m-%d")
+        """Saved under captures\\<violation|no_violation|not_registered|no_plate_read>\\<date>\\."""
+        day = self.cfg.captures_dir / db.CAPTURE_FOLDERS.get(status, "other") / ts.strftime("%Y-%m-%d")
         day.mkdir(parents=True, exist_ok=True)
         path = day / f"{ts.strftime('%H%M%S_%f')}_{name}.jpg"
         if max_width and img.shape[1] > max_width:
@@ -600,7 +601,7 @@ class RecognizerWorker(QThread):
             return
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
-        crop_path = self._save_jpeg(crop, ts, text) if self.cfg.scan.save_captures else None
+        crop_path = self._save_jpeg(crop, ts, text, result.status) if self.cfg.scan.save_captures else None
         plate_box = track.best_frame_box or (0, 0, 1, 1)
         vehicle = color = pos = vehicle_path = snap = None
         if track.best_frame is not None:
@@ -609,8 +610,8 @@ class RecognizerWorker(QThread):
             color = identify.vehicle_color(frame, plate_box)
             pos = identify.position(plate_box, frame.shape)
             if self.cfg.scan.save_captures:
-                vehicle_path = self._save_jpeg(vehicle, ts, text + "_vehicle", 640, 88)
-            snap = self._save_locator(track, ts, text, f"#{track.track_id} {plates.display(text)}",
+                vehicle_path = self._save_jpeg(vehicle, ts, text + "_vehicle", result.status, 640, 88)
+            snap = self._save_locator(track, ts, text, result.status, f"#{track.track_id} {plates.display(text)}",
                                       RESULT_BGR.get(result.status, READING_BGR))
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
@@ -627,13 +628,13 @@ class RecognizerWorker(QThread):
         self.scanned.emit(ScanResult(scan_id, ts, read, result, crop_path, snap, track.track_id, vehicle,
                                      vehicle_path, color, pos, len(track.best_frame_others), source, verify))
 
-    def _save_locator(self, track: Track, ts: datetime, name: str, label: str,
+    def _save_locator(self, track: Track, ts: datetime, name: str, status: str, label: str,
                       color: tuple[int, int, int]) -> str | None:
         """The scene with this vehicle highlighted, instead of recording video."""
         if not self.cfg.scan.save_snapshots or track.best_frame is None or track.best_frame_box is None:
             return None
         img = identify.locator(track.best_frame, track.best_frame_box, track.best_frame_others, color, label)
-        return self._save_jpeg(img, ts, name, self.cfg.scan.snapshot_max_width, 85)
+        return self._save_jpeg(img, ts, name, status, self.cfg.scan.snapshot_max_width, 85)
 
     def _finish(self, conn, track: Track) -> None:
         """The vehicle left the picture."""
@@ -648,7 +649,7 @@ class RecognizerWorker(QThread):
             return
         # Plate seen in several frames but never readable: log it with a picture.
         ts = datetime.now()
-        snap = self._save_locator(track, ts, "noplate", f"#{track.track_id} plate not readable", (150, 150, 150))
+        snap = self._save_locator(track, ts, "noplate", db.RESULT_NO_PLATE, f"#{track.track_id} plate not readable", (150, 150, 150))
         scan_id = None
         source = self._source(track)
         if snap:
