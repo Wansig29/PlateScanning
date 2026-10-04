@@ -74,3 +74,21 @@ def test_violator_card_goes_away_after_its_vehicle_left(app):
     p.cards[1].shown_at -= 60
     p._expire()
     assert [c.track_id for c in p.cards] == [2]
+
+
+def test_violator_arrows_show_only_with_several_violators_and_jump_between_cards(app):
+    from platescanner.ui.widgets import IdentityPanel
+    p = IdentityPanel()
+    p.resize(480, 300)
+    p.show()
+    p.show_result("AAA1111", _result(db.RESULT_VIOLATION, "x"), seen=VehicleView(track_id=1))
+    assert p.nav.isHidden()
+    p.show_result("BBB2222", _result(db.RESULT_VIOLATION, "y"), seen=VehicleView(track_id=2))
+    app.processEvents()
+    assert not p.nav.isHidden() and "2 violators" in p.nav_label.text()
+    bar = p.scroll.verticalScrollBar()
+    assert bar.maximum() > 0           # the two cards don't fit in 300 px
+    p._jump(+1)
+    assert bar.value() == p.cards[1].y()
+    p._jump(-1)
+    assert bar.value() == 0

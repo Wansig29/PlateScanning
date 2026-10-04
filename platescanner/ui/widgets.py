@@ -673,6 +673,27 @@ class IdentityPanel(QFrame):
         header.addWidget(self.collapse_btn)
         self._collapsed = False
 
+        # "N violators in view  ‹ ›": jumps between the cards when they don't all fit.
+        self.nav = QWidget()
+        nl = QHBoxLayout(self.nav)
+        nl.setContentsMargins(0, 0, 0, 0)
+        self.nav_label = QLabel()
+        self.nav_label.setObjectName("Muted")
+        self.nav_prev, self.nav_next = QToolButton(), QToolButton()
+        self.nav_prev.setText("‹")
+        self.nav_next.setText("›")
+        for b in (self.nav_prev, self.nav_next):
+            b.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.nav_prev.setToolTip("Previous violator")
+        self.nav_next.setToolTip("Next violator")
+        self.nav_prev.clicked.connect(lambda: self._jump(-1))
+        self.nav_next.clicked.connect(lambda: self._jump(+1))
+        nl.addWidget(self.nav_label, 1)
+        nl.addWidget(self.nav_prev)
+        nl.addWidget(self.nav_next)
+        self.nav.hide()
+        lay.addWidget(self.nav)
+
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         self.scroll.setFrameShape(QFrame.Shape.NoFrame)
@@ -713,6 +734,16 @@ class IdentityPanel(QFrame):
         for c in self.cards:
             c.set_compact(compact)
             c.setMinimumHeight(300 if compact else 0)
+        n = sum(c.is_violation for c in self.cards)
+        self.nav.setVisible(n > 1 and not self._collapsed)
+        self.nav_label.setText(f"{n} violators in view")
+
+    def _jump(self, delta: int) -> None:
+        """Scroll to the previous / next card (the one nearest the top is the current one)."""
+        bar = self.scroll.verticalScrollBar()
+        tops = [c.y() for c in self.cards]
+        here = min(range(len(tops)), key=lambda i: abs(tops[i] - bar.value()))
+        bar.setValue(tops[max(0, min(len(tops) - 1, here + delta))])
 
     def _active(self, card: IdentityCard) -> bool:
         """A violator's card is kept while its vehicle is in view, or just left."""
@@ -806,6 +837,7 @@ class IdentityPanel(QFrame):
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = collapsed
         self.scroll.setVisible(not collapsed)
+        self._layout_changed()
         self.collapse_btn.setText("▸" if collapsed else "▾")
         self.setSizePolicy(QSizePolicy.Policy.Preferred,
                            QSizePolicy.Policy.Maximum if collapsed else QSizePolicy.Policy.Expanding)
