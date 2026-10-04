@@ -99,3 +99,42 @@ def test_year_stays_in_logs_if_the_archive_cannot_be_written(conn, tmp_path):
     blocker.write_text("x")
     assert retention.archive_ended_years(conn, blocker, 8, today=date(2026, 10, 4)) == []
     assert db.archived_years(conn) == [] and len(db.recent_scans(conn)) == 1
+
+
+# --- academic years from psau-security ----------------------------------------------------
+
+YEARS = [
+    {"year_label": "2024-2025", "start_date": "2024-08-01", "end_date": "2025-06-30", "is_active": 0},
+    {"year_label": "2025-2026", "start_date": "2025-08-01", "end_date": "2026-06-30", "is_active": 0},
+    {"year_label": "2026-2027", "start_date": "2026-08-01", "end_date": "2027-06-30", "is_active": 1},
+]
+
+
+def test_synced_school_years_decide_what_has_ended(conn, tmp_path):
+    db.replace_school_years(conn, YEARS)
+    before = _scan_at(conn, "2024-05-01T09:00:00")      # before the first synced year: counts to it
+    ay1 = _scan_at(conn, "2024-10-01T09:00:00")
+    ay2 = _scan_at(conn, "2025-10-01T09:00:00")
+    july = _scan_at(conn, "2026-07-15T09:00:00")        # the break after 2025-2026
+    ay3 = _scan_at(conn, "2026-09-01T09:00:00")         # the running year
+    done = retention.archive_ended_years(conn, tmp_path / "arc", 8, today=date(2026, 10, 4))
+    assert done == ["2024-2025", "2025-2026"]
+    assert {r["id"] for r in db.recent_scans(conn)} == {ay3}
+    assert {r["id"] for r in conn.execute("SELECT id FROM scan_log WHERE archived_year='2025-2026'")} == {ay2, july}
+    assert {r["id"] for r in conn.execute("SELECT id FROM scan_log WHERE archived_year='2024-2025'")} == {before, ay1}
+
+
+def test_the_break_after_a_year_stays_in_the_logs_until_the_next_year_starts(conn, tmp_path):
+    db.replace_school_years(conn, YEARS[:2])
+    in_year = _scan_at(conn, "2026-05-01T09:00:00")
+    july = _scan_at(conn, "2026-07-15T09:00:00")        # 2025-2026 ended, 2026-2027 not synced / not started
+    done = retention.archive_ended_years(conn, tmp_path / "arc", 8, today=date(2026, 7, 20))
+    assert "2025-2026" in done
+    assert {r["id"] for r in db.recent_scans(conn)} == {july}
+    assert [r["id"] for r in db.archive_report(conn, "2025-2026")["scans"]] == [in_year]
+
+
+def test_a_year_that_is_still_running_is_not_archived(conn, tmp_path):
+    db.replace_school_years(conn, YEARS)
+    _scan_at(conn, "2026-09-01T09:00:00")
+    assert retention.archive_ended_years(conn, tmp_path / "arc", 8, today=date(2026, 10, 4)) == []

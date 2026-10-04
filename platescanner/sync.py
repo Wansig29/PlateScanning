@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import db, mapping
-from .api import ApiClient
+from .api import ApiClient, ApiError, AuthError
 from .config import Config
 
 # Re-request a small window before the last sync to absorb clock skew
@@ -47,6 +47,16 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
     raw_vehicles = client.fetch_all(cfg.api.vehicles_path, since)
     progress("Downloading violations…")
     raw_violations = client.fetch_all(cfg.api.violations_path, since)
+
+    # The school years are a handful of rows, fetched every time. An older server without the
+    # endpoint must not break the sync: the scanner then uses its own academic-year setting.
+    school_years: list[dict] = []
+    try:
+        school_years = client.fetch_all(cfg.api.school_years_path)
+    except AuthError:
+        raise
+    except ApiError:
+        pass
 
     vehicles: dict[str, dict] = {}
     violations: list[dict] = []
@@ -90,12 +100,14 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
     if not full and not raw_vehicles and not raw_violations and not removed:
         # Nothing new online: only note that we checked.
         with conn:
+            db.replace_school_years(conn, school_years)
             db.set_state(conn, "last_sync_at", now.isoformat())
         return {"full": False, "changed": False, "vehicles": 0, "violations": 0,
                 "at": now.isoformat(), **{f"total_{k}": n for k, n in db.counts(conn).items()}}
 
     progress("Saving…")
     with conn:  # single transaction: a failed sync leaves the old data intact
+        db.replace_school_years(conn, school_years)
         if full:
             db.replace_all(conn, list(vehicles.values()), violations)
             db.set_state(conn, "last_full_sync_at", now.isoformat())

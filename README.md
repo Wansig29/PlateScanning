@@ -68,7 +68,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `scan.archive_after_days` | Pictures older than this many days are **moved** (never deleted) from `captures\` to the archive folder; the Logs still open them. Default 30; 0 keeps everything in `captures\` |
 | `scan.archive_dir` | Where the old pictures go. Empty = `archive\` next to `captures\`; can be another drive, e.g. `D:\\PlateScannerArchive` |
 | `scan.archive_ended_academic_year` | `true` (default): once an academic year has ended, its scan log is archived automatically: a CSV in `archive\<year>\`, and its scans leave the Logs and appear under *Reports → Archive*. Nothing is deleted |
-| `scan.academic_year_start_month` | The month the academic year starts (default 8 = August, so the year runs Aug 1 – Jul 31; 1 = a calendar year) |
+| `scan.academic_year_start_month` | Fallback only, used until the school years have synced from psau-security: the month the academic year starts (default 8 = August; 1 = a calendar year) |
 | `scan.plate_cooldown_seconds` | Ignore repeat reads of the same plate while it's still at the gate |
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
 | `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
@@ -167,6 +167,7 @@ The scanner gets its data from the **psau-security** system (`native-app`, on Ra
   |---|---|
   | `GET /api/security/gate/vehicles?updated_since=&page=&per_page=` | vehicles with owner name, contact, photo, colour/make/model, registration status. Deltas include removed vehicles (`removed: true`) |
   | `GET /api/security/gate/violations?updated_since=&page=&per_page=` | full sync: every **unsettled** violation. Deltas: every violation or sanction that changed, with `is_active`, so lifted suspensions, approved appeals and deletions clear on the laptop too |
+  | `GET /api/security/gate/school-years` | every school year with its start and end date (the ones the admin manages in Utilities), fetched on every sync. A year is archived once its end date has passed. If the server doesn't have this endpoint yet the scanner keeps working with `scan.academic_year_start_month` |
   | `GET /api/security/gate/owner-photo/{userId}`, `.../violation-photo/{violationId}` | photos, downloaded once for offline use |
 
 - **Who triggers the alert**: the same rule as psau-security's `SanctionService::hasUnsettledFor()`: a violation still waiting for its sanction, or an active Suspended/Revoked sanction. A suspension stops alerting once its end date has passed, on the server and on the laptop (even if it has not synced since).

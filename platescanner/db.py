@@ -49,6 +49,14 @@ CREATE TABLE IF NOT EXISTS violations (
 CREATE INDEX IF NOT EXISTS ix_violations_vehicle ON violations(vehicle_id);
 CREATE INDEX IF NOT EXISTS ix_violations_key ON violations(plate_key);
 
+-- School years as set in psau-security (Utilities), synced so the scan log can be archived when one ends.
+CREATE TABLE IF NOT EXISTS school_years (
+    year_label TEXT PRIMARY KEY,   -- e.g. "2025-2026"
+    start_date TEXT NOT NULL,      -- YYYY-MM-DD
+    end_date   TEXT NOT NULL,
+    is_active  INTEGER NOT NULL DEFAULT 0
+);
+
 CREATE TABLE IF NOT EXISTS sync_state (
     key   TEXT PRIMARY KEY,
     value TEXT
@@ -136,6 +144,32 @@ def init_schema(conn: sqlite3.Connection) -> None:
         if name not in cols:
             conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
     conn.commit()
+
+
+# --- school years ---------------------------------------------------------
+
+def replace_school_years(conn: sqlite3.Connection, rows: Iterable[dict[str, Any]]) -> int:
+    """Store psau-security's school years (a handful of rows, always replaced as a whole).
+    Rows without a label or valid dates are skipped. Returns how many were stored."""
+    good = []
+    for r in rows:
+        label, start, end = r.get("year_label"), str(r.get("start_date") or "")[:10], str(r.get("end_date") or "")[:10]
+        try:
+            datetime.strptime(start, "%Y-%m-%d"), datetime.strptime(end, "%Y-%m-%d")
+        except ValueError:
+            continue
+        if label:
+            good.append((str(label), start, end, 1 if r.get("is_active") else 0))
+    if good:
+        conn.execute("DELETE FROM school_years")
+        conn.executemany("INSERT OR REPLACE INTO school_years(year_label, start_date, end_date, is_active) "
+                         "VALUES(?,?,?,?)", good)
+    return len(good)
+
+
+def school_years(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """The synced school years, oldest first."""
+    return [dict(r) for r in conn.execute("SELECT * FROM school_years ORDER BY start_date")]
 
 
 # --- sync state -----------------------------------------------------------

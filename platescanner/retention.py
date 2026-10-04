@@ -94,27 +94,58 @@ def academic_year_label(start_year: int, start_month: int) -> str:
     return str(start_year) if start_month == 1 else f"{start_year}-{start_year + 1}"
 
 
-def archive_ended_years(conn: sqlite3.Connection, archive: Path, start_month: int,
-                        today: date | None = None) -> list[str]:
-    """Archive the scan log of every academic year that has ended. Returns their labels.
+def _ended_years_from_psau(years: list[dict], today: date) -> list[tuple[str, str, str]]:
+    """(label, from, until) of each synced school year whose end date has passed.
 
-    For each ended year a CSV of all its scans is written to archive\\<year>\\ and its scans are
-    marked archived: they leave the Logs panel and are found under Reports -> Archive. Nothing is
-    deleted. If the CSV cannot be written (e.g. the archive drive is missing) the year is left for
-    the next run.
+    A year covers its own dates; once the next school year has started it also covers the break
+    before it. Scans from before the first synced year count towards that first year.
     """
+    out = []
+    for n, y in enumerate(years):
+        end = date.fromisoformat(y["end_date"])
+        if end >= today:
+            continue  # still running
+        nxt = years[n + 1]["start_date"] if n + 1 < len(years) else None
+        if nxt and date.fromisoformat(nxt) <= today:
+            hi = nxt
+        else:
+            hi = (end + timedelta(days=1)).isoformat()
+        lo = "" if n == 0 else y["start_date"]
+        out.append((y["year_label"], lo, hi))
+    return out
 
-    today = today or date.today()
+
+def _ended_years_from_month(conn: sqlite3.Connection, start_month: int, today: date) -> list[tuple[str, str, str]]:
+    """The fallback when no school years were synced: a year starts on the 1st of `start_month`."""
     current = date(academic_year_start(today, start_month), start_month, 1)
     rows = conn.execute("SELECT ts FROM scan_log WHERE archived_year IS NULL AND ts < ?",
                         (current.isoformat(),)).fetchall()
     years = sorted({academic_year_start(datetime.fromisoformat(r["ts"]).date(), start_month) for r in rows})
+    return [(academic_year_label(sy, start_month), date(sy, start_month, 1).isoformat(),
+             date(sy + 1, start_month, 1).isoformat()) for sy in years]
+
+
+def archive_ended_years(conn: sqlite3.Connection, archive: Path, start_month: int,
+                        today: date | None = None) -> list[str]:
+    """Archive the scan log of every academic year that has ended. Returns their labels.
+
+    The years come from psau-security (synced school years); until those are synced, a year is
+    taken to start on the 1st of `start_month`. For each ended year a CSV of all its scans is
+    written to archive\\<year>\\ and its scans are marked archived: they leave the Logs panel
+    and are found under Reports -> Archive. Nothing is deleted. If the CSV cannot be written
+    (e.g. the archive drive is missing) the year is left for the next run.
+    """
+    from . import db  # (db imports nothing from here)
+    today = today or date.today()
+    synced = db.school_years(conn)
+    periods = (_ended_years_from_psau(synced, today) if synced
+               else _ended_years_from_month(conn, start_month, today))
     done = []
-    for sy in years:
-        label = academic_year_label(sy, start_month)
-        lo, hi = date(sy, start_month, 1).isoformat(), date(sy + 1, start_month, 1).isoformat()
+    for label, lo, hi in periods:
         scans = [dict(r) for r in conn.execute(
             "SELECT * FROM scan_log WHERE ts >= ? AND ts < ? ORDER BY ts", (lo, hi)).fetchall()]
+        if not any(r["archived_year"] is None for r in scans):
+            continue  # nothing new for this year
         try:
             folder = archive / label
             folder.mkdir(parents=True, exist_ok=True)

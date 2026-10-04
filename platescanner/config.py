@@ -40,6 +40,7 @@ class ApiConfig:
     login_path: str = "/api/login"
     vehicles_path: str = "/api/security/gate/vehicles"
     violations_path: str = "/api/security/gate/violations"
+    school_years_path: str = "/api/security/gate/school-years"
     # Query parameter used for delta sync, sent as an ISO-8601 UTC timestamp.
     updated_since_param: str = "updated_since"
     page_size: int = 200
@@ -192,7 +193,8 @@ class ScanConfig:
     archive_dir: str = ""
     # Once an academic year has ended, its scan log is archived automatically: a CSV in the
     # archive folder, and the scans move from the Logs to Reports -> Archive. The year is
-    # taken to start on the 1st of this month (8 = August; 1 = a calendar year).
+    # taken to start on the 1st of this month (8 = August; 1 = a calendar year). Only a
+    # fallback: once the school years have been synced from psau-security, its dates are used.
     archive_ended_academic_year: bool = True
     academic_year_start_month: int = 8
     alert_sound: bool = True
