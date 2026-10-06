@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import threading
+from html import escape
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
@@ -99,8 +100,12 @@ class LoginDialog(QDialog):
         lay.addWidget(self.offline_btn, 0, Qt.AlignmentFlag.AlignHCenter)
 
         lay.addSpacing(16)
-        server = QLabel(f"Server: {cfg.api.base_url}")
+        url = escape(cfg.api.base_url, quote=True)
+        server = QLabel(f'PSAU Security website: <a href="{url}">{url}</a>')
         server.setObjectName("Faint")
+        server.setTextFormat(Qt.TextFormat.RichText)
+        server.setOpenExternalLinks(True)
+        server.setToolTip("Open the PSAU Security website in your browser")
         server.setWordWrap(True)
         server.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lay.addWidget(server)
