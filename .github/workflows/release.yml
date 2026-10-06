@@ -46,21 +46,41 @@ jobs:
         shell: pwsh
         run: python -m PyInstaller --noconfirm --distpath dist --workpath build platescanner.spec
 
-      - name: Zip the build
+      - name: Work out the version
         shell: pwsh
         run: |
           $tag = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "${{ github.ref_name }}" }
           "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Compress-Archive -Path dist\PlateScanner -DestinationPath "PlateScanner-$tag-win64.zip"
+          "VERSION=$($tag.TrimStart('v'))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Inno Setup
+        shell: pwsh
+        run: choco install innosetup -y --no-progress
+
+      - name: Build the one-click installer
+        shell: pwsh
+        run: |
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" installer.iss
+          if ($LASTEXITCODE -ne 0) { throw "Inno Setup failed (exit code $LASTEXITCODE)" }
+
+      - name: Zip the portable build
+        shell: pwsh
+        run: Compress-Archive -Path dist\PlateScanner -DestinationPath "PlateScanner-$env:TAG-portable-win64.zip"
 
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG }}
           name: PSAU Gate Plate Scanner ${{ env.TAG }}
-          files: PlateScanner-${{ env.TAG }}-win64.zip
+          files: |
+            installer_output/PlateScanner-Setup.exe
+            PlateScanner-${{ env.TAG }}-portable-win64.zip
           body: |
-            Windows 64-bit build. No Python needed.
-            1. Download the ZIP below and extract the whole folder.
-            2. Run `PlateScanner.exe`.
-            3. Edit `camera.source` in `%LOCALAPPDATA%\PlateScanner\config.json` for your camera.
+            Windows 64-bit. No Python needed.
+
+            **Install:** download `PlateScanner-Setup.exe`, double-click it and follow the steps.
+            A Desktop shortcut is created. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.
+
+            Portable option: the `portable` ZIP can be extracted anywhere and run directly (`PlateScanner.exe`).
+
+            After installing, edit `camera.source` in `%LOCALAPPDATA%\PlateScanner\config.json` for your camera.
