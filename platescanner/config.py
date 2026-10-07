@@ -142,7 +142,7 @@ class OcrConfig:
     # still reported if it averages this much (a violation only needs
     # read_confidence: missing a violator is worse than a doubtful alert).
     # Below it, the vehicle is logged as "plate not readable" with a snapshot.
-    report_confidence: float = 0.50
+    report_confidence: float = 0.65
     # A violation alerts on one read this confident; otherwise, and for
     # every other result, `confirm_reads` agreeing reads are required.
     alert_confidence: float = 0.75
@@ -326,7 +326,8 @@ def _migrate(data: dict[str, Any]) -> None:
         return
     ocr = data.get("ocr")
     if isinstance(ocr, dict):
-        for key, old, new in (("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5)):
+        for key, old, new in (("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5),
+                              ("report_confidence", 0.50, 0.65)):
             if ocr.get(key) == old:
                 ocr[key] = new
 

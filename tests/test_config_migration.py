@@ -10,14 +10,16 @@ def _load(tmp_path, monkeypatch, data):
 
 
 def test_old_default_thresholds_are_tightened(tmp_path, monkeypatch):
-    cfg = _load(tmp_path, monkeypatch, {"ocr": {"detector_confidence": 0.35, "read_confidence": 0.3}})
-    assert (cfg.ocr.detector_confidence, cfg.ocr.read_confidence) == (0.5, 0.5)
+    cfg = _load(tmp_path, monkeypatch, {"ocr": {"detector_confidence": 0.35, "read_confidence": 0.3,
+                                                 "report_confidence": 0.5}})
+    assert (cfg.ocr.detector_confidence, cfg.ocr.read_confidence, cfg.ocr.report_confidence) == (0.5, 0.5, 0.65)
     assert cfg.settings_version == 2
 
 
 def test_values_someone_chose_are_kept(tmp_path, monkeypatch):
-    cfg = _load(tmp_path, monkeypatch, {"ocr": {"detector_confidence": 0.6, "read_confidence": 0.4}})
-    assert (cfg.ocr.detector_confidence, cfg.ocr.read_confidence) == (0.6, 0.4)
+    cfg = _load(tmp_path, monkeypatch, {"ocr": {"detector_confidence": 0.6, "read_confidence": 0.4,
+                                                 "report_confidence": 0.55}})
+    assert (cfg.ocr.detector_confidence, cfg.ocr.read_confidence, cfg.ocr.report_confidence) == (0.6, 0.4, 0.55)
 
 
 def test_migration_runs_once(tmp_path, monkeypatch):
