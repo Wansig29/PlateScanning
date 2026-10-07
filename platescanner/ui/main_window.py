@@ -9,8 +9,10 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QActionGroup, QDesktopServices, QGuiApplication, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import (
+    QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
+)
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
@@ -130,6 +132,33 @@ class AlertSound:
             except Exception:  # noqa: BLE001 - a sound failure must never stop alerts
                 log.exception("Alert sound failed")
             time.sleep(0.35)
+
+
+def _initials(name: str) -> str:
+    """'Campus Admin' -> 'CA', 'guard@psau.edu.ph' -> 'G'."""
+    words = [w for w in name.replace("@", " ").replace(".", " ").replace("_", " ").split() if w]
+    return "".join(w[0] for w in words[:2]).upper() or "?"
+
+
+def _avatar_icon(text: str, size: int = 22) -> QIcon:
+    """A flat round badge with initials: plain and professional, unlike a coloured emoji."""
+    ratio = 2                                            # drawn at 2x so it stays sharp on scaled displays
+    pm = QPixmap(size * ratio, size * ratio)
+    pm.setDevicePixelRatio(ratio)
+    pm.fill(Qt.GlobalColor.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
+    p.setBrush(QColor(theme.ACCENT))
+    p.drawEllipse(0, 0, size, size)
+    font = QFont(p.font())
+    font.setBold(True)
+    font.setPixelSize(int(size * (0.46 if len(text) > 1 else 0.55)))
+    p.setFont(font)
+    p.setPen(QColor("white"))
+    p.drawText(0, 0, size, size, int(Qt.AlignmentFlag.AlignCenter), text)
+    p.end()
+    return QIcon(pm)
 
 
 def _ago(iso: str | None) -> str:
@@ -371,6 +400,8 @@ class MainWindow(QMainWindow):
         self.account_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.account_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.account_btn.setToolTip("Account and update settings")
+        self.account_btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+        self.account_btn.setIconSize(QSize(22, 22))
         menu = QMenu(self.account_btn)
         menu.addAction(f"PlateScanner v{__version__}").setEnabled(False)
         menu.addSeparator()
@@ -817,11 +848,13 @@ class MainWindow(QMainWindow):
             user = self.session.get("user") or {}
             name = user.get("name") or user.get("email") or "Guard"
             short = name if len(name) <= 14 else name[:13] + "…"
-            self.account_btn.setText(f"👤  {short}  ▾" if self._density < DENSITY_COMPACT else "👤  ▾")
+            self.account_btn.setIcon(_avatar_icon(_initials(name)))
+            self.account_btn.setText(f" {short}  ▾" if self._density < DENSITY_COMPACT else " ▾")
             self.account_btn.setToolTip(f"Signed in as {name}. Account and update settings")
             self.account_action.setText("Sign out")
         else:
-            self.account_btn.setText("👤  Not signed in  ▾" if self._density < DENSITY_COMPACT else "👤  ▾")
+            self.account_btn.setIcon(_avatar_icon("?"))
+            self.account_btn.setText(" Not signed in  ▾" if self._density < DENSITY_COMPACT else " ▾")
             self.account_action.setText("Sign in")
 
     def _account_clicked(self) -> None:
