@@ -40,6 +40,7 @@ SYNC_RETRY_MS = 15 * 60 * 1000
 # How much of the top bar is shown: everything, without the small print, or icons only.
 DENSITY_FULL, DENSITY_MEDIUM, DENSITY_COMPACT = 0, 1, 2
 MIN_WINDOW = (720, 500)
+MAX_MIN_WIDTH = 900     # the window is never forced wider than this, whatever the fonts measure
 
 
 class SyncWorker(QObject):
@@ -217,7 +218,9 @@ class MainWindow(QMainWindow):
         mark.setFixedSize(36, 36)
         mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
         tl.addWidget(mark)
-        titles = QVBoxLayout()
+        self._titles = QWidget()                 # hidden in the most compact density: only the logo stays
+        titles = QVBoxLayout(self._titles)
+        titles.setContentsMargins(0, 0, 0, 0)
         titles.setSpacing(0)
         title = QLabel("PSAU Gate Plate Scanner")
         title.setObjectName("AppTitle")
@@ -226,7 +229,7 @@ class MainWindow(QMainWindow):
         self._subtitle = subtitle
         titles.addWidget(title)
         titles.addWidget(subtitle)
-        tl.addLayout(titles)
+        tl.addWidget(self._titles)
         tl.addSpacing(18)
         self.pending_btn = QPushButton()
         self.pending_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -683,6 +686,7 @@ class MainWindow(QMainWindow):
     def _set_density(self, level: int) -> None:
         self._density = level
         self._subtitle.setVisible(level == DENSITY_FULL)
+        self._titles.setVisible(level < DENSITY_COMPACT)
         self.clock_date.setVisible(level == DENSITY_FULL)
         icons_only_nav = level >= DENSITY_MEDIUM            # Reports and Database shrink first
         self.reports_btn.setText("📊" if icons_only_nav else "📊  Reports")
@@ -703,8 +707,8 @@ class MainWindow(QMainWindow):
         for level in (DENSITY_FULL, DENSITY_MEDIUM, DENSITY_COMPACT):
             self._set_density(level)
             self._density_needs[level] = layout.minimumSize().width()
-        # The window may never be narrower than the most compact top bar needs, whatever the font or scaling.
-        self.setMinimumWidth(max(MIN_WINDOW[0], self._density_needs[DENSITY_COMPACT]))
+        # The window may not be narrower than the most compact top bar needs, up to MAX_MIN_WIDTH (small laptops).
+        self.setMinimumWidth(max(MIN_WINDOW[0], min(MAX_MIN_WIDTH, self._density_needs[DENSITY_COMPACT])))
         self._pick_density()
 
     def _pick_density(self) -> None:
