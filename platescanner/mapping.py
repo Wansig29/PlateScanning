@@ -72,6 +72,8 @@ def map_vehicle(r: dict[str, Any], base_url: str) -> dict[str, Any] | None:
         "owner_photo_url": _abs_url(pick(r, "owner_photo_url", "owner.photo_url", "owner.profile_photo_url",
                                          "owner.photo", "user.profile_photo_url", "user.photo_url",
                                          "user.photo", "photo_url"), base_url),
+        # None when the record doesn't say (an embedded copy in a violation): keeps the stored value.
+        "permanently_revoked": None if "owner_permanently_revoked" not in r else bool(r["owner_permanently_revoked"]),
         "details": {k: pick(r, *keys) for k, keys in {
             "make": ("make", "brand"),
             "model": ("model",),

@@ -134,3 +134,24 @@ def test_school_years_are_synced_and_an_old_server_without_them_is_tolerated(tmp
 
     sync.run_sync(cfg, OldServer([vehicle(1, "NBC 1234", "Juan")], []), conn, force_full=True)
     assert len(db.school_years(conn)) == 2           # kept as they were
+
+
+def test_permanently_revoked_owner_alerts_on_any_vehicle(tmp_path):
+    # Two vehicles of one owner: neither has a violation, both flagged by the server.
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True),
+                                vehicle(2, "XYZ 9876", "Juan", owner_permanently_revoked=True),
+                                vehicle(3, "ABC 1111", "Maria", owner_permanently_revoked=False)], [])
+    for plate in ("NBC1234", "XYZ9876"):
+        r = db.lookup(conn, plate)
+        assert r.status == db.RESULT_VIOLATION
+        assert r.violations[0]["violation_type"] == "Permanently revoked sticker"
+    assert db.lookup(conn, "ABC1111").status == db.RESULT_CLEAR
+
+
+def test_permanent_revoke_clears_when_server_lifts_it_and_survives_embedded_copy(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True)], [])
+    # A violation embedding a partial vehicle must not erase the flag.
+    sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234", vehicle={"id": 1, "plate_number": "NBC 1234"})]), conn)
+    assert db.lookup(conn, "NBC1234").vehicle["permanently_revoked"] == 1
+    sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False)], []), conn, force_full=True)
+    assert all(v["violation_type"] != "Permanently revoked sticker" for v in db.lookup(conn, "NBC1234").violations)

@@ -25,7 +25,8 @@ CREATE TABLE IF NOT EXISTS vehicles (
     owner_photo_url TEXT,
     owner_photo_path TEXT,
     details_json    TEXT,
-    updated_at      TEXT
+    updated_at      TEXT,
+    permanently_revoked INTEGER   -- the owner's sticker is permanently revoked (barred on any vehicle)
 );
 CREATE INDEX IF NOT EXISTS ix_vehicles_key ON vehicles(plate_key);
 
@@ -99,7 +100,7 @@ CREATE INDEX IF NOT EXISTS ix_corrections_scan ON plate_corrections(scan_id);
 """
 
 VEHICLE_COLS = ["id", "plate", "plate_norm", "plate_key", "owner_name", "contact",
-                "owner_photo_url", "owner_photo_path", "details_json", "updated_at"]
+                "owner_photo_url", "owner_photo_path", "details_json", "updated_at", "permanently_revoked"]
 VIOLATION_COLS = ["id", "vehicle_id", "plate", "plate_key", "violation_type", "status",
                   "is_active", "suspension_start", "suspension_end", "suspension_text",
                   "description", "evidence_urls", "evidence_paths", "occurred_at", "updated_at"]
@@ -130,6 +131,8 @@ def connect(path: Path | str) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    if "permanently_revoked" not in {r["name"] for r in conn.execute("PRAGMA table_info(vehicles)")}:
+        conn.execute("ALTER TABLE vehicles ADD COLUMN permanently_revoked INTEGER")
     # Databases created before these columns existed.
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(scan_log)")}
     for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
@@ -187,7 +190,8 @@ def _vehicle_row(v: dict[str, Any]) -> tuple:
     return (str(v["id"]), plates.display(plate), plates.normalize(plate), plates.plate_key(plate),
             v.get("owner_name"), v.get("contact"), v.get("owner_photo_url"),
             v.get("owner_photo_path"), json.dumps(v["details"]) if v.get("details") else None,
-            v.get("updated_at"))
+            v.get("updated_at"),
+            None if v.get("permanently_revoked") is None else int(bool(v["permanently_revoked"])))
 
 
 def _violation_row(v: dict[str, Any]) -> tuple:
@@ -296,6 +300,16 @@ def _active_violations(conn: sqlite3.Connection, vehicle_id: str | None, key: st
     return [_violation_dict(r) for r in rows]
 
 
+def _permanent_revocation_alert(vehicle: dict[str, Any]) -> dict[str, Any]:
+    """A permanently revoked owner is barred on any vehicle, so it raises the same gate alert as a violation."""
+    return {"id": f"permanent-revoke-{vehicle['id']}", "vehicle_id": vehicle["id"], "plate": vehicle["plate"],
+            "plate_key": vehicle["plate_key"], "violation_type": "Permanently revoked sticker",
+            "status": "Revoked", "is_active": 1, "suspension_start": None, "suspension_end": None,
+            "suspension_text": "Permanently barred from the premises on any vehicle",
+            "description": "The owner's sticker application is permanently revoked.",
+            "evidence_urls": [], "evidence_paths": [], "occurred_at": None, "updated_at": vehicle.get("updated_at")}
+
+
 def _has_active_violation(conn: sqlite3.Connection, vehicle_id: str) -> bool:
     return bool(conn.execute(
         f"SELECT 1 FROM violations WHERE {_ALERTING} AND vehicle_id=? LIMIT 1", (vehicle_id,)).fetchone())
@@ -310,7 +324,7 @@ def list_vehicles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every vehicle with its number of alerting violations; violators first."""
     rows = conn.execute(
         f"SELECT v.*, (SELECT COUNT(*) FROM violations x WHERE {_ALERTING} "
-        "AND (x.plate_key = v.plate_key OR x.vehicle_id = v.id)) AS alerting "
+        "AND (x.plate_key = v.plate_key OR x.vehicle_id = v.id)) + COALESCE(v.permanently_revoked, 0) AS alerting "
         "FROM vehicles v ORDER BY alerting > 0 DESC, v.plate_norm").fetchall()
     out = []
     for r in rows:
@@ -359,6 +373,8 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         key = vehicle["plate_key"]
 
     violations = _active_violations(conn, vehicle["id"] if vehicle else None, key)
+    if vehicle and vehicle.get("permanently_revoked"):
+        violations.insert(0, _permanent_revocation_alert(vehicle))
     matched = vehicle["plate"] if vehicle else (violations[0]["plate"] if violations else None)
     if violations:
         status = RESULT_VIOLATION
