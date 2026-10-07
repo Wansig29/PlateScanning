@@ -91,8 +91,8 @@ QFrame#TopBar QWidget {{ background: transparent; }}
 QLabel#AppTitle {{ font-size: 12.5pt; font-weight: 700; }}
 QLabel#AppSubtitle {{ color: {MUTED}; font-size: 8.5pt; }}
 QLabel#BrandMark, QFrame#Panel QLabel#BrandMark, QFrame#TopBar QLabel#BrandMark {{
-    background: {ACCENT};
-    color: {ON_ACCENT};
+    background: transparent;
+    color: {ACCENT};
     border-radius: 8px;
     font-size: 13pt;
     font-weight: 800;
