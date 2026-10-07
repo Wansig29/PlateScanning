@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import db, plates
+from .. import db, plates, timefmt
 from . import theme
 
 
@@ -263,7 +263,8 @@ class VideoView(QWidget):
         width = p.fontMetrics().horizontalAdvance(label) + 38
         self._pill(p, QRectF(target.left() + 12, target.top() + 12, width, 26),
                    theme.AMBER if self._motion else theme.RED, label)
-        stamp = datetime.now().strftime("%Y-%m-%d  %H:%M:%S")
+        now = datetime.now()
+        stamp = f"{now:%Y-%m-%d}  {timefmt.clock(now)}"
         f.setFamily("Consolas")
         p.setFont(f)
         width = p.fontMetrics().horizontalAdvance(stamp) + 24
@@ -905,22 +906,23 @@ class FeedFollower(QObject):
 
 
 def format_ts(ts: str) -> str:
-    """ISO timestamp -> "Sep 26, 2026  16:10:41"."""
+    """ISO timestamp -> "Sep 26, 2026  4:10:41 PM"."""
     try:
-        return datetime.fromisoformat(ts).strftime("%b %d, %Y  %H:%M:%S")
+        dt = datetime.fromisoformat(ts)
+        return f"{dt:%b %d, %Y}  {timefmt.clock(dt)}"
     except ValueError:
         return ts
 
 
 def format_ts_short(ts: str) -> str:
-    """ISO timestamp -> "16:10:41" today, "Sep 26  16:10:41" otherwise."""
+    """ISO timestamp -> "4:10:41 PM" today, "Sep 26  4:10:41 PM" otherwise."""
     try:
         dt = datetime.fromisoformat(ts)
     except ValueError:
         return ts
     if dt.date() == datetime.now().date():
-        return dt.strftime("%H:%M:%S")
-    return dt.strftime("%b %d  %H:%M:%S")
+        return timefmt.clock(dt)
+    return f"{dt:%b %d}  {timefmt.clock(dt)}"
 
 
 class PlateCard(QFrame):

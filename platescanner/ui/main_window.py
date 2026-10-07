@@ -16,7 +16,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, db, retention, updates
+from .. import __version__, db, retention, timefmt, updates
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config, save_config
@@ -142,7 +142,8 @@ def _ago(iso: str | None) -> str:
         return f"{mins} min ago"
     if mins < 60 * 48:
         return f"{mins // 60} h {mins % 60} min ago"
-    return then.astimezone().strftime("%b %d %H:%M")
+    local = then.astimezone()
+    return f"{local:%b %d} {timefmt.clock(local, seconds=False)}"
 
 
 class MainWindow(QMainWindow):
@@ -379,7 +380,7 @@ class MainWindow(QMainWindow):
 
     def _tick(self) -> None:
         now = datetime.now()
-        self.clock.setText(now.strftime("%I:%M:%S %p").lstrip("0"))   # 12-hour, e.g. 6:28:29 PM
+        self.clock.setText(timefmt.clock(now))   # 12-hour, e.g. 6:28:29 PM
         self.clock_date.setText(now.strftime("%A, %b %d, %Y"))
 
     def _toggle_fullscreen(self) -> None:
@@ -734,7 +735,7 @@ class MainWindow(QMainWindow):
         ts = scan.ts.isoformat(timespec="seconds")
         seen = VehicleView(vehicle_pm, load_pixmap(scan.snapshot_path), scan.color, scan.position,
                            scan.others_in_view, scan.track_id,
-                           self._when(scan.ts.strftime('%H:%M:%S'), scan.source), scan.scan_id, scan.verify)
+                           self._when(timefmt.clock(scan.ts), scan.source), scan.scan_id, scan.verify)
         is_violation = res.status == db.RESULT_VIOLATION
         if is_violation:
             # Shown now, or queued behind the violator already on screen.
@@ -763,7 +764,7 @@ class MainWindow(QMainWindow):
         if done is not None:
             by, at = self._guard_name(), datetime.now()
             db.acknowledge_scan(self.conn, done[0], by, at.isoformat(timespec="seconds"))
-            self.logs.mark_acknowledged(done[0], f"acknowledged by {by} at {at.strftime('%H:%M:%S')}")
+            self.logs.mark_acknowledged(done[0], f"acknowledged by {by} at {timefmt.clock(at)}")
             log.info("Violation scan #%s (%s) acknowledged by %s", done[0], done[1], by)
         if nxt is not None:  # next violator in line
             self._show(*nxt[1:], needs_ack=self.dash.require_ack)
