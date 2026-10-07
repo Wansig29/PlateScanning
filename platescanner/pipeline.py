@@ -96,6 +96,19 @@ def needs_verification(reads: int, avg_confidence: float, approximate: bool, ocr
             or (reads < ocr.confirm_reads and avg_confidence < ocr.verify_single_read_below))
 
 
+def needs_manual_check(status: str, reads: int, avg_confidence: float, approximate: bool, ocr) -> bool:
+    """Violations and unregistered plates both ask the guard to check a doubtful read.
+
+    An unregistered result is where a misread violator hides (the wrong characters match no
+    record), so a low-confidence "not registered" is flagged too. Clear results are not.
+    """
+    if status == db.RESULT_VIOLATION:
+        return needs_verification(reads, avg_confidence, approximate, ocr)
+    if status == db.RESULT_NOT_REGISTERED:
+        return avg_confidence < ocr.verify_below_confidence
+    return False
+
+
 def video_clock(seconds: float) -> str:
     m, s = divmod(int(seconds), 60)
     return f"{m // 60}:{m % 60:02d}:{s:02d}" if m >= 60 else f"{m}:{s:02d}"
@@ -368,11 +381,19 @@ class RecognizerWorker(QThread):
         A changed result (e.g. a violation that arrived with the latest sync)
         is never suppressed.
         """
-        cooldown = self.cfg.scan.plate_cooldown_seconds
-        self._last_seen = {k: v for k, v in self._last_seen.items() if now - v[0] < cooldown}
+        scan = self.cfg.scan
+
+        def window(st: str) -> float:
+            return scan.violation_cooldown_seconds if st == db.RESULT_VIOLATION else scan.plate_cooldown_seconds
+
+        self._last_seen = {k: v for k, v in self._last_seen.items() if now - v[0] < window(v[1])}
         before = self._last_seen.get(key)
-        self._last_seen[key] = (now, status)  # vehicle still around: extend
-        return before is not None and before[1] == status
+        suppressed = before is not None and before[1] == status
+        if status != db.RESULT_VIOLATION or not suppressed:
+            # Other results extend while the vehicle is still around. A violation's window runs
+            # from the alert that was actually raised, so a lingering car cannot keep it shut.
+            self._last_seen[key] = (now, status)
+        return suppressed
 
     def _save_jpeg(self, img: np.ndarray, ts: datetime, plate: str, kind: str, status: str,
                    max_width: int = 0, quality: int = 92) -> str | None:
@@ -619,8 +640,7 @@ class RecognizerWorker(QThread):
                                       RESULT_BGR.get(result.status, READING_BGR))
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
-        verify = result.status == db.RESULT_VIOLATION and needs_verification(
-            lead.reads, avg, result.approximate, ocr)
+        verify = needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
         scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
                               result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
                               vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,

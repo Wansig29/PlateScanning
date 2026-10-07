@@ -589,7 +589,8 @@ class IdentityCard(QFrame):
         self.shown_at = time.monotonic()
         self._banner_color = color
         vehicle_no = f"   \u00b7   VEHICLE #{seen.track_id}" if seen.track_id else ""
-        verify = "   ·   VERIFY PLATE" if seen.verify and result.status == db.RESULT_VIOLATION else ""
+        verify = ("   ·   VERIFY PLATE" if seen.verify and result.status in (db.RESULT_VIOLATION, db.RESULT_NOT_REGISTERED)
+                  else "")
         self.banner.setToolTip("The plate was read with some doubt. Compare it with the photo of the "
                                "vehicle." if verify else "")
         self.banner.setText(f"{theme.RESULT_ICONS.get(result.status, '')}  {label}{vehicle_no}{verify}")

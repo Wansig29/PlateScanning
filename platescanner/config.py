@@ -189,6 +189,9 @@ class OcrConfig:
 class ScanConfig:
     # Ignore repeat reads of the same plate within this window.
     plate_cooldown_seconds: float = 45.0
+    # Violations get a much shorter window, counted from the alert itself (never extended
+    # while the vehicle lingers), so a violator who leaves and comes back is alerted again.
+    violation_cooldown_seconds: float = 10.0
     # Allow a 1-character-off match when there is exactly one candidate.
     fuzzy_match: bool = True
     save_captures: bool = True
@@ -236,6 +239,11 @@ class SyncConfig:
     # Periodically do a full re-download so records deleted online disappear
     # locally too (deltas alone can't express deletions).
     full_resync_hours: float = 24.0
+    # The local copy is flagged as stale (red warning) when the last good sync is older than this.
+    stale_after_hours: float = 8.0
+    # A full sync that returns less than this share of the records already stored is refused
+    # (a truncated or empty response must not wipe the local violation list).
+    min_full_sync_ratio: float = 0.5
     download_photos: bool = True
     # Violation statuses that mean "no longer active". Anything else is active.
     resolved_statuses: list[str] = field(default_factory=lambda: [

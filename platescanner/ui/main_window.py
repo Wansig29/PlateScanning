@@ -26,7 +26,7 @@ from ..pipeline import (
     CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker, ScanResult, to_qimage,
 )
 from ..session import clear_session, save_session
-from ..sync import run_sync
+from ..sync import is_stale, run_sync
 from . import theme
 from .database_view import DatabaseWindow
 from .reports_window import ReportsWindow
@@ -815,6 +815,13 @@ class MainWindow(QMainWindow):
             self._elide_sync_error()
             self.sync_label.setToolTip(self._sync_error_full)
             self.sync_label.setStyleSheet(f"color: {theme.AMBER};")
+        elif is_stale(last, self.cfg.sync.stale_after_hours):
+            # Violations added online since then are unknown here: tell the guard plainly.
+            self._sync_error_full = None
+            self.sync_label.setText(f"⚠ DATA OUT OF DATE · last synced {_ago(last)}")
+            self.sync_label.setToolTip("New violations recorded online are not in this copy. "
+                                       "Check the connection and press Sync Now.")
+            self.sync_label.setStyleSheet(f"color: {theme.RED}; font-weight: 600;")
         else:
             prefix = "" if self.session else "Offline mode · "
             self._sync_error_full = None
@@ -1065,6 +1072,8 @@ class MainWindow(QMainWindow):
             if r["result"] == db.RESULT_VIOLATION:
                 detail = ("VERIFY PLATE · " if r.get("verify") else "") + self._detail(
                     db.lookup(self.conn, r["matched_plate"] or r["plate_read"], fuzzy=False))
+            elif r["result"] == db.RESULT_NOT_REGISTERED and r.get("verify"):
+                detail = "VERIFY PLATE"
             ack = None
             if r.get("acknowledged_at"):
                 ack = f"acknowledged by {r['acknowledged_by']} at {format_ts(r['acknowledged_at'])}"
