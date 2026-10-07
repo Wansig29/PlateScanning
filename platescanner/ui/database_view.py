@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 
 from .. import db, plates, timefmt
 from . import theme
-from .widgets import Avatar, ImageSlot, fmt_date, load_pixmap, panel, suspension_text
+from .widgets import Avatar, ImageSlot, fit_to_screen, fmt_date, load_pixmap, panel, suspension_text
 
 VEHICLE_HEADERS = ["PLATE", "OWNER", "VEHICLE", "REGISTRATION", "STATUS"]
 VIOLATION_HEADERS = ["PLATE", "OWNER", "VIOLATION", "STATUS", "SUSPENSION", "DATE"]
@@ -103,7 +103,7 @@ class DatabaseWindow(QDialog):
         super().__init__(parent)
         self.conn = conn
         self.setWindowTitle("Local database: PSAU Gate Plate Scanner")
-        self.resize(1240, 720)
+        fit_to_screen(self, 1240, 720)
         self._vehicles: list[dict[str, Any]] = []
         self._violations: list[dict[str, Any]] = []
 

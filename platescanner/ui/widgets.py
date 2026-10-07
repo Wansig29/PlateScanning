@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractScrollArea, QDialog, QPushButton, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
@@ -903,6 +903,16 @@ class FeedFollower(QObject):
         if event.type() == QEvent.Type.Resize:
             self._place()
         return False
+
+
+def fit_to_screen(window, width: int, height: int) -> None:
+    """Resize to the wanted size, but never larger than the screen's usable area (small laptops, scaled displays)."""
+    screen = QGuiApplication.primaryScreen()
+    if screen is None:
+        window.resize(width, height)
+        return
+    area = screen.availableGeometry()
+    window.resize(min(width, int(area.width() * 0.94)), min(height, int(area.height() * 0.92)))
 
 
 def format_ts(ts: str) -> str:
