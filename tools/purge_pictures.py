@@ -1,4 +1,4 @@
-"""Delete saved pictures of scans that are not violations (the log rows are kept).
+r"""Delete saved pictures of scans that are not violations (the log rows are kept).
 
     python tools\purge_pictures.py              # shows what would be deleted, deletes nothing
     python tools\purge_pictures.py --yes        # deletes it
