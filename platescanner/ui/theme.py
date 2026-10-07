@@ -142,6 +142,7 @@ QMenu {{
 }}
 QMenu::item {{ background: transparent; padding: 6px 26px 6px 12px; border-radius: 5px; }}
 QMenu::item:selected {{ background: {PANEL_HOVER}; }}
+QMenu::separator {{ height: 1px; background: {BORDER_STRONG}; margin: 6px 8px; }}
 QMenu::indicator {{ width: 0; }}
 QMenu::item:checked {{ color: {ACCENT_HOVER}; font-weight: 600; }}
 QToolTip {{
