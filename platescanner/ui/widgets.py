@@ -1078,7 +1078,6 @@ class LogsPanel(QFrame):
     def __init__(self):
         super().__init__()
         frame, lay, header = panel("Logs")
-        self.header = header  # the main window adds the slow-mode control here
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(frame)

@@ -199,9 +199,6 @@ class ScanConfig:
     archive_ended_academic_year: bool = True
     academic_year_start_month: int = 8
     alert_sound: bool = True
-    # Slow mode: add at most one entry per N seconds to the Logs (0 = off).
-    # Only the Logs are paced; violations always skip the queue.
-    slow_mode_seconds: float = 0.0
     # Off (default): a violation alert flashes and sounds once, then clears by
     # itself when the next vehicle is scanned. Every scan is still logged.
     # On: the alert stays until a guard acknowledges it. Until then the
