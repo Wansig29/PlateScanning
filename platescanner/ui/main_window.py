@@ -13,7 +13,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import QActionGroup, QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -22,7 +22,7 @@ from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config, save_config
 from ..pipeline import (
-    CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker, ScanResult, VideoScanWorker, to_qimage,
+    CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker, ScanResult, to_qimage,
 )
 from ..session import clear_session, save_session
 from ..sync import run_sync
@@ -175,8 +175,6 @@ class MainWindow(QMainWindow):
         self._slow_timer.timeout.connect(self._drain)
         self.db_window: DatabaseWindow | None = None
         self.reports_window: ReportsWindow | None = None
-        self.video_scan: VideoScanWorker | None = None
-        self._video_found = 0
 
         self._build_ui()
         self._update_slow_label()
@@ -267,12 +265,6 @@ class MainWindow(QMainWindow):
         umenu.addAction("Check for updates now").triggered.connect(lambda: self._check_updates(True))
         self.update_mode_btn.setMenu(umenu)
         tl.addWidget(self.update_mode_btn)
-        self.video_btn = QPushButton("▶  Scan video")
-        self.video_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.video_btn.setToolTip("Scan a recorded video for plates, frame by frame. The live camera keeps running.")
-        self.video_btn.setEnabled(False)  # until the plate models are loaded
-        self.video_btn.clicked.connect(self._video_clicked)
-        tl.addWidget(self.video_btn)
         self.sync_btn = QPushButton("↻  Sync Now")
         self.sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sync_btn.setObjectName("Primary")
@@ -439,7 +431,6 @@ class MainWindow(QMainWindow):
         self.recognizer = RecognizerWorker(self.cfg, slot, self.capture)
         self.recognizer.status.connect(lambda m: self._set_status(self.ocr_status, f"OCR: {m}", theme.AMBER))
         self.recognizer.ready.connect(lambda m: self._set_status(self.ocr_status, m, theme.GREEN))
-        self.recognizer.ready.connect(lambda _m: self.video_btn.setEnabled(True))
         self.recognizer.failed.connect(self._ocr_failed)
         self.recognizer.scanned.connect(self._on_scan)
         self.recognizer.unreadable.connect(self._on_no_plate)
@@ -680,50 +671,6 @@ class MainWindow(QMainWindow):
         self.reports_window.show()
         self.reports_window.raise_()
         self.reports_window.activateWindow()
-
-    # --- scanning a video file ---------------------------------------------------
-
-    def _video_clicked(self) -> None:
-        if self.video_scan is not None:  # the button reads "Stop" while scanning
-            self.video_scan.stop()
-            self.video_btn.setEnabled(False)
-            self.video_btn.setText("Stopping…")
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Scan a video for plates", "",
-            "Videos (*.mp4 *.avi *.mkv *.mov *.wmv *.m4v *.mpg *.mpeg *.ts);;All files (*)")
-        if not path:
-            return
-        self._video_found = 0
-        w = VideoScanWorker(self.cfg, path, self.recognizer.engine)
-        w.scanned.connect(self._on_scan)
-        w.scanned.connect(self._count_video_plate)
-        w.unreadable.connect(self._on_no_plate)
-        w.progress.connect(self._video_progress)
-        w.failed.connect(lambda msg: QMessageBox.warning(self, "Scan video", msg))
-        w.finished.connect(self._video_finished)
-        self.video_scan = w
-        self.video_btn.setText("■  Stop video scan")
-        self.statusBar().showMessage(f"Scanning {w.video_name} frame by frame…")
-        w.start()
-
-    def _count_video_plate(self, _scan: ScanResult) -> None:
-        self._video_found += 1
-
-    def _video_progress(self, done: int, total: int) -> None:
-        if self.video_scan is not None and not self.video_scan.stopping:
-            share = f"{min(99, done * 100 // total)}%" if total else f"{done} frames"
-            self.video_btn.setText(f"■  Stop video scan ({share})")
-
-    def _video_finished(self) -> None:
-        w, self.video_scan = self.video_scan, None
-        self.video_btn.setEnabled(True)
-        self.video_btn.setText("▶  Scan video")
-        if w is not None:
-            n = self._video_found
-            self.statusBar().showMessage(
-                f"Video scan of {w.video_name} {'stopped' if w.stopping else 'finished'}: "
-                f"{w.frames_processed:,} frames scanned, {n} plate{'s' if n != 1 else ''} found", 20000)
 
     # --- account ------------------------------------------------------------
 
@@ -1011,9 +958,6 @@ class MainWindow(QMainWindow):
         self.sound.cancel()
         self.capture.stop()
         self.recognizer.stop()
-        if self.video_scan is not None:
-            self.video_scan.stop()
-            self.video_scan.wait(5000)
         self.sync_thread.quit()
         self.capture.wait(3000)
         self.recognizer.wait(3000)
