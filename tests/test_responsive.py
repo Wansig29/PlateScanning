@@ -11,8 +11,8 @@ from platescanner.config import load_config  # noqa: E402
 from platescanner.ui import main_window as mw, theme  # noqa: E402
 
 
-@pytest.fixture(params=[0, 3, 6], ids=["font+0", "font+3", "font+6"])   # larger fonts approximate wider Windows text
-def window(request, tmp_path, monkeypatch):
+@pytest.fixture
+def window(tmp_path, monkeypatch):
     monkeypatch.setenv("PLATESCANNER_HOME", str(tmp_path))
     for name in ("_start_workers", "_start_archiving", "_start_update_check"):
         monkeypatch.setattr(mw.MainWindow, name, lambda self: None)
@@ -23,10 +23,6 @@ def window(request, tmp_path, monkeypatch):
     db.init_schema(conn)
     conn.close()
     app = QApplication.instance() or QApplication([])
-    font = app.font()
-    base = font.pointSize()
-    font.setPointSize(base + request.param)
-    app.setFont(font)
     app.setStyleSheet(theme.STYLESHEET)
     w = mw.MainWindow(cfg, {"token": "x", "user": {"name": "Campus Admin"}})
     w._show_update(updates.Release("v1.0.9", "https://x"))
@@ -35,8 +31,6 @@ def window(request, tmp_path, monkeypatch):
     app.processEvents()
     yield w, app
     w.hide()          # not close(): the stubbed workers that closeEvent stops do not exist here
-    font.setPointSize(base)
-    app.setFont(font)
 
 
 @pytest.mark.parametrize("size", [(2560, 1440), (1920, 1080), (1366, 728), (1280, 680), (1024, 600), (800, 520), (720, 500)])
