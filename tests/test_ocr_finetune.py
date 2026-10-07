@@ -130,6 +130,7 @@ def test_split_command_writes_csv(tmp_path):
 
 
 def test_prepare_writes_annotations(tmp_path):
+    pytest.importorskip("albumentations")   # prepare also writes augmentation.yaml; training-only dependency
     import cv2
     import numpy as np
     data = tmp_path / "data"
