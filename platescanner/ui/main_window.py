@@ -6,7 +6,6 @@ import queue
 import sys
 import threading
 import time
-from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -38,7 +37,6 @@ from .widgets import (
 log = logging.getLogger(__name__)
 
 SYNC_RETRY_MS = 15 * 60 * 1000
-SLOW_MODE_CHOICES = [0, 2, 3, 5, 10]
 
 
 class SyncWorker(QObject):
@@ -163,21 +161,16 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("PSAU Gate Plate Scanner")
         self.resize(1440, 860)
 
-        self._pending: deque = deque()
         # Which violator the dashboard shows, and who is queued behind it.
         self.dash = DashboardQueue(self.cfg.scan.require_acknowledge)
         self.sound = AlertSound()
         # Which vehicles (#ids) are in the picture right now, and when the others left it.
         self._in_view: set[int] = set()
         self._left_at: dict[int, float] = {}
-        self._last_shown = 0.0
-        self._slow_timer = QTimer(self, singleShot=True)
-        self._slow_timer.timeout.connect(self._drain)
         self.db_window: DatabaseWindow | None = None
         self.reports_window: ReportsWindow | None = None
 
         self._build_ui()
-        self._update_slow_label()
         self._load_history()
         self._restore_unacknowledged()
         self._start_workers()
@@ -304,23 +297,6 @@ class MainWindow(QMainWindow):
         self.logs = LogsPanel()
         self.logs.show_ack = self.cfg.scan.require_acknowledge
         self.logs.scan_selected.connect(self._show_scan_from_log)
-        self.slow_btn = QToolButton()
-        self.slow_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.slow_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.slow_btn.setToolTip("Slow mode: when vehicles are scanned quickly, add at most one log entry per "
-                                 "interval so each can be read. Only the logs are paced: the dashboard and "
-                                 "captured plates always update immediately, and violations are never delayed.")
-        menu = QMenu(self.slow_btn)
-        group = QActionGroup(menu)
-        for secs in SLOW_MODE_CHOICES:
-            act = menu.addAction("Off" if secs == 0 else f"{secs} seconds")
-            act.setCheckable(True)
-            act.setChecked(secs == self.cfg.scan.slow_mode_seconds)
-            act.triggered.connect(lambda _c=False, s=secs: self._set_slow_mode(s))
-            group.addAction(act)
-        self.slow_btn.setMenu(menu)
-        self.logs.header.addSpacing(10)
-        self.logs.header.addWidget(self.slow_btn)
         left.addWidget(self.logs)
         left.setStretchFactor(0, 3)
         left.setStretchFactor(1, 1)
@@ -722,50 +698,10 @@ class MainWindow(QMainWindow):
         saw = ", ".join(ev.ocr_saw[:6]) if ev.ocr_saw else "no text at all"
         self.statusBar().showMessage(f"Motion detected but no plate read (OCR saw: {saw})", 10000)
         if ev.scan_id is not None:
-            self._enqueue_log((ev.scan_id, ev.ts.isoformat(timespec="seconds"), "", db.RESULT_NO_PLATE, ""))
-
-    # --- slow mode (paces the Logs feed only) -----------------------------------
-
-    def _set_slow_mode(self, seconds: float) -> None:
-        self.cfg.scan.slow_mode_seconds = seconds
-        if seconds == 0:
-            while self._pending:  # flush everything that was waiting
-                self._log(self._pending.popleft())
-        self._drain()
-
-    def _enqueue_log(self, entry: tuple, urgent: bool = False) -> None:
-        """entry: LogsPanel.add_entry arguments."""
-        if urgent:
-            self._log(entry)  # violations never wait in the queue
-        else:
-            self._pending.append(entry)
-        self._drain()
-
-    def _log(self, entry: tuple) -> None:
-        self._last_shown = time.monotonic()
-        self.logs.add_entry(*entry)
-
-    def _drain(self) -> None:
-        interval = self.cfg.scan.slow_mode_seconds
-        while self._pending:
-            wait = self._last_shown + interval - time.monotonic()
-            if interval > 0 and wait > 0:
-                if not self._slow_timer.isActive():
-                    self._slow_timer.start(int(wait * 1000) + 1)
-                break
-            self._log(self._pending.popleft())
-        self._update_slow_label()
-
-    def _update_slow_label(self) -> None:
-        secs = self.cfg.scan.slow_mode_seconds
-        text = "Slow mode: Off  ▾" if not secs else f"Slow mode: {secs:g}s  ▾"
-        if self._pending:
-            text += f"  ·  {len(self._pending)} queued"
-        self.slow_btn.setText(text)
-        self.slow_btn.setStyleSheet(f"color: {theme.AMBER};" if secs else "")
+            self.logs.add_entry(ev.scan_id, ev.ts.isoformat(timespec="seconds"), "", db.RESULT_NO_PLATE, "")
 
     def _display(self, scan: ScanResult) -> None:
-        """Dashboard and captured plates update at once; only the log entry is paced by slow mode."""
+        """Update the dashboard, the captured plates and the logs for one scan."""
         res = scan.lookup
         shown_plate = res.matched_plate or scan.read.text
         crop_pm = QPixmap.fromImage(to_qimage(scan.read.crop))
@@ -784,10 +720,8 @@ class MainWindow(QMainWindow):
         self._update_pending()
         self.captured.add_capture(scan.scan_id, ts, vehicle_pm or crop_pm, shown_plate, scan.read.confidence,
                                   res.status, scan.snapshot_path, scan.color)
-        # ts is the real scan time, so a paced entry still shows when the vehicle actually passed.
-        self._enqueue_log((scan.scan_id, ts, shown_plate, res.status, ("VERIFY PLATE · " if scan.verify else "") + self._detail(res), res.approximate,
-                           scan.read.confidence, self._looks(scan.color, scan.position, scan.source), None),
-                          urgent=is_violation)
+        self.logs.add_entry(scan.scan_id, ts, shown_plate, res.status, ("VERIFY PLATE · " if scan.verify else "") + self._detail(res), res.approximate,
+                           scan.read.confidence, self._looks(scan.color, scan.position, scan.source), None)
         self._refresh_sync_label()
         if res.status == db.RESULT_VIOLATION:
             self._alert()
