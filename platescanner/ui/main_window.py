@@ -379,7 +379,7 @@ class MainWindow(QMainWindow):
 
     def _tick(self) -> None:
         now = datetime.now()
-        self.clock.setText(now.strftime("%H:%M:%S"))
+        self.clock.setText(now.strftime("%I:%M:%S %p").lstrip("0"))   # 12-hour, e.g. 6:28:29 PM
         self.clock_date.setText(now.strftime("%A, %b %d, %Y"))
 
     def _toggle_fullscreen(self) -> None:
