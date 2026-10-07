@@ -146,6 +146,7 @@ def _ago(iso: str | None) -> str:
 
 
 class MainWindow(QMainWindow):
+    SYNC_LABEL_MAX_WIDTH = 340           # px; a long sync error is cut short (full text in the tooltip)
     request_sync = Signal(bool)
     token_changed = Signal(str)
     update_found = Signal(object)        # updates.Release; these three are emitted from update threads
@@ -231,33 +232,15 @@ class MainWindow(QMainWindow):
         clock_box.addWidget(self.clock_date)
         tl.addLayout(clock_box)
         tl.addStretch(1)
-        self.sync_label = QLabel()
-        self.sync_label.setObjectName("Muted")
-        tl.addWidget(self.sync_label)
         self.update_btn = QPushButton()
         self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.setObjectName("Primary")
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._update_clicked)
         tl.addWidget(self.update_btn)
-        self.update_mode_btn = QToolButton()
-        self.update_mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.update_mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.update_mode_btn.setToolTip("Manual: show a banner when a new version exists; it downloads when you "
-                                        "click it. Auto: download new versions in the background. Either way "
-                                        "nothing installs until you click the update button.")
-        self.update_mode_btn.setText(f"Updates: {self.cfg.update.mode.capitalize()}")
-        umenu = QMenu(self.update_mode_btn)
-        ugroup = QActionGroup(umenu)
-        for mode in ("manual", "auto"):
-            act = umenu.addAction(mode.capitalize())
-            act.setCheckable(True)
-            act.setChecked(mode == self.cfg.update.mode)
-            act.triggered.connect(lambda _c=False, m=mode: self._set_update_mode(m))
-            ugroup.addAction(act)
-        umenu.addSeparator()
-        umenu.addAction("Check for updates now").triggered.connect(lambda: self._check_updates(True))
-        self.update_mode_btn.setMenu(umenu)
-        tl.addWidget(self.update_mode_btn)
+        self.sync_label = QLabel()
+        self.sync_label.setObjectName("Muted")
+        tl.addWidget(self.sync_label)
         self.sync_btn = QPushButton("↻  Sync Now")
         self.sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sync_btn.setObjectName("Primary")
@@ -265,10 +248,25 @@ class MainWindow(QMainWindow):
                                  "removing vehicles and violations deleted online")
         self.sync_btn.clicked.connect(lambda: self._sync(True))
         tl.addWidget(self.sync_btn)
-        self.account_btn = QPushButton()
-        self.account_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.account_btn.clicked.connect(self._account_clicked)
-        tl.addWidget(self.account_btn)
+        tl.addSpacing(6)
+        tl.addWidget(self._separator())
+        tl.addSpacing(6)
+        self.reports_btn = QPushButton("📊  Reports")
+        self.reports_btn.setObjectName("Nav")
+        self.reports_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.reports_btn.setToolTip("Scans of the last day / week / month / year, by result")
+        self.reports_btn.clicked.connect(self._open_reports)
+        tl.addWidget(self.reports_btn)
+        self.database_btn = QPushButton("🗄  Database")
+        self.database_btn.setObjectName("Nav")
+        self.database_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.database_btn.setToolTip("Browse the synced vehicles and violations")
+        self.database_btn.clicked.connect(self._open_database)
+        tl.addWidget(self.database_btn)
+        tl.addSpacing(6)
+        tl.addWidget(self._separator())
+        tl.addSpacing(6)
+        tl.addWidget(self._build_account_menu())
         rl.addWidget(top)
 
         self._tick()
@@ -335,21 +333,45 @@ class MainWindow(QMainWindow):
         self.health_status = QLabel()
         self.health_status.hide()
         self._health_issues: dict[str, tuple[str, str]] = {}
-        self.db_status.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.db_status.setToolTip("Browse the synced vehicles and violations")
-        self.db_status.mousePressEvent = lambda _e: self._open_database()  # type: ignore[method-assign]
-        self.reports_status = QLabel("Reports")
-        self.reports_status.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.reports_status.setToolTip("Scans of the last day / week / month / year, by result")
-        self.reports_status.mousePressEvent = lambda _e: self._open_reports()  # type: ignore[method-assign]
         self._set_status(self.cam_status, "Camera: starting", theme.AMBER)
         self._set_status(self.ocr_status, "OCR: loading", theme.AMBER)
         for w in (self.cam_status, self.ocr_status, self.health_status):
             sb.addWidget(w)
-        sb.addPermanentWidget(self.reports_status)
         sb.addPermanentWidget(self.db_status)
         self.setStatusBar(sb)
         self._update_account_btn()
+
+    @staticmethod
+    def _separator() -> QFrame:
+        line = QFrame()
+        line.setObjectName("VSep")
+        line.setFixedHeight(28)
+        return line
+
+    def _build_account_menu(self) -> QToolButton:
+        """One compact button for the signed-in user, sign out and the update settings."""
+        self.account_btn = QToolButton()
+        self.account_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.account_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.account_btn.setToolTip("Account and update settings")
+        menu = QMenu(self.account_btn)
+        self.account_action = menu.addAction("Sign out")
+        self.account_action.triggered.connect(self._account_clicked)
+        menu.addSeparator()
+        menu.addAction("Software updates").setEnabled(False)
+        group = QActionGroup(menu)
+        self._update_mode_actions = {}
+        for mode, label in (("manual", "Manual: ask me before installing"),
+                            ("auto", "Auto: download new versions in the background")):
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.setChecked(mode == self.cfg.update.mode)
+            act.triggered.connect(lambda _c=False, m=mode: self._set_update_mode(m))
+            group.addAction(act)
+            self._update_mode_actions[mode] = act
+        menu.addAction("Check for updates now").triggered.connect(lambda: self._check_updates(True))
+        self.account_btn.setMenu(menu)
+        return self.account_btn
 
     @staticmethod
     def _set_status(label: QLabel, text: str, color: str) -> None:
@@ -569,7 +591,6 @@ class MainWindow(QMainWindow):
     def _set_update_mode(self, mode: str) -> None:
         self.cfg.update.mode = mode
         save_config(self.cfg)
-        self.update_mode_btn.setText(f"Updates: {mode.capitalize()}")
         if mode == "auto":
             self._check_updates(False)
 
@@ -620,16 +641,18 @@ class MainWindow(QMainWindow):
         last = db.get_state(self.conn, "last_sync_at")
         c = db.counts(self.conn)
         self._set_status(self.db_status,
-                         f"Local DB: {c['vehicles']:,} vehicles · {c['violations']:,} active violations"
-                         f"&nbsp;&nbsp;<span style='color:{theme.ACCENT_HOVER}; text-decoration: underline;'>"
-                         "View</span>",
+                         f"Local DB: {c['vehicles']:,} vehicles · {c['violations']:,} active violations",
                          theme.ACCENT)
         if error:
-            self.sync_label.setText(f"⚠ {error} · last synced {_ago(last)}")
+            full = f"⚠ {error} · last synced {_ago(last)}"
+            self.sync_label.setText(self.sync_label.fontMetrics().elidedText(
+                full, Qt.TextElideMode.ElideRight, self.SYNC_LABEL_MAX_WIDTH))
+            self.sync_label.setToolTip(full)
             self.sync_label.setStyleSheet(f"color: {theme.AMBER};")
         else:
             prefix = "" if self.session else "Offline mode · "
             self.sync_label.setText(f"{prefix}Last synced {_ago(last)}")
+            self.sync_label.setToolTip("")
             self.sync_label.setStyleSheet("")
 
     def _open_database(self) -> None:
@@ -654,9 +677,11 @@ class MainWindow(QMainWindow):
         if self.session:
             user = self.session.get("user") or {}
             name = user.get("name") or user.get("email") or "Guard"
-            self.account_btn.setText(f"Sign out ({name})")
+            self.account_btn.setText(f"👤  {name}  ▾")
+            self.account_action.setText("Sign out")
         else:
-            self.account_btn.setText("Sign in")
+            self.account_btn.setText("👤  Not signed in  ▾")
+            self.account_action.setText("Sign in")
 
     def _account_clicked(self) -> None:
         if self.session:
