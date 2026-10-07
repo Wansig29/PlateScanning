@@ -1,20 +1,23 @@
-"""Dark console theme for the gate screen."""
+"""PSAU-branded dark console theme (forest green and gold) for the gate screen."""
 
-BG = "#0b1016"
-PANEL = "#121a23"
-PANEL_ALT = "#1a2430"
-PANEL_HOVER = "#212d3b"
-BORDER = "#253140"
-BORDER_STRONG = "#344357"
-TEXT = "#e8eef5"
-MUTED = "#8a98aa"
-FAINT = "#5f6d80"
-ACCENT = "#3b82f6"
-ACCENT_HOVER = "#5b98f8"
-VIDEO_BG = "#05080b"
+# PSAU palette, taken from the university logo: deep forest green + gold ring.
+BG = "#07140f"
+PANEL = "#0d2118"
+PANEL_ALT = "#14301f"
+PANEL_HOVER = "#1b3d2a"
+BORDER = "#1f4531"
+BORDER_STRONG = "#2e6045"
+TEXT = "#f4f1e6"
+MUTED = "#9db3a5"
+FAINT = "#6b8576"
+ACCENT = "#f5d31f"          # PSAU gold
+ACCENT_HOVER = "#ffe24d"
+ACCENT_PRESSED = "#d9b80f"
+ON_ACCENT = "#10402f"       # PSAU green, for text on gold
+VIDEO_BG = "#030a07"
 
 RED = "#ef4444"
-GREEN = "#22c55e"
+GREEN = "#34d27b"
 AMBER = "#f59e0b"
 
 MONO = '"Cascadia Mono", Consolas, monospace'
@@ -24,7 +27,7 @@ RESULT_LABELS = {"violation": "VIOLATION", "clear": "NO VIOLATION", "not_registe
                  "no_plate": "NO PLATE READ"}
 RESULT_ICONS = {"violation": "⛔", "clear": "✔", "not_registered": "?", "no_plate": "–"}
 # Dark, low-saturation fills behind status text (badges, banners, rows).
-RESULT_TINTS = {"violation": "#3a1418", "clear": "#0f2e1c", "not_registered": "#35260a", "no_plate": "#1a2430"}
+RESULT_TINTS = {"violation": "#3a1418", "clear": "#0f3a22", "not_registered": "#3a2c08", "no_plate": "#14301f"}
 
 
 def dot(color: str, text: str) -> str:
@@ -57,9 +60,9 @@ QLabel#Muted {{ color: {MUTED}; }}
 QLabel#Faint {{ color: {FAINT}; font-size: 9pt; }}
 QLabel#OwnerName {{ font-size: 15pt; font-weight: 700; }}
 QLabel#PlateChip, QFrame#Panel QLabel#PlateChip, QFrame#TopBar QLabel#PlateChip {{
-    background: #f4f6f8;
-    color: #0b1016;
-    border: 2px solid #0b1016;
+    background: #f7f5ec;
+    color: #10402f;
+    border: 2px solid #10402f;
     border-radius: 5px;
     padding: 2px 10px;
     font-family: {MONO};
@@ -89,7 +92,7 @@ QLabel#AppTitle {{ font-size: 12.5pt; font-weight: 700; }}
 QLabel#AppSubtitle {{ color: {MUTED}; font-size: 8.5pt; }}
 QLabel#BrandMark, QFrame#Panel QLabel#BrandMark, QFrame#TopBar QLabel#BrandMark {{
     background: {ACCENT};
-    color: white;
+    color: {ON_ACCENT};
     border-radius: 8px;
     font-size: 13pt;
     font-weight: 800;
@@ -110,9 +113,9 @@ QPushButton, QFrame#Panel QPushButton, QFrame#TopBar QPushButton {{
 QPushButton:hover, QFrame#Panel QPushButton:hover, QFrame#TopBar QPushButton:hover {{ background: {PANEL_HOVER}; border-color: {BORDER_STRONG}; }}
 QPushButton:pressed, QFrame#Panel QPushButton:pressed, QFrame#TopBar QPushButton:pressed {{ background: {BORDER}; }}
 QPushButton:disabled, QFrame#Panel QPushButton:disabled, QFrame#TopBar QPushButton:disabled {{ color: {MUTED}; }}
-QPushButton#Primary, QFrame#Panel QPushButton#Primary, QFrame#TopBar QPushButton#Primary {{ background: {ACCENT}; border-color: {ACCENT}; color: white; font-weight: 600; }}
+QPushButton#Primary, QFrame#Panel QPushButton#Primary, QFrame#TopBar QPushButton#Primary {{ background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT}; font-weight: 600; }}
 QPushButton#Primary:hover, QFrame#Panel QPushButton#Primary:hover, QFrame#TopBar QPushButton#Primary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
-QPushButton#Primary:pressed, QFrame#Panel QPushButton#Primary:pressed, QFrame#TopBar QPushButton#Primary:pressed {{ background: #2f6fd8; }}
+QPushButton#Primary:pressed, QFrame#Panel QPushButton#Primary:pressed, QFrame#TopBar QPushButton#Primary:pressed {{ background: {ACCENT_PRESSED}; border-color: {ACCENT_PRESSED}; }}
 QPushButton#Primary:disabled, QFrame#Panel QPushButton#Primary:disabled, QFrame#TopBar QPushButton#Primary:disabled {{ background: {PANEL_ALT}; border-color: {BORDER}; color: {MUTED}; }}
 QFrame#TopBar QPushButton {{ padding: 7px 12px; }}
 QPushButton#Nav, QFrame#TopBar QPushButton#Nav {{ background: transparent; border: 1px solid {BORDER_STRONG}; color: {TEXT}; font-weight: 600; padding: 7px 12px; }}
@@ -156,12 +159,13 @@ QLineEdit {{
     border-radius: 7px;
     padding: 9px 11px;
     selection-background-color: {ACCENT};
+    selection-color: {ON_ACCENT};
 }}
 QLineEdit:hover {{ border-color: {BORDER_STRONG}; }}
 QLineEdit:focus {{ border-color: {ACCENT}; }}
 QTableWidget {{
     background: transparent;
-    alternate-background-color: rgba(255, 255, 255, 0.018);
+    alternate-background-color: rgba(245, 211, 31, 0.025);
     border: none;
     gridline-color: transparent;
     selection-background-color: {PANEL_HOVER};
