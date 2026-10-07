@@ -489,6 +489,7 @@ class RecognizerWorker(QThread):
 
         for track, i in matched:
             track.neural_hits += dets[i].neural
+            track.motion_hits += f.motion
         real = {i for t, i in matched if t.neural_hits or t.reads}  # not classical guesses
 
         def others(i: int) -> list[tuple[int, int, int, int]]:
@@ -648,6 +649,8 @@ class RecognizerWorker(QThread):
         # classical finder's guesses at windows, signs or lane marks.
         if track.emitted_key or track.neural_hits < self.cfg.scan.min_hits_for_unread:
             return
+        if not track.motion_hits:
+            return  # nothing vehicle-like moved: a static or false detection, not a vehicle that passed
         # Plate seen in several frames but never readable: log it with a picture.
         ts = datetime.now()
         snap = self._save_locator(track, ts, "noplate", db.RESULT_NO_PLATE, f"#{track.track_id} plate not readable", (150, 150, 150))

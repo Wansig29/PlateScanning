@@ -51,6 +51,27 @@ def test_motorcycle_from_the_front_is_vehicle_motion():
     assert any(_motion_frames(cfg, bike))
 
 
+def test_person_fidgeting_in_place_is_not_vehicle_motion():
+    """A wide blob (close to the camera, seated) that wobbles about without travelling."""
+    cfg = MotionConfig(warmup_frames=10)
+    wobble = lambda f, i: cv2.rectangle(f, (200 + int(8 * np.sin(i)), 100), (360 + int(8 * np.sin(i)), 300), (30, 30, 30), -1)  # noqa: E731
+    assert not any(_motion_frames(cfg, wobble, n=60))
+
+
+def test_travel_rule_accepts_crossing_or_growing_but_not_wobbling():
+    det = MotionDetector(MotionConfig())
+    n = det.cfg.travel_frames
+
+    def verdict(trail):
+        det._trail.clear()
+        det._trail.extend(trail)
+        return det._travelling()
+    assert verdict([(0.30 + 0.01 * i, 0.05) for i in range(n)])             # driving across: centre moves
+    assert verdict([(0.50, 0.03 + 0.005 * i) for i in range(n)])            # driving up to the camera: area grows
+    assert not verdict([(0.50 + 0.01 * (i % 2), 0.05) for i in range(n)])   # wobbling in place
+    assert not verdict([(0.30 + 0.01 * i, 0.05) for i in range(n - 3)])     # not enough history yet
+
+
 def test_scattered_flicker_is_not_vehicle_motion():
     cfg = MotionConfig(warmup_frames=10)
     rng = np.random.default_rng(0)

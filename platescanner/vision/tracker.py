@@ -48,6 +48,7 @@ class Track:
     last_seen: float
     hits: int = 1
     neural_hits: int = 0  # detections by the neural plate detector (vs. classical proposals)
+    motion_hits: int = 0  # frames of vehicle-like motion while this plate was tracked
     max_width: int = 0    # widest the plate box got, in px (how well the camera resolves it)
     velocity: tuple[float, float] = (0.0, 0.0)  # px/s of the box center
     reads: list[tuple[str, str, float, list[float]]] = field(default_factory=list)  # (text, raw, conf, char probs)
