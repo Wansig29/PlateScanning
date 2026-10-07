@@ -3,7 +3,7 @@
     python tools/make_icon.py
 
 Writes app.ico / app.png (window + taskbar icon) and logo_badge.png (top bar and sign-in screen): the
-transparent logo on a white rounded tile so its green strokes stay readable on the dark theme.
+transparent logo on a white circle so its green strokes stay readable on the dark theme.
 """
 from pathlib import Path
 
@@ -14,13 +14,13 @@ CREAM = (255, 255, 255, 255)
 
 
 def badge(size: int = 256) -> Image.Image:
-    tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ImageDraw.Draw(tile).rounded_rectangle((0, 0, size - 1, size - 1), radius=size * 0.10, fill=CREAM)
-    logo = Image.open(ASSETS / "psau_logo.png").convert("RGBA")
-    inner = int(size * 0.96)
-    logo = logo.resize((inner, inner), Image.LANCZOS)
-    tile.alpha_composite(logo, ((size - inner) // 2, (size - inner) // 2))
-    return tile
+    big = size * 4  # draw large, then downsample for a smooth circle edge
+    tile = Image.new("RGBA", (big, big), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).ellipse((0, 0, big - 1, big - 1), fill=CREAM)
+    inner = int(big * 0.84)
+    logo = Image.open(ASSETS / "psau_logo.png").convert("RGBA").resize((inner, inner), Image.LANCZOS)
+    tile.alpha_composite(logo, ((big - inner) // 2, (big - inner) // 2))
+    return tile.resize((size, size), Image.LANCZOS)
 
 
 if __name__ == "__main__":

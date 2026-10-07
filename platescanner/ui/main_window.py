@@ -242,7 +242,7 @@ class MainWindow(QMainWindow):
         tl = QHBoxLayout(top)
         tl.setContentsMargins(16, 10, 16, 10)
         tl.setSpacing(8)
-        mark = theme.brand_mark(36)
+        mark = theme.brand_mark(42)
         tl.addWidget(mark)
         self._titles = QWidget()                 # hidden in the most compact density: only the logo stays
         titles = QVBoxLayout(self._titles)

@@ -38,7 +38,7 @@ class LoginDialog(QDialog):
 
         head = QHBoxLayout()
         head.setSpacing(12)
-        mark = theme.brand_mark(42)
+        mark = theme.brand_mark(64)
         head.addWidget(mark)
         titles = QVBoxLayout()
         titles.setSpacing(0)
