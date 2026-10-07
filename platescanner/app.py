@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication, QDialog
 from . import db
 from .config import bundle_dir, load_config
 from .session import load_session, save_session
-from .ui import theme
+from .ui import appearance, theme
 from .ui.login import LoginDialog
 from .ui.main_window import MainWindow
 
@@ -50,6 +50,7 @@ def main() -> None:
     if icon.exists():
         app.setWindowIcon(QIcon(str(icon)))
     app.setStyle("Fusion")
+    theme.apply(appearance.load_mode(cfg.home))
     app.setStyleSheet(theme.STYLESHEET)
 
     session = load_session(cfg.session_path)
@@ -62,5 +63,6 @@ def main() -> None:
             session = {"token": dlg.token, "user": dlg.user}
 
     win = MainWindow(cfg, session)
+    appearance.install(win, cfg.home)
     win.showFullScreen() if args.fullscreen else win.show()
     sys.exit(app.exec())
