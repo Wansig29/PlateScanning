@@ -29,6 +29,8 @@ class _Resp:
     def json(self):
         return self._d
 
+    headers: dict = {}
+
     def iter_content(self, _n):
         return iter(self._chunks)
 
@@ -94,3 +96,13 @@ def test_clean_old_installers_keeps_only_a_pending_newer_one(tmp_path):
     assert updates.clean_old_installers(tmp_path, "1.0.3") == 3          # 1.0.2, 1.0.3 (installed), the .part
     assert sorted(p.name for p in tmp_path.iterdir()) == ["PlateScanner-Setup-v1.0.4.exe", "notes.txt"]
     assert updates.clean_old_installers(tmp_path / "missing", "1.0.3") == 0
+
+
+def test_download_reports_progress(monkeypatch, tmp_path):
+    chunks = [b"a" * 10, b"b" * 10, b"c" * 20]
+    resp = _Resp(chunks=chunks)
+    resp.headers = {"Content-Length": "40"}
+    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: resp)
+    seen = []
+    updates.download_installer(updates.Release("v1.2.0", "p", "u"), tmp_path, lambda done, total: seen.append((done, total)))
+    assert seen == [(10, 40), (20, 40), (40, 40)]

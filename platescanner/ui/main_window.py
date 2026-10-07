@@ -154,6 +154,8 @@ class MainWindow(QMainWindow):
     update_downloaded = Signal(str)      # path of an installer that is downloaded and waiting
     install_now = Signal(str)            # path of an installer to run (operator already said yes)
     update_message = Signal(str)
+    update_progress = Signal(int)        # download percent, 0-100
+    update_failed = Signal(str)          # shown in a message box, not only in the status bar
 
     def __init__(self, cfg: Config, session: dict | None):
         super().__init__()
@@ -356,6 +358,8 @@ class MainWindow(QMainWindow):
         self.account_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
         self.account_btn.setToolTip("Account and update settings")
         menu = QMenu(self.account_btn)
+        menu.addAction(f"PlateScanner v{__version__}").setEnabled(False)
+        menu.addSeparator()
         self.account_action = menu.addAction("Sign out")
         self.account_action.triggered.connect(self._account_clicked)
         menu.addSeparator()
@@ -511,6 +515,9 @@ class MainWindow(QMainWindow):
         self.update_message.connect(lambda m: self.statusBar().showMessage(m, 8000))
         self.update_downloaded.connect(self._update_downloaded)
         self.install_now.connect(self._install_update)
+        self.update_progress.connect(self._update_progress)
+        self.update_failed.connect(self._update_failed)
+        self._update_pct = 0
         self._installer: Path | None = None   # downloaded and waiting for the operator
         updates.clean_old_installers(self.cfg.home / "updates", __version__)
         self.update_timer = QTimer(self)
@@ -536,7 +543,8 @@ class MainWindow(QMainWindow):
             self.update_found.emit(rel)
             if self.cfg.update.mode == "auto" and rel.installer_url and updates.can_self_install():
                 self.update_message.emit(f"Downloading update {rel.tag}…")
-                self.update_downloaded.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
+                self.update_downloaded.emit(str(updates.download_installer(
+                    rel, self.cfg.home / "updates", self._report_progress)))
         except Exception as e:  # noqa: BLE001  a failed update must never disturb gate scanning
             log.warning("update failed: %s", e)
             if manual:
@@ -564,6 +572,10 @@ class MainWindow(QMainWindow):
         if not (rel.installer_url and updates.can_self_install()):
             QDesktopServices.openUrl(QUrl(rel.page))        # running from source: download by hand
             return
+        if self._update_busy:
+            QMessageBox.information(self, "Update", f"The update is still downloading ({self._update_pct}%).\n\n"
+                                    "Please wait for it to finish, then click the update button again.")
+            return
         ready = self._installer is not None and self._installer.is_file()
         ok = QMessageBox.question(self, "Update available",
                                   f"Install {rel.tag} now?\n\nThe scanner closes, updates and reopens by "
@@ -572,22 +584,50 @@ class MainWindow(QMainWindow):
             return
         if ready:
             self._install_update(str(self._installer))
-        elif not self._update_busy:
-            self._update_busy = True
-            self.statusBar().showMessage(f"Downloading update {rel.tag}…")
-            threading.Thread(target=self._download_job, args=(rel,), daemon=True, name="update-download").start()
+            return
+        self._update_busy = True
+        self._update_pct = 0
+        self.update_btn.setEnabled(False)
+        self.update_btn.setText("⬇  Downloading update… 0%")
+        threading.Thread(target=self._download_job, args=(rel,), daemon=True, name="update-download").start()
+
+    def _report_progress(self, done: int, total: int) -> None:
+        """Called on the download thread: emits only when the whole percent changes."""
+        pct = min(99, done * 100 // total) if total else 0
+        if pct != self._update_pct:
+            self._update_pct = pct
+            self.update_progress.emit(pct)
+
+    @Slot(int)
+    def _update_progress(self, pct: int) -> None:
+        self.update_btn.setText(f"⬇  Downloading update… {pct}%")
 
     def _download_job(self, rel: updates.Release) -> None:
         try:
-            self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
+            self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates", self._report_progress)))
         except Exception as e:  # noqa: BLE001
-            self.update_message.emit(f"Update failed: {e}")
+            log.warning("update download failed: %s", e)
+            self.update_failed.emit(f"The update could not be downloaded:\n\n{e}")
         finally:
             self._update_busy = False
 
     @Slot(str)
+    def _update_failed(self, message: str) -> None:
+        if self._release is not None:
+            self.update_btn.setText(f"⬆  Update {self._release.tag} available")
+        self.update_btn.setEnabled(True)
+        QMessageBox.warning(self, "Update", message + "\n\nYou can also download PlateScanner-Setup.exe from the "
+                            "release page and run it yourself.")
+
+    @Slot(str)
     def _install_update(self, path: str) -> None:
-        updates.launch_installer(Path(path))
+        try:
+            updates.launch_installer(Path(path))
+        except OSError as e:  # e.g. antivirus blocked the downloaded installer
+            log.warning("could not start the installer: %s", e)
+            self.update_btn.setEnabled(True)
+            QMessageBox.critical(self, "Update", f"The installer could not be started:\n\n{e}\n\nThe file is at:\n{path}")
+            return
         self.close()                                          # installer relaunches the app when done
 
     def _set_update_mode(self, mode: str) -> None:

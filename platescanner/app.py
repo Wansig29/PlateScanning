@@ -38,6 +38,7 @@ def main() -> None:
         cfg.camera.source = args.source
     _setup_logging(cfg.home)
     logging.getLogger(__name__).info("Data directory: %s", cfg.home)
+    sys.excepthook = lambda t, v, tb: logging.getLogger("uncaught").error("Uncaught exception", exc_info=(t, v, tb))
 
     conn = db.connect(cfg.db_path)
     db.init_schema(conn)

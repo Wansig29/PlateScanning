@@ -73,18 +73,25 @@ def check_for_update(current: str, url: str = LATEST_RELEASE_API) -> Release | N
     return rel
 
 
-def download_installer(rel: Release, folder: Path) -> Path:
-    """Download to folder; raises on any failure or if the checksum GitHub published does not match."""
+def download_installer(rel: Release, folder: Path, progress=None) -> Path:
+    """Download to folder; raises on any failure or if the checksum GitHub published does not match.
+
+    progress(done_bytes, total_bytes) is called after each chunk (total is 0 when the size is unknown)."""
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f"PlateScanner-Setup-{rel.tag}.exe"
     part = dest.with_suffix(".part")
     h = hashlib.sha256()
     with requests.get(rel.installer_url, stream=True, timeout=30) as r:
         r.raise_for_status()
+        total = int(r.headers.get("Content-Length") or 0)
+        done = 0
         with open(part, "wb") as f:
-            for chunk in r.iter_content(1 << 20):
+            for chunk in r.iter_content(1 << 18):
                 f.write(chunk)
                 h.update(chunk)
+                done += len(chunk)
+                if progress:
+                    progress(done, total)
     if rel.sha256 and h.hexdigest().lower() != rel.sha256.lower():
         part.unlink(missing_ok=True)
         raise ValueError("downloaded installer failed its checksum")
