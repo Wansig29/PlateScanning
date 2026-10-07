@@ -47,7 +47,7 @@ class ReportsWindow(QDialog):
             b.setMinimumWidth(84)   # room for the bold text of the selected button
             b.setCursor(Qt.CursorShape.PointingHandCursor)
             b.setStyleSheet(f"QPushButton:checked {{ background: {theme.ACCENT}; border-color: {theme.ACCENT};"
-                            "color: white; font-weight: 700; }")
+                            f"color: {theme.ON_ACCENT}; font-weight: 700; }}")
             b.clicked.connect(lambda _c=False, k=key: self.set_period(k))
             self.period_btns[key] = b
             top.addWidget(b)

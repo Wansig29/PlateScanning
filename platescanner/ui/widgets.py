@@ -509,7 +509,7 @@ class IdentityCard(QFrame):
         if not color:  # idle: nothing scanned yet
             bg, fg, border = theme.PANEL_ALT, theme.MUTED, theme.BORDER
         elif bright:
-            bg, fg, border = color, "white", color
+            bg, fg, border = color, ("white" if color == theme.RED else theme.BG), color
         else:
             bg, fg, border = theme.PANEL_ALT, color, color
         self.banner.setStyleSheet(
