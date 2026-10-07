@@ -1,0 +1,87 @@
+from platescanner import updates
+
+
+def test_parse_version():
+    assert updates.parse_version("v1.2.3") == (1, 2, 3)
+    assert updates.parse_version("2.0") == (2, 0)
+    assert updates.parse_version("main") is None
+    assert updates.parse_version("") is None
+
+
+def test_is_newer():
+    assert updates.is_newer("v1.0.1", "1.0.0")
+    assert updates.is_newer("v1.10.0", "1.9.0")        # numeric, not alphabetical
+    assert updates.is_newer("v1.1", "1.0.9")
+    assert not updates.is_newer("v1.0.0", "1.0.0")
+    assert not updates.is_newer("v1.0", "1.0.0")
+    assert not updates.is_newer("v0.9.0", "1.0.0")
+    assert not updates.is_newer("main", "1.0.0")        # non-version tags never nag
+
+
+class _Resp:
+    def __init__(self, data=None, ok=True, chunks=()):
+        self._d, self._ok, self._chunks = data, ok, chunks
+
+    def raise_for_status(self):
+        if not self._ok:
+            raise updates.requests.HTTPError("403")
+
+    def json(self):
+        return self._d
+
+    def iter_content(self, _n):
+        return iter(self._chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+REL = {"tag_name": "v1.2.0", "html_url": "https://example/rel", "assets": [
+    {"name": "PlateScanner-v1.2.0-portable-win64.zip", "browser_download_url": "https://example/zip"},
+    {"name": "PlateScanner-Setup.exe", "browser_download_url": "https://example/setup.exe", "digest": "sha256:abc"}]}
+
+
+def test_check_for_update_finds_installer(monkeypatch):
+    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: _Resp(REL))
+    rel = updates.check_for_update("1.0.0")
+    assert (rel.tag, rel.page, rel.installer_url, rel.sha256) == (
+        "v1.2.0", "https://example/rel", "https://example/setup.exe", "abc")
+    assert updates.check_for_update("1.2.0") is None
+
+
+def test_check_for_update_offline_or_error_is_silent(monkeypatch):
+    def boom(*a, **k):
+        raise updates.requests.ConnectionError("offline")
+    monkeypatch.setattr(updates.requests, "get", boom)
+    assert updates.check_for_update("1.0.0") is None
+    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: _Resp({}, ok=False))
+    assert updates.check_for_update("1.0.0") is None
+
+
+def test_download_checks_checksum(monkeypatch, tmp_path):
+    import hashlib
+    body = b"installer-bytes"
+    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: _Resp(chunks=[body]))
+    good = updates.Release("v1.2.0", "p", "u", hashlib.sha256(body).hexdigest())
+    path = updates.download_installer(good, tmp_path)
+    assert path.read_bytes() == body and not list(tmp_path.glob("*.part"))
+    bad = updates.Release("v1.3.0", "p", "u", "0" * 64)
+    try:
+        updates.download_installer(bad, tmp_path)
+        raise AssertionError("expected a checksum failure")
+    except ValueError:
+        pass
+    assert not list(tmp_path.glob("*1.3.0*"))                  # nothing half-trusted is left behind
+
+
+def test_update_config_defaults_and_roundtrip(tmp_path, monkeypatch):
+    monkeypatch.setenv("PLATESCANNER_HOME", str(tmp_path))
+    from platescanner.config import load_config, save_config
+    cfg = load_config()
+    assert cfg.update.mode == "manual"
+    cfg.update.mode = "auto"
+    save_config(cfg)
+    assert load_config().update.mode == "auto"
