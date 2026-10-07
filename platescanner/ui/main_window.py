@@ -703,6 +703,8 @@ class MainWindow(QMainWindow):
         for level in (DENSITY_FULL, DENSITY_MEDIUM, DENSITY_COMPACT):
             self._set_density(level)
             self._density_needs[level] = layout.minimumSize().width()
+        # The window may never be narrower than the most compact top bar needs, whatever the font or scaling.
+        self.setMinimumWidth(max(MIN_WINDOW[0], self._density_needs[DENSITY_COMPACT]))
         self._pick_density()
 
     def _pick_density(self) -> None:
@@ -720,8 +722,11 @@ class MainWindow(QMainWindow):
 
     def resizeEvent(self, e) -> None:  # noqa: N802
         super().resizeEvent(e)
-        if self._density_needs[DENSITY_COMPACT]:
-            self._pick_density()
+        if hasattr(self, "_top"):
+            if self._density_needs[DENSITY_COMPACT]:
+                self._pick_density()
+            else:
+                self._measure_density()      # first time: measure now, not on a timer that may not have fired
         self._elide_sync_error()
 
     # --- sync -----------------------------------------------------------------

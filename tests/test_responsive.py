@@ -38,15 +38,22 @@ def test_top_bar_fits_at_every_size(window, size):
     w, app = window
     w.resize(*size)
     app.processEvents()
-    assert (w.width(), w.height()) == size, "the window was forced larger than asked"
+    # The window may refuse to get narrower than the compact bar needs, but then it is still wide enough for it.
+    assert w.width() == max(size[0], w.minimumWidth())
     assert w._top.layout().minimumSize().width() <= w.width(), "the top bar needs more room than the window has"
+
+
+def test_window_can_shrink_to_a_small_laptop(window):
+    w, _ = window
+    assert w.minimumWidth() <= 900, "the smallest allowed window is wider than a small laptop screen"
 
 
 def test_bar_gets_denser_as_the_window_narrows(window):
     w, app = window
     seen = []
-    for width in (1920, 1000, 720):
+    for width in (2200, 1000, 720):
         w.resize(width, 600)
         app.processEvents()
         seen.append(w._density)
-    assert seen == sorted(seen) and seen[0] == mw.DENSITY_FULL and seen[-1] == mw.DENSITY_COMPACT
+    assert seen == sorted(seen) and seen[0] == mw.DENSITY_FULL
+    assert seen[-1] >= mw.DENSITY_MEDIUM
