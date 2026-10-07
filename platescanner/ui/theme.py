@@ -207,3 +207,24 @@ QStatusBar QLabel {{ background: transparent; color: {MUTED}; padding: 2px 10px;
 QMessageBox QLabel {{ background: transparent; }}
 QDialog {{ background: {BG}; }}
 """
+
+
+def brand_mark(size: int):
+    """QLabel showing the PSAU logo badge; falls back to the letter "P" if the image is missing."""
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QPixmap
+    from PySide6.QtWidgets import QLabel
+
+    from ..config import bundle_dir
+
+    mark = QLabel()
+    mark.setObjectName("BrandMark")
+    mark.setFixedSize(size, size)
+    mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    pix = QPixmap(str(bundle_dir() / "platescanner" / "assets" / "logo_badge.png"))
+    if pix.isNull():
+        mark.setText("P")
+    else:
+        mark.setPixmap(pix.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatio,
+                                  Qt.TransformationMode.SmoothTransformation))
+    return mark

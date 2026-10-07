@@ -38,10 +38,7 @@ class LoginDialog(QDialog):
 
         head = QHBoxLayout()
         head.setSpacing(12)
-        mark = QLabel("P")
-        mark.setObjectName("BrandMark")
-        mark.setFixedSize(42, 42)
-        mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        mark = theme.brand_mark(42)
         head.addWidget(mark)
         titles = QVBoxLayout()
         titles.setSpacing(0)
