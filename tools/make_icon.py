@@ -15,9 +15,9 @@ CREAM = (255, 255, 255, 255)
 
 def badge(size: int = 256) -> Image.Image:
     tile = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    ImageDraw.Draw(tile).rounded_rectangle((0, 0, size - 1, size - 1), radius=size * 0.22, fill=CREAM)
+    ImageDraw.Draw(tile).rounded_rectangle((0, 0, size - 1, size - 1), radius=size * 0.10, fill=CREAM)
     logo = Image.open(ASSETS / "psau_logo.png").convert("RGBA")
-    inner = int(size * 0.84)
+    inner = int(size * 0.96)
     logo = logo.resize((inner, inner), Image.LANCZOS)
     tile.alpha_composite(logo, ((size - inner) // 2, (size - inner) // 2))
     return tile
