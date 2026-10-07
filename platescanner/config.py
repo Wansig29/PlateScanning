@@ -234,6 +234,14 @@ class SyncConfig:
 
 
 @dataclass
+class UpdateConfig:
+    # Installing is always the operator's click. "manual": show a banner when a newer release exists and
+    # download it when they click. "auto": also download it in the background so the click installs at once.
+    mode: str = "manual"
+    interval_hours: float = 6.0
+
+
+@dataclass
 class Config:
     api: ApiConfig = field(default_factory=ApiConfig)
     camera: CameraConfig = field(default_factory=CameraConfig)
@@ -241,6 +249,7 @@ class Config:
     ocr: OcrConfig = field(default_factory=OcrConfig)
     scan: ScanConfig = field(default_factory=ScanConfig)
     sync: SyncConfig = field(default_factory=SyncConfig)
+    update: UpdateConfig = field(default_factory=UpdateConfig)
 
     home: Path = field(default_factory=app_home, repr=False)
 
@@ -291,6 +300,11 @@ def _to_json(cfg: Config) -> dict[str, Any]:
     return data
 
 
+def save_config(cfg: Config, path: Path | None = None) -> None:
+    path = path or cfg.home / "config.json"
+    path.write_text(json.dumps(_to_json(cfg), indent=2), encoding="utf-8")
+
+
 def load_config(path: Path | None = None) -> Config:
     home = app_home()
     path = path or home / "config.json"
@@ -301,7 +315,7 @@ def load_config(path: Path | None = None) -> Config:
     cfg = _merge(Config, data)
     cfg.home = home
     # Write back so newly added settings show up in the file with defaults.
-    path.write_text(json.dumps(_to_json(cfg), indent=2), encoding="utf-8")
+    save_config(cfg, path)
     for d in (cfg.captures_dir, cfg.photos_dir):
         d.mkdir(parents=True, exist_ok=True)
     return cfg

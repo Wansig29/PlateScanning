@@ -32,6 +32,19 @@ jobs:
         shell: pwsh
         run: python -m pip install -r requirements-dev.txt
 
+      - name: Work out the version
+        shell: pwsh
+        run: |
+          $tag = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "${{ github.ref_name }}" }
+          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "VERSION=$($tag.TrimStart('v'))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Stamp the version into the app (so the in-app update check knows what it is running)
+        shell: pwsh
+        run: |
+          (Get-Content platescanner\__init__.py) -replace '__version__ = ".*"', "__version__ = `"$env:VERSION`"" | Set-Content platescanner\__init__.py
+          Get-Content platescanner\__init__.py
+
       - name: Download plate models (bundled so the app works offline)
         shell: pwsh
         env:
@@ -45,13 +58,6 @@ jobs:
       - name: Build PlateScanner.exe
         shell: pwsh
         run: python -m PyInstaller --noconfirm --distpath dist --workpath build platescanner.spec
-
-      - name: Work out the version
-        shell: pwsh
-        run: |
-          $tag = if ("${{ github.event.inputs.version }}") { "${{ github.event.inputs.version }}" } else { "${{ github.ref_name }}" }
-          "TAG=$tag" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "VERSION=$($tag.TrimStart('v'))" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Install Inno Setup
         shell: pwsh

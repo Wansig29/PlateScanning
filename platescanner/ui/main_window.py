@@ -8,18 +8,19 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal, Slot
-from PySide6.QtGui import QActionGroup, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtGui import QActionGroup, QDesktopServices, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import db, retention
+from .. import __version__, db, retention, updates
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
-from ..config import Config
+from ..config import Config, save_config
 from ..pipeline import (
     CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker, ScanResult, VideoScanWorker, to_qimage,
 )
@@ -149,6 +150,10 @@ def _ago(iso: str | None) -> str:
 class MainWindow(QMainWindow):
     request_sync = Signal(bool)
     token_changed = Signal(str)
+    update_found = Signal(object)        # updates.Release; these three are emitted from update threads
+    update_downloaded = Signal(str)      # path of an installer that is downloaded and waiting
+    install_now = Signal(str)            # path of an installer to run (operator already said yes)
+    update_message = Signal(str)
 
     def __init__(self, cfg: Config, session: dict | None):
         super().__init__()
@@ -181,6 +186,7 @@ class MainWindow(QMainWindow):
         self._start_archiving()
         self._start_sync()
         self._refresh_sync_label()
+        self._start_update_check()
 
         QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
 
@@ -237,6 +243,30 @@ class MainWindow(QMainWindow):
         self.sync_label = QLabel()
         self.sync_label.setObjectName("Muted")
         tl.addWidget(self.sync_label)
+        self.update_btn = QPushButton()
+        self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_btn.setVisible(False)
+        self.update_btn.clicked.connect(self._update_clicked)
+        tl.addWidget(self.update_btn)
+        self.update_mode_btn = QToolButton()
+        self.update_mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.update_mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.update_mode_btn.setToolTip("Manual: show a banner when a new version exists; it downloads when you "
+                                        "click it. Auto: download new versions in the background. Either way "
+                                        "nothing installs until you click the update button.")
+        self.update_mode_btn.setText(f"Updates: {self.cfg.update.mode.capitalize()}")
+        umenu = QMenu(self.update_mode_btn)
+        ugroup = QActionGroup(umenu)
+        for mode in ("manual", "auto"):
+            act = umenu.addAction(mode.capitalize())
+            act.setCheckable(True)
+            act.setChecked(mode == self.cfg.update.mode)
+            act.triggered.connect(lambda _c=False, m=mode: self._set_update_mode(m))
+            ugroup.addAction(act)
+        umenu.addSeparator()
+        umenu.addAction("Check for updates now").triggered.connect(lambda: self._check_updates(True))
+        self.update_mode_btn.setMenu(umenu)
+        tl.addWidget(self.update_mode_btn)
         self.video_btn = QPushButton("▶  Scan video")
         self.video_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.video_btn.setToolTip("Scan a recorded video for plates, frame by frame. The live camera keeps running.")
@@ -480,6 +510,101 @@ class MainWindow(QMainWindow):
 
         if self.session:
             QTimer.singleShot(1500, lambda: self._sync(False))
+
+    # --- updates --------------------------------------------------------------
+
+    def _start_update_check(self) -> None:
+        """Like sync: once shortly after start, then every update.interval_hours, off the UI thread."""
+        self._release: updates.Release | None = None
+        self._update_busy = False
+        self.update_found.connect(self._show_update)
+        self.update_message.connect(lambda m: self.statusBar().showMessage(m, 8000))
+        self.update_downloaded.connect(self._update_downloaded)
+        self.install_now.connect(self._install_update)
+        self._installer: Path | None = None   # downloaded and waiting for the operator
+        self.update_timer = QTimer(self)
+        self.update_timer.setInterval(int(max(self.cfg.update.interval_hours, 0.1) * 3600 * 1000))
+        self.update_timer.timeout.connect(lambda: self._check_updates(False))
+        self.update_timer.start()
+        QTimer.singleShot(5000, lambda: self._check_updates(False))
+
+    def _check_updates(self, manual: bool) -> None:
+        if self._update_busy:
+            return
+        self._update_busy = True
+        threading.Thread(target=self._update_job, args=(manual,), daemon=True, name="update-check").start()
+
+    def _update_job(self, manual: bool) -> None:
+        """Runs on a worker thread: only emits signals, never touches widgets."""
+        try:
+            rel = updates.check_for_update(__version__)
+            if rel is None:
+                if manual:
+                    self.update_message.emit(f"PlateScanner is up to date (v{__version__})")
+                return
+            self.update_found.emit(rel)
+            if self.cfg.update.mode == "auto" and rel.installer_url and updates.can_self_install():
+                self.update_message.emit(f"Downloading update {rel.tag}…")
+                self.update_downloaded.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
+        except Exception as e:  # noqa: BLE001  a failed update must never disturb gate scanning
+            log.warning("update failed: %s", e)
+            if manual:
+                self.update_message.emit(f"Update failed: {e}")
+        finally:
+            self._update_busy = False
+
+    @Slot(object)
+    def _show_update(self, rel: updates.Release) -> None:
+        self._release = rel
+        self.update_btn.setText(f"⬆  Update {rel.tag} available")
+        self.update_btn.setToolTip(f"You are running v{__version__}. Click to update.")
+        self.update_btn.setVisible(True)
+
+    @Slot(str)
+    def _update_downloaded(self, path: str) -> None:
+        self._installer = Path(path)
+        self.update_btn.setText(f"⬆  Update {self._release.tag} downloaded: click to install")
+        self.statusBar().showMessage("Update downloaded. It installs only when you click the update button.", 8000)
+
+    def _update_clicked(self) -> None:
+        rel = self._release
+        if rel is None:
+            return
+        if not (rel.installer_url and updates.can_self_install()):
+            QDesktopServices.openUrl(QUrl(rel.page))        # running from source: download by hand
+            return
+        ready = self._installer is not None and self._installer.is_file()
+        ok = QMessageBox.question(self, "Update available",
+                                  f"Install {rel.tag} now?\n\nThe scanner closes, updates and reopens by "
+                                  "itself. Your settings and records are kept.")
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        if ready:
+            self._install_update(str(self._installer))
+        elif not self._update_busy:
+            self._update_busy = True
+            self.statusBar().showMessage(f"Downloading update {rel.tag}…")
+            threading.Thread(target=self._download_job, args=(rel,), daemon=True, name="update-download").start()
+
+    def _download_job(self, rel: updates.Release) -> None:
+        try:
+            self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
+        except Exception as e:  # noqa: BLE001
+            self.update_message.emit(f"Update failed: {e}")
+        finally:
+            self._update_busy = False
+
+    @Slot(str)
+    def _install_update(self, path: str) -> None:
+        updates.launch_installer(Path(path))
+        self.close()                                          # installer relaunches the app when done
+
+    def _set_update_mode(self, mode: str) -> None:
+        self.cfg.update.mode = mode
+        save_config(self.cfg)
+        self.update_mode_btn.setText(f"Updates: {mode.capitalize()}")
+        if mode == "auto":
+            self._check_updates(False)
 
     # --- sync -----------------------------------------------------------------
 

@@ -34,4 +34,4 @@ Name: "{autoprograms}\PSAU Gate Plate Scanner"; Filename: "{app}\PlateScanner.ex
 Name: "{autodesktop}\PSAU Gate Plate Scanner"; Filename: "{app}\PlateScanner.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\PlateScanner.exe"; Description: "Launch PSAU Gate Plate Scanner"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\PlateScanner.exe"; Description: "Launch PSAU Gate Plate Scanner"; Flags: nowait postinstall
