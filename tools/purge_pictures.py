@@ -11,11 +11,18 @@ Delete test scans entirely (the log rows too, violations included), by date:
 
     python tools\purge_pictures.py --delete-before 2026-10-01          # shows what would go
     python tools\purge_pictures.py --delete-before 2026-10-01 --yes    # deletes scans dated before Oct 1
+
+Clear one day's scans (today, or a given day), with their pictures:
+
+    python tools\purge_pictures.py --delete-today                      # shows what would go
+    python tools\purge_pictures.py --delete-today --yes                # deletes today's scans
+    python tools\purge_pictures.py --delete-on 2026-10-06 --yes        # deletes Oct 6's scans
 """
 from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -23,13 +30,13 @@ from platescanner import db, purge  # noqa: E402
 from platescanner.config import load_config  # noqa: E402
 
 
-def delete_before(conn, roots, before: str, yes: bool) -> None:
+def delete_scans(conn, roots, label: str, plan_fn, value: str, yes: bool) -> None:
     try:
-        plan = purge.plan_delete_before(conn, roots, before)
+        plan = plan_fn(conn, roots, value)
     except ValueError:
-        sys.exit(f"'{before}' is not a date: use YYYY-MM-DD, e.g. 2026-10-01")
+        sys.exit(f"'{value}' is not a date: use YYYY-MM-DD, e.g. 2026-10-01")
     breakdown = ", ".join(f"{n} {db.CAPTURE_FOLDERS.get(r, r)}" for r, n in sorted(plan.by_result.items()))
-    print(f"Scans dated before {before}: {len(plan.scan_ids)}" + (f" ({breakdown})" if breakdown else ""))
+    print(f"Scans {label}: {len(plan.scan_ids)}" + (f" ({breakdown})" if breakdown else ""))
     print(f"{len(plan.files)} pictures ({plan.bytes / 1_000_000:.1f} MB) go with them. "
           "The scan records are deleted too, violations included.")
     if not yes:
@@ -44,6 +51,10 @@ def main() -> None:
     ap.add_argument("--keep", nargs="*", help="results whose pictures are kept (default: scan.save_pictures_for)")
     ap.add_argument("--delete-before", metavar="YYYY-MM-DD",
                     help="delete every scan dated before this day, with its pictures (instead of purging pictures)")
+    ap.add_argument("--delete-on", metavar="YYYY-MM-DD",
+                    help="delete every scan dated this day, with its pictures")
+    ap.add_argument("--delete-today", action="store_true",
+                    help="delete every scan dated today, with its pictures")
     ap.add_argument("--yes", action="store_true", help="really delete (without it, only report)")
     args = ap.parse_args()
 
@@ -53,7 +64,12 @@ def main() -> None:
     conn = db.connect(cfg.db_path)
     db.init_schema(conn)
     if args.delete_before:
-        delete_before(conn, roots, args.delete_before, args.yes)
+        delete_scans(conn, roots, f"dated before {args.delete_before}", purge.plan_delete_before,
+                     args.delete_before, args.yes)
+        return
+    day = date.today().isoformat() if args.delete_today else args.delete_on
+    if day:
+        delete_scans(conn, roots, f"dated {day}", purge.plan_delete_day, day, args.yes)
         return
     plan = purge.plan_purge(conn, roots, keep)
     print(f"Keeping pictures of: {', '.join(sorted(keep)) or 'nothing'}")

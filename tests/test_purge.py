@@ -89,3 +89,13 @@ def test_delete_before_uses_the_canonical_date_whatever_the_spelling(conn, tmp_p
     _scan(conn, tmp_path / "a.jpg", db.RESULT_CLEAR, "2026-09-30T23:59:59")
     _scan(conn, tmp_path / "b.jpg", db.RESULT_CLEAR, "2026-10-01T00:00:01")
     assert len(purge.plan_delete_before(conn, [tmp_path], spelling).scan_ids) == 1
+
+
+def test_delete_day_removes_only_that_days_scans(conn, tmp_path):
+    for i, ts in enumerate(("2026-10-06T23:59:59", "2026-10-07T00:00:00", "2026-10-07T18:30:00",
+                            "2026-10-08T00:00:00")):
+        _scan(conn, tmp_path / f"captures/p{i}.jpg", db.RESULT_CLEAR, ts)
+    plan = purge.plan_delete_day(conn, [tmp_path / "captures"], "2026-10-07")
+    assert len(plan.scan_ids) == 2
+    assert purge.run_delete_before(conn, plan, [tmp_path / "captures"]) == (2, 2)
+    assert conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0] == 2
