@@ -151,7 +151,8 @@ class MainWindow(QMainWindow):
     request_sync = Signal(bool)
     token_changed = Signal(str)
     update_found = Signal(object)        # updates.Release; these three are emitted from update threads
-    update_ready = Signal(str)           # path of a downloaded installer
+    update_downloaded = Signal(str)      # path of an installer that is downloaded and waiting
+    install_now = Signal(str)            # path of an installer to run (operator already said yes)
     update_message = Signal(str)
 
     def __init__(self, cfg: Config, session: dict | None):
@@ -250,8 +251,9 @@ class MainWindow(QMainWindow):
         self.update_mode_btn = QToolButton()
         self.update_mode_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_mode_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.update_mode_btn.setToolTip("Manual: show a banner when a new version exists and install when you "
-                                        "click it. Auto: download and install new versions by itself.")
+        self.update_mode_btn.setToolTip("Manual: show a banner when a new version exists; it downloads when you "
+                                        "click it. Auto: download new versions in the background. Either way "
+                                        "nothing installs until you click the update button.")
         self.update_mode_btn.setText(f"Updates: {self.cfg.update.mode.capitalize()}")
         umenu = QMenu(self.update_mode_btn)
         ugroup = QActionGroup(umenu)
@@ -517,7 +519,9 @@ class MainWindow(QMainWindow):
         self._update_busy = False
         self.update_found.connect(self._show_update)
         self.update_message.connect(lambda m: self.statusBar().showMessage(m, 8000))
-        self.update_ready.connect(self._install_update)
+        self.update_downloaded.connect(self._update_downloaded)
+        self.install_now.connect(self._install_update)
+        self._installer: Path | None = None   # downloaded and waiting for the operator
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(int(max(self.cfg.update.interval_hours, 0.1) * 3600 * 1000))
         self.update_timer.timeout.connect(lambda: self._check_updates(False))
@@ -541,7 +545,7 @@ class MainWindow(QMainWindow):
             self.update_found.emit(rel)
             if self.cfg.update.mode == "auto" and rel.installer_url and updates.can_self_install():
                 self.update_message.emit(f"Downloading update {rel.tag}…")
-                self.update_ready.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
+                self.update_downloaded.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
         except Exception as e:  # noqa: BLE001  a failed update must never disturb gate scanning
             log.warning("update failed: %s", e)
             if manual:
@@ -556,6 +560,12 @@ class MainWindow(QMainWindow):
         self.update_btn.setToolTip(f"You are running v{__version__}. Click to update.")
         self.update_btn.setVisible(True)
 
+    @Slot(str)
+    def _update_downloaded(self, path: str) -> None:
+        self._installer = Path(path)
+        self.update_btn.setText(f"⬆  Update {self._release.tag} downloaded: click to install")
+        self.statusBar().showMessage("Update downloaded. It installs only when you click the update button.", 8000)
+
     def _update_clicked(self) -> None:
         rel = self._release
         if rel is None:
@@ -563,17 +573,22 @@ class MainWindow(QMainWindow):
         if not (rel.installer_url and updates.can_self_install()):
             QDesktopServices.openUrl(QUrl(rel.page))        # running from source: download by hand
             return
+        ready = self._installer is not None and self._installer.is_file()
         ok = QMessageBox.question(self, "Update available",
                                   f"Install {rel.tag} now?\n\nThe scanner closes, updates and reopens by "
                                   "itself. Your settings and records are kept.")
-        if ok == QMessageBox.StandardButton.Yes and not self._update_busy:
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        if ready:
+            self._install_update(str(self._installer))
+        elif not self._update_busy:
             self._update_busy = True
             self.statusBar().showMessage(f"Downloading update {rel.tag}…")
             threading.Thread(target=self._download_job, args=(rel,), daemon=True, name="update-download").start()
 
     def _download_job(self, rel: updates.Release) -> None:
         try:
-            self.update_ready.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
+            self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates")))
         except Exception as e:  # noqa: BLE001
             self.update_message.emit(f"Update failed: {e}")
         finally:

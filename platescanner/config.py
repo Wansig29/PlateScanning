@@ -235,8 +235,8 @@ class SyncConfig:
 
 @dataclass
 class UpdateConfig:
-    # "manual": show a banner when a newer release exists and install only when the operator clicks it.
-    # "auto": download and install it without asking (the app restarts), checked every interval_hours.
+    # Installing is always the operator's click. "manual": show a banner when a newer release exists and
+    # download it when they click. "auto": also download it in the background so the click installs at once.
     mode: str = "manual"
     interval_hours: float = 6.0
 

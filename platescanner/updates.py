@@ -1,5 +1,6 @@
 """In-app updates from GitHub Releases, in the same spirit as sync: check on a timer, then either
-tell the operator (manual mode) or download and install by itself (auto mode).
+tell the operator (manual mode) or also download it ahead of time (auto mode). Installing
+is always the operator's click.
 
 The installer is the same PlateScanner-Setup.exe the release workflow publishes. Running it over an
 existing install upgrades in place (same AppId) and keeps settings, which live in %LOCALAPPDATA%.
@@ -92,6 +93,6 @@ def download_installer(rel: Release, folder: Path) -> Path:
 
 
 def launch_installer(path: Path) -> None:
-    """Silent upgrade; the installer relaunches the app when it finishes. Caller must then quit."""
+    """Silent upgrade; the installer relaunches the app when it finishes. Only called after the operator's click; caller must then quit."""
     subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
                      close_fds=True)
