@@ -512,6 +512,7 @@ class MainWindow(QMainWindow):
         self.update_downloaded.connect(self._update_downloaded)
         self.install_now.connect(self._install_update)
         self._installer: Path | None = None   # downloaded and waiting for the operator
+        updates.clean_old_installers(self.cfg.home / "updates", __version__)
         self.update_timer = QTimer(self)
         self.update_timer.setInterval(int(max(self.cfg.update.interval_hours, 0.1) * 3600 * 1000))
         self.update_timer.timeout.connect(lambda: self._check_updates(False))

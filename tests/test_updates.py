@@ -85,3 +85,12 @@ def test_update_config_defaults_and_roundtrip(tmp_path, monkeypatch):
     cfg.update.mode = "auto"
     save_config(cfg)
     assert load_config().update.mode == "auto"
+
+
+def test_clean_old_installers_keeps_only_a_pending_newer_one(tmp_path):
+    for name in ("PlateScanner-Setup-v1.0.2.exe", "PlateScanner-Setup-v1.0.3.exe",
+                 "PlateScanner-Setup-v1.0.4.exe", "PlateScanner-Setup-v1.0.9.part", "notes.txt"):
+        (tmp_path / name).write_bytes(b"x")
+    assert updates.clean_old_installers(tmp_path, "1.0.3") == 3          # 1.0.2, 1.0.3 (installed), the .part
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["PlateScanner-Setup-v1.0.4.exe", "notes.txt"]
+    assert updates.clean_old_installers(tmp_path / "missing", "1.0.3") == 0

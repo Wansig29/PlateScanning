@@ -92,6 +92,25 @@ def download_installer(rel: Release, folder: Path) -> Path:
     return dest
 
 
+def clean_old_installers(folder: Path, current: str) -> int:
+    """Delete downloaded installers that are no longer needed; returns how many were removed.
+
+    Kept: an installer for a version newer than the running one (downloaded, not installed yet).
+    Removed: installers for this or an older version (already installed) and unfinished downloads.
+    A file that is still in use (the installer that just launched this app) is skipped and goes next time.
+    """
+    removed = 0
+    for f in folder.glob("PlateScanner-Setup-*") if folder.is_dir() else []:
+        if f.suffix == ".exe" and is_newer(f.stem.removeprefix("PlateScanner-Setup-"), current):
+            continue
+        try:
+            f.unlink()
+            removed += 1
+        except OSError as e:
+            log.info("could not remove old installer %s: %s", f.name, e)
+    return removed
+
+
 def launch_installer(path: Path) -> None:
     """Silent upgrade; the installer relaunches the app when it finishes. Only called after the operator's click; caller must then quit."""
     subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
