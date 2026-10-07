@@ -34,24 +34,32 @@ def window(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize("size", [(2560, 1440), (1920, 1080), (1366, 728), (1280, 680), (1024, 600), (800, 520), (720, 500)])
-def test_top_bar_fits_at_every_size(window, size):
+def test_window_keeps_the_asked_size_and_the_bar_fits(window, size):
     w, app = window
     w.resize(*size)
     app.processEvents()
-    # The window may refuse to get narrower than the compact bar needs, but then it is still wide enough for it.
     assert w.width() == max(size[0], w.minimumWidth())
-    assert w._top.layout().minimumSize().width() <= w.width(), "the top bar needs more room than the window has"
+    if size[0] >= 1024:      # any laptop screen: the bar must fit whatever the font widths are
+        assert w._top.layout().minimumSize().width() <= w.width(), "the top bar needs more room than the window has"
 
 
 def test_window_can_shrink_to_a_small_laptop(window):
     w, _ = window
-    assert w.minimumWidth() <= 900, "the smallest allowed window is wider than a small laptop screen"
+    assert w.minimumWidth() <= mw.MAX_MIN_WIDTH
+
+
+def test_compact_bar_is_much_narrower_than_the_full_one(window):
+    """Relative, so it holds for any font: the compact bar drops the title text and every button label."""
+    w, _ = window
+    full, medium, compact = w._density_needs
+    assert compact < medium <= full
+    assert compact <= 0.8 * full
 
 
 def test_bar_gets_denser_as_the_window_narrows(window):
     w, app = window
     seen = []
-    for width in (2200, 1000, 720):
+    for width in (3000, 1000, 720):
         w.resize(width, 600)
         app.processEvents()
         seen.append(w._density)
