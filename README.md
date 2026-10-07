@@ -65,6 +65,8 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.detector_model` | Plate detector input size. `…-t-384-…` (default) is the best speed/recall trade-off on a CPU; `…-t-512-…` / `…-t-640-…` find smaller, farther plates but are slower |
 | `ocr.ocr_model` | Plate OCR models, comma-separated. Each plate is read by all of them and the results are merged character by character |
 | `ocr.read_confidence`, `report_confidence`, `alert_confidence`, `confirm_reads` | When a vehicle is reported (see *Deciding a plate*) |
+| `ocr.detector_confidence` | How sure the neural detector must be that something is a plate (default 0.5). Raise it if shelves, windows or signs are still read as plates; lower it if real plates are missed |
+| `ocr.classical_only_confidence` | A candidate that only the classical finder proposed must read at least this well (default 0.75) before it is reported |
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
 | `scan.archive_after_days` | Pictures older than this many days are **moved** (never deleted) from `captures\` to the archive folder; the Logs still open them. Default 30; 0 keeps everything in `captures\` |
 | `scan.archive_dir` | Where the old pictures go. Empty = `archive\` next to `captures\`; can be another drive, e.g. `D:\\PlateScannerArchive` |
