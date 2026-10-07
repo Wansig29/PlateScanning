@@ -161,6 +161,14 @@ To clear test scans entirely, the log rows and all pictures (violations too) dat
 .\.venv\Scripts\python tools\purge_pictures.py --delete-before 2026-10-01 --yes    # deletes it
 ```
 
+To clear just one day (for example today's test scans), with its pictures:
+
+```powershell
+.\.venv\Scripts\python tools\purge_pictures.py --delete-today          # shows what would go
+.\.venv\Scripts\python tools\purge_pictures.py --delete-today --yes    # deletes today's scans
+.\.venv\Scripts\python tools\purge_pictures.py --delete-on 2026-10-06 --yes   # a specific day
+```
+
 This cannot be undone. Vehicles, violations and the sync data are not touched, only the scanner's own scan log. Archived CSV files are not edited.
 
 ### Resolution: does 1080p read better than 720p or 480p?

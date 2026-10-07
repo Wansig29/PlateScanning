@@ -93,7 +93,7 @@ def run_purge(conn: sqlite3.Connection, plan: PurgePlan, roots: list[Path]) -> i
 
 @dataclass
 class DeletePlan:
-    before: str                                   # YYYY-MM-DD: scans with an earlier date go
+    before: str                                   # YYYY-MM-DD: the end of the range (exclusive)
     scan_ids: list[int] = field(default_factory=list)
     by_result: dict[str, int] = field(default_factory=dict)
     files: list[Path] = field(default_factory=list)
@@ -106,9 +106,21 @@ def plan_delete_before(conn: sqlite3.Connection, roots: list[Path], before: str)
     # Python also accepts "20261001" and "2026-W40-1"; scan times are "YYYY-MM-DDTHH:MM:SS" text, so
     # compare against the canonical form only. A non-date raises ValueError before reaching a query.
     before = date.fromisoformat(before).isoformat()
-    plan = DeletePlan(before)
+    return _plan_scans(conn, roots, DeletePlan(before), "ts < ?", (before,))
+
+
+def plan_delete_day(conn: sqlite3.Connection, roots: list[Path], day: str) -> DeletePlan:
+    """The scans (every result, violations too) dated exactly `day` (YYYY-MM-DD), and their pictures."""
+    from datetime import date, timedelta
+    start = date.fromisoformat(day)
+    return _plan_scans(conn, roots, DeletePlan((start + timedelta(days=1)).isoformat()),
+                       "ts >= ? AND ts < ?", (start.isoformat(), (start + timedelta(days=1)).isoformat()))
+
+
+def _plan_scans(conn: sqlite3.Connection, roots: list[Path], plan: DeletePlan, where: str,
+                params: tuple) -> DeletePlan:
     seen: set[Path] = set()
-    for row in conn.execute(f"SELECT id, result, {', '.join(_PATH_COLUMNS)} FROM scan_log WHERE ts < ?", (before,)):
+    for row in conn.execute(f"SELECT id, result, {', '.join(_PATH_COLUMNS)} FROM scan_log WHERE {where}", params):
         plan.scan_ids.append(row["id"])
         plan.by_result[row["result"]] = plan.by_result.get(row["result"], 0) + 1
         for col in _PATH_COLUMNS:
