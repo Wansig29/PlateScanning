@@ -155,3 +155,33 @@ def test_permanent_revoke_clears_when_server_lifts_it_and_survives_embedded_copy
     assert db.lookup(conn, "NBC1234").vehicle["permanently_revoked"] == 1
     sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False)], []), conn, force_full=True)
     assert all(v["violation_type"] != "Permanently revoked sticker" for v in db.lookup(conn, "NBC1234").violations)
+
+
+def test_truncated_full_sync_does_not_wipe_the_local_data(tmp_path):
+    from platescanner.api import ApiError
+    many = [vehicle(i, f"ABC {1000 + i}", f"Owner {i}") for i in range(1, 21)]
+    cfg, conn = synced(tmp_path, many, [violation(100, 1, "ABC 1001")])
+    with pytest.raises(ApiError):
+        sync.run_sync(cfg, FakeClient(many[:2], []), conn, force_full=True)
+    assert db.lookup(conn, "ABC1001").status == db.RESULT_VIOLATION
+
+
+def test_stale_detection():
+    from datetime import datetime, timezone
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+    assert sync.is_stale(None, 8, now)
+    assert sync.is_stale("2026-10-07T01:00:00+00:00", 8, now)
+    assert not sync.is_stale("2026-10-07T08:00:00+00:00", 8, now)
+
+
+def test_plain_http_and_lookalike_hosts_are_refused(monkeypatch):
+    from platescanner import api
+    from platescanner.config import ApiConfig
+    monkeypatch.delenv("PLATESCANNER_ALLOW_INSECURE", raising=False)
+    with pytest.raises(api.ApiError):
+        ApiClient(ApiConfig(base_url="http://example.org"))._url("/api/login")
+    ApiClient(ApiConfig(base_url="http://localhost:8000"))._url("/api/login")  # local dev is fine
+    assert ApiClient(ApiConfig(verify_tls=False))._verify is True              # config cannot turn TLS off
+    base = "https://psau-security-production.up.railway.app"
+    assert api._same_host(base + "/photo.jpg", base)
+    assert not api._same_host(base + ".evil.net/photo.jpg", base)

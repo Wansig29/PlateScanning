@@ -87,3 +87,22 @@ def test_a_shelf_the_classical_finder_proposes_is_not_reported_unless_the_read_i
 
 def test_unsure_reads_do_not_count_as_a_plate():
     assert _scans_reported(LowConfidenceEngine(0.36), neural=True) == []          # below read_confidence
+
+
+def test_violator_who_returns_is_alerted_again_and_a_lingering_car_cannot_extend_the_window():
+    w = worker()
+    v = db.RESULT_VIOLATION
+    window = w.cfg.scan.violation_cooldown_seconds
+    assert not w._in_cooldown("NBC1234", 0.0, v)
+    assert w._in_cooldown("NBC1234", window - 1, v)             # same pass, suppressed
+    assert not w._in_cooldown("NBC1234", window + 1, v)         # window ran from the alert: alert again
+    assert not w._in_cooldown("NBC1234", window * 5, v)         # leaves and returns
+
+
+def test_unregistered_low_confidence_read_asks_for_a_manual_check():
+    from platescanner.pipeline import needs_manual_check
+    ocr = Config().ocr
+    low, high = ocr.verify_below_confidence - 0.1, 0.95
+    assert needs_manual_check(db.RESULT_NOT_REGISTERED, 3, low, False, ocr)
+    assert not needs_manual_check(db.RESULT_NOT_REGISTERED, 3, high, False, ocr)
+    assert not needs_manual_check(db.RESULT_CLEAR, 3, low, False, ocr)

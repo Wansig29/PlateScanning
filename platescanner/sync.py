@@ -25,6 +25,14 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def is_stale(last_sync_iso: str | None, hours: float, now: datetime | None = None) -> bool:
+    """True when the local copy was never synced or its last good sync is older than `hours`."""
+    last = _parse_iso(last_sync_iso)
+    if last is None:
+        return True
+    return (now or datetime.now(timezone.utc)) - last > timedelta(hours=hours)
+
+
 def _photo_path(photos_dir: Path, url: str) -> Path:
     ext = Path(url.split("?")[0]).suffix.lower()
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
@@ -105,6 +113,14 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         return {"full": False, "changed": False, "vehicles": 0, "violations": 0,
                 "at": now.isoformat(), **{f"total_{k}": n for k, n in db.counts(conn).items()}}
 
+    if full:
+        have = db.counts(conn)["vehicles"]
+        ratio = cfg.sync.min_full_sync_ratio
+        # Refuse a suspiciously small full download: replacing would delete good data and
+        # every violator would then read as "clear" or "not registered".
+        if have >= 10 and len(vehicles) < have * ratio:
+            raise ApiError(f"Server returned only {len(vehicles)} vehicles (have {have}); "
+                           "kept the existing data. Press Sync Now to retry.")
     progress("Saving…")
     with conn:  # single transaction: a failed sync leaves the old data intact
         db.replace_school_years(conn, school_years)
