@@ -147,7 +147,7 @@ def _ago(iso: str | None) -> str:
 
 
 class MainWindow(QMainWindow):
-    SYNC_LABEL_MAX_WIDTH = 340           # px; a long sync error is cut short (full text in the tooltip)
+    SYNC_LABEL_MAX_WIDTH = 620           # px; a long sync error is cut short (full text in the tooltip)
     request_sync = Signal(bool)
     token_changed = Signal(str)
     update_found = Signal(object)        # updates.Release; these three are emitted from update threads
@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
         top.setObjectName("TopBar")
         tl = QHBoxLayout(top)
         tl.setContentsMargins(16, 10, 16, 10)
-        tl.setSpacing(10)
+        tl.setSpacing(8)
         mark = QLabel("P")
         mark.setObjectName("BrandMark")
         mark.setFixedSize(36, 36)
@@ -238,12 +238,12 @@ class MainWindow(QMainWindow):
         self.update_btn = QPushButton()
         self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_btn.setObjectName("Primary")
+        self.update_btn.setMinimumWidth(150)   # same width whether it says "Update v1.0.7" or "Downloading… 47%"
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._update_clicked)
         tl.addWidget(self.update_btn)
-        self.sync_label = QLabel()
+        self.sync_label = QLabel()          # shown in the status bar: the top bar must stay narrow
         self.sync_label.setObjectName("Muted")
-        tl.addWidget(self.sync_label)
         self.sync_btn = QPushButton("↻  Sync Now")
         self.sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.sync_btn.setObjectName("Primary")
@@ -251,9 +251,7 @@ class MainWindow(QMainWindow):
                                  "removing vehicles and violations deleted online")
         self.sync_btn.clicked.connect(lambda: self._sync(True))
         tl.addWidget(self.sync_btn)
-        tl.addSpacing(6)
-        tl.addWidget(self._separator())
-        tl.addSpacing(6)
+        tl.addSpacing(10)
         self.reports_btn = QPushButton("📊  Reports")
         self.reports_btn.setObjectName("Nav")
         self.reports_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -266,9 +264,7 @@ class MainWindow(QMainWindow):
         self.database_btn.setToolTip("Browse the synced vehicles and violations")
         self.database_btn.clicked.connect(self._open_database)
         tl.addWidget(self.database_btn)
-        tl.addSpacing(6)
-        tl.addWidget(self._separator())
-        tl.addSpacing(6)
+        tl.addSpacing(10)
         tl.addWidget(self._build_account_menu())
         rl.addWidget(top)
 
@@ -340,6 +336,7 @@ class MainWindow(QMainWindow):
         self._set_status(self.ocr_status, "OCR: loading", theme.AMBER)
         for w in (self.cam_status, self.ocr_status, self.health_status):
             sb.addWidget(w)
+        sb.addPermanentWidget(self.sync_label)
         sb.addPermanentWidget(self.db_status)
         self.setStatusBar(sb)
         self._update_account_btn()
@@ -555,14 +552,15 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _show_update(self, rel: updates.Release) -> None:
         self._release = rel
-        self.update_btn.setText(f"⬆  Update {rel.tag} available")
-        self.update_btn.setToolTip(f"You are running v{__version__}. Click to update.")
+        self.update_btn.setText(f"⬆  Update {rel.tag}")
+        self.update_btn.setToolTip(f"Update {rel.tag} is available (you are running v{__version__}). Click to update.")
         self.update_btn.setVisible(True)
 
     @Slot(str)
     def _update_downloaded(self, path: str) -> None:
         self._installer = Path(path)
-        self.update_btn.setText(f"⬆  Update {self._release.tag} downloaded: click to install")
+        self.update_btn.setText(f"⬆  Install {self._release.tag}")
+        self.update_btn.setToolTip("The update is downloaded. Click to install it.")
         self.statusBar().showMessage("Update downloaded. It installs only when you click the update button.", 8000)
 
     def _update_clicked(self) -> None:
@@ -588,7 +586,7 @@ class MainWindow(QMainWindow):
         self._update_busy = True
         self._update_pct = 0
         self.update_btn.setEnabled(False)
-        self.update_btn.setText("⬇  Downloading update… 0%")
+        self.update_btn.setText("⬇  Downloading… 0%")
         threading.Thread(target=self._download_job, args=(rel,), daemon=True, name="update-download").start()
 
     def _report_progress(self, done: int, total: int) -> None:
@@ -600,7 +598,7 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _update_progress(self, pct: int) -> None:
-        self.update_btn.setText(f"⬇  Downloading update… {pct}%")
+        self.update_btn.setText(f"⬇  Downloading… {pct}%")
 
     def _download_job(self, rel: updates.Release) -> None:
         try:
@@ -614,7 +612,7 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _update_failed(self, message: str) -> None:
         if self._release is not None:
-            self.update_btn.setText(f"⬆  Update {self._release.tag} available")
+            self.update_btn.setText(f"⬆  Update {self._release.tag}")
         self.update_btn.setEnabled(True)
         QMessageBox.warning(self, "Update", message + "\n\nYou can also download PlateScanner-Setup.exe from the "
                             "release page and run it yourself.")
@@ -719,7 +717,9 @@ class MainWindow(QMainWindow):
         if self.session:
             user = self.session.get("user") or {}
             name = user.get("name") or user.get("email") or "Guard"
-            self.account_btn.setText(f"👤  {name}  ▾")
+            short = name if len(name) <= 14 else name[:13] + "…"
+            self.account_btn.setText(f"👤  {short}  ▾")
+            self.account_btn.setToolTip(f"Signed in as {name}. Account and update settings")
             self.account_action.setText("Sign out")
         else:
             self.account_btn.setText("👤  Not signed in  ▾")
