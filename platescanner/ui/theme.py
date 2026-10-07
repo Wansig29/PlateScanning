@@ -1,33 +1,48 @@
-"""PSAU-branded dark console theme (forest green and gold) for the gate screen."""
+"""PSAU-branded console theme for the gate screen: forest green and gold, in a dark and a light variant.
 
-# PSAU palette, taken from the university logo: deep forest green + gold ring.
-BG = "#07140f"
-PANEL = "#0d2118"
-PANEL_ALT = "#14301f"
-PANEL_HOVER = "#1b3d2a"
-BORDER = "#1f4531"
-BORDER_STRONG = "#2e6045"
-TEXT = "#f4f1e6"
-MUTED = "#9db3a5"
-FAINT = "#6b8576"
-ACCENT = "#f5d31f"          # PSAU gold
-ACCENT_HOVER = "#ffe24d"
-ACCENT_PRESSED = "#d9b80f"
-ON_ACCENT = "#10402f"       # PSAU green, for text on gold
-VIDEO_BG = "#030a07"
+The palette comes from the university logo (deep green strokes, gold ring). Call apply("dark" | "light")
+once at start-up, before the stylesheet is built; the other modules read the colours as theme.<NAME>.
+"""
 
-RED = "#ef4444"
-GREEN = "#34d27b"
-AMBER = "#f59e0b"
+MONO_FONT = '"Cascadia Mono", Consolas, monospace'
 
-MONO = '"Cascadia Mono", Consolas, monospace'
+_DARK = dict(
+    BG="#0d1311", PANEL="#141c19", PANEL_ALT="#1b2521", PANEL_HOVER="#232f2a",
+    BORDER="#27332e", BORDER_STRONG="#364640",
+    TEXT="#f4f1e6", MUTED="#9aa8a1", FAINT="#6f7d76",
+    ACCENT="#e9c82a", ACCENT_HOVER="#f3d54b", ACCENT_PRESSED="#d9b80f", ON_ACCENT="#10402f",
+    ACCENT_TEXT="#f3d54b", FOCUS="#e9c82a", TAB_LINE="#e9c82a", ALT_ROW="rgba(255, 255, 255, 0.02)",
+    VIDEO_BG="#050806",
+    RED="#ef4444", GREEN="#3cc57f", AMBER="#f59e0b",
+    TINT_VIOLATION="#301a1c", TINT_CLEAR="#152b20", TINT_NOT_REGISTERED="#2f2812", TINT_NO_PLATE="#1b2521",
+    # top bar
+    TB_BG="#141c19", TB_EDGE="1px solid #27332e", TB_TEXT="#f4f1e6", TB_MUTED="#9aa8a1",
+    TB_BTN="#1b2521", TB_BTN_HOVER="#232f2a", TB_BTN_BORDER="#364640",
+    PLATE_BG="#f7f5ec", PLATE_INK="#10402f",
+)
 
-RESULT_COLORS = {"violation": RED, "clear": GREEN, "not_registered": AMBER, "no_plate": MUTED}
+_LIGHT = dict(
+    BG="#f2f0e6", PANEL="#ffffff", PANEL_ALT="#f7f5ee", PANEL_HOVER="#ebe8da",
+    BORDER="#dcd8c6", BORDER_STRONG="#c2bda5",
+    TEXT="#12261d", MUTED="#55695e", FAINT="#85948b",
+    ACCENT="#f5d31f", ACCENT_HOVER="#ffe24d", ACCENT_PRESSED="#d9b80f", ON_ACCENT="#10402f",
+    ACCENT_TEXT="#114232", FOCUS="#1a5c45", TAB_LINE="#114232", ALT_ROW="rgba(17, 66, 50, 0.035)",
+    VIDEO_BG="#06120d",
+    RED="#d93636", GREEN="#188a4a", AMBER="#b86e00",
+    TINT_VIOLATION="#fde6e6", TINT_CLEAR="#e0f3e8", TINT_NOT_REGISTERED="#fff0d1", TINT_NO_PLATE="#efede2",
+    TB_BG="#114232", TB_EDGE="3px solid #f5d31f", TB_TEXT="#ffffff", TB_MUTED="rgba(255, 255, 255, 0.72)",
+    TB_BTN="rgba(255, 255, 255, 0.10)", TB_BTN_HOVER="rgba(255, 255, 255, 0.20)",
+    TB_BTN_BORDER="rgba(255, 255, 255, 0.28)",
+    PLATE_BG="#fffdf4", PLATE_INK="#114232",
+)
+
+PALETTES = {"dark": _DARK, "light": _LIGHT}
+MODE = "dark"
+STYLESHEET = ""
+
 RESULT_LABELS = {"violation": "VIOLATION", "clear": "NO VIOLATION", "not_registered": "NOT REGISTERED",
                  "no_plate": "NO PLATE READ"}
 RESULT_ICONS = {"violation": "⛔", "clear": "✔", "not_registered": "?", "no_plate": "–"}
-# Dark, low-saturation fills behind status text (badges, banners, rows).
-RESULT_TINTS = {"violation": "#3a1418", "clear": "#0f3a22", "not_registered": "#3a2c08", "no_plate": "#14301f"}
 
 
 def dot(color: str, text: str) -> str:
@@ -35,7 +50,47 @@ def dot(color: str, text: str) -> str:
     return f'<span style="color:{color}; font-size:11pt;">●</span>&nbsp; {text}'
 
 
-STYLESHEET = f"""
+def apply(mode: str = "dark") -> str:
+    """Switch the module-level colours to the dark or light palette and rebuild STYLESHEET."""
+    global MODE, STYLESHEET, MONO, RESULT_COLORS, RESULT_TINTS
+    mode = mode if mode in PALETTES else "dark"
+    globals().update(PALETTES[mode])
+    MODE = mode
+    MONO = MONO_FONT
+    RESULT_COLORS = {"violation": RED, "clear": GREEN, "not_registered": AMBER, "no_plate": MUTED}
+    RESULT_TINTS = {"violation": TINT_VIOLATION, "clear": TINT_CLEAR, "not_registered": TINT_NOT_REGISTERED,
+                    "no_plate": TINT_NO_PLATE}
+    STYLESHEET = _build_stylesheet()
+    return mode
+
+
+def _build_stylesheet() -> str:
+    g = globals()
+    BG, PANEL, PANEL_ALT, PANEL_HOVER = g["BG"], g["PANEL"], g["PANEL_ALT"], g["PANEL_HOVER"]
+    BORDER = g["BORDER"]
+    BORDER_STRONG = g["BORDER_STRONG"]
+    TEXT = g["TEXT"]
+    MUTED = g["MUTED"]
+    FAINT = g["FAINT"]
+    ACCENT = g["ACCENT"]
+    ACCENT_HOVER = g["ACCENT_HOVER"]
+    ACCENT_PRESSED = g["ACCENT_PRESSED"]
+    ON_ACCENT = g["ON_ACCENT"]
+    ACCENT_TEXT = g["ACCENT_TEXT"]
+    FOCUS = g["FOCUS"]
+    TAB_LINE = g["TAB_LINE"]
+    ALT_ROW = g["ALT_ROW"]
+    TB_BG = g["TB_BG"]
+    TB_EDGE = g["TB_EDGE"]
+    TB_TEXT = g["TB_TEXT"]
+    TB_MUTED = g["TB_MUTED"]
+    TB_BTN = g["TB_BTN"]
+    TB_BTN_HOVER = g["TB_BTN_HOVER"]
+    TB_BTN_BORDER = g["TB_BTN_BORDER"]
+    PLATE_BG = g["PLATE_BG"]
+    PLATE_INK = g["PLATE_INK"]
+    MONO = g["MONO"]
+    return f"""
 QWidget {{
     background: {BG};
     color: {TEXT};
@@ -60,9 +115,9 @@ QLabel#Muted {{ color: {MUTED}; }}
 QLabel#Faint {{ color: {FAINT}; font-size: 9pt; }}
 QLabel#OwnerName {{ font-size: 15pt; font-weight: 700; }}
 QLabel#PlateChip, QFrame#Panel QLabel#PlateChip, QFrame#TopBar QLabel#PlateChip {{
-    background: #f7f5ec;
-    color: #10402f;
-    border: 2px solid #10402f;
+    background: {PLATE_BG};
+    color: {PLATE_INK};
+    border: 2px solid {PLATE_INK};
     border-radius: 5px;
     padding: 2px 10px;
     font-family: {MONO};
@@ -84,12 +139,14 @@ QFrame#DetailCard, QFrame#Panel QFrame#DetailCard, QFrame#TopBar QFrame#DetailCa
 }}
 QFrame#DetailCard QLabel {{ background: transparent; }}
 QFrame#TopBar {{
-    background: {PANEL};
-    border-bottom: 1px solid {BORDER};
+    background: {TB_BG};
+    border-bottom: {TB_EDGE};
 }}
 QFrame#TopBar QWidget {{ background: transparent; }}
 QLabel#AppTitle {{ font-size: 12.5pt; font-weight: 700; }}
 QLabel#AppSubtitle {{ color: {MUTED}; font-size: 8.5pt; }}
+QFrame#TopBar QLabel {{ color: {TB_TEXT}; }}
+QFrame#TopBar QLabel#AppSubtitle, QFrame#TopBar QLabel#ClockDate {{ color: {TB_MUTED}; }}
 QLabel#BrandMark, QFrame#Panel QLabel#BrandMark, QFrame#TopBar QLabel#BrandMark {{
     background: transparent;
     color: {ACCENT};
@@ -117,9 +174,12 @@ QPushButton#Primary, QFrame#Panel QPushButton#Primary, QFrame#TopBar QPushButton
 QPushButton#Primary:hover, QFrame#Panel QPushButton#Primary:hover, QFrame#TopBar QPushButton#Primary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
 QPushButton#Primary:pressed, QFrame#Panel QPushButton#Primary:pressed, QFrame#TopBar QPushButton#Primary:pressed {{ background: {ACCENT_PRESSED}; border-color: {ACCENT_PRESSED}; }}
 QPushButton#Primary:disabled, QFrame#Panel QPushButton#Primary:disabled, QFrame#TopBar QPushButton#Primary:disabled {{ background: {PANEL_ALT}; border-color: {BORDER}; color: {MUTED}; }}
-QFrame#TopBar QPushButton {{ padding: 7px 12px; }}
-QPushButton#Nav, QFrame#TopBar QPushButton#Nav {{ background: transparent; border: 1px solid {BORDER_STRONG}; color: {TEXT}; font-weight: 600; padding: 7px 12px; }}
-QPushButton#Nav:hover, QFrame#TopBar QPushButton#Nav:hover {{ background: {PANEL_HOVER}; border-color: {ACCENT}; }}
+QFrame#TopBar QPushButton {{ padding: 7px 12px; background: {TB_BTN}; border-color: {TB_BTN_BORDER}; color: {TB_TEXT}; }}
+QFrame#TopBar QPushButton:hover {{ background: {TB_BTN_HOVER}; }}
+QFrame#TopBar QPushButton#Primary {{ background: {ACCENT}; border-color: {ACCENT}; color: {ON_ACCENT}; }}
+QFrame#TopBar QPushButton#Primary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
+QPushButton#Nav, QFrame#TopBar QPushButton#Nav {{ background: transparent; border: 1px solid {TB_BTN_BORDER}; color: {TB_TEXT}; font-weight: 600; padding: 7px 12px; }}
+QPushButton#Nav:hover, QFrame#TopBar QPushButton#Nav:hover {{ background: {TB_BTN_HOVER}; border-color: {ACCENT}; }}
 QPushButton#Nav:pressed, QFrame#TopBar QPushButton#Nav:pressed {{ background: {BORDER}; }}
 QPushButton#Link, QFrame#Panel QPushButton#Link, QFrame#TopBar QPushButton#Link {{
     background: transparent;
@@ -128,7 +188,7 @@ QPushButton#Link, QFrame#Panel QPushButton#Link, QFrame#TopBar QPushButton#Link 
     padding: 6px 4px;
 }}
 QPushButton#Link:hover, QFrame#Panel QPushButton#Link:hover, QFrame#TopBar QPushButton#Link:hover {{ color: {TEXT}; text-decoration: underline; }}
-QToolButton, QFrame#Panel QToolButton, QFrame#TopBar QToolButton {{
+QToolButton, QFrame#Panel QToolButton {{
     background: {PANEL_ALT};
     border: 1px solid {BORDER};
     border-radius: 6px;
@@ -136,6 +196,8 @@ QToolButton, QFrame#Panel QToolButton, QFrame#TopBar QToolButton {{
 }}
 QToolButton:hover, QFrame#Panel QToolButton:hover, QFrame#TopBar QToolButton:hover {{ background: {PANEL_HOVER}; border-color: {BORDER_STRONG}; }}
 QToolButton:pressed, QFrame#Panel QToolButton:pressed, QFrame#TopBar QToolButton:pressed {{ background: {BORDER}; }}
+QFrame#TopBar QToolButton {{ background: {TB_BTN}; border: 1px solid {TB_BTN_BORDER}; border-radius: 6px; padding: 4px 10px; color: {TB_TEXT}; }}
+QFrame#TopBar QToolButton:hover {{ background: {TB_BTN_HOVER}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
 QMenu {{
     background: {PANEL_ALT};
@@ -147,7 +209,7 @@ QMenu::item {{ background: transparent; padding: 6px 26px 6px 12px; border-radiu
 QMenu::item:selected {{ background: {PANEL_HOVER}; }}
 QMenu::separator {{ height: 1px; background: {BORDER_STRONG}; margin: 6px 8px; }}
 QMenu::indicator {{ width: 0; }}
-QMenu::item:checked {{ color: {ACCENT_HOVER}; font-weight: 600; }}
+QMenu::item:checked {{ color: {ACCENT_TEXT}; font-weight: 600; }}
 QToolTip {{
     background: {PANEL_ALT};
     color: {TEXT};
@@ -163,10 +225,10 @@ QLineEdit {{
     selection-color: {ON_ACCENT};
 }}
 QLineEdit:hover {{ border-color: {BORDER_STRONG}; }}
-QLineEdit:focus {{ border-color: {ACCENT}; }}
+QLineEdit:focus {{ border-color: {FOCUS}; }}
 QTableWidget {{
     background: transparent;
-    alternate-background-color: rgba(245, 211, 31, 0.025);
+    alternate-background-color: {ALT_ROW};
     border: none;
     gridline-color: transparent;
     selection-background-color: {PANEL_HOVER};
@@ -183,7 +245,7 @@ QTabBar::tab {{
     font-weight: 600;
 }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
-QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {ACCENT}; }}
+QTabBar::tab:selected {{ color: {TEXT}; border-bottom: 2px solid {TAB_LINE}; }}
 QHeaderView::section {{
     background: transparent;
     color: {FAINT};
@@ -208,6 +270,9 @@ QStatusBar QLabel {{ background: transparent; color: {MUTED}; padding: 2px 10px;
 QMessageBox QLabel {{ background: transparent; }}
 QDialog {{ background: {BG}; }}
 """
+
+
+apply("dark")
 
 
 def brand_mark(size: int):
