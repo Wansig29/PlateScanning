@@ -51,3 +51,39 @@ def test_plate_at_the_edge_is_read_only_once_it_stays():
             assert engine.reads == before, f"read a cut-off plate on frame {i + 1}"
     assert engine.reads > 0, "a plate that stays at the edge is never read"
     conn.close()
+
+
+class LowConfidenceEngine(FakeEngine):
+    def __init__(self, confidence):
+        super().__init__()
+        self.confidence = confidence
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("ABC1234", self.confidence, [self.confidence] * 7)
+
+
+def _scans_reported(engine, neural, frames=8):
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(frames):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9, neural)])
+    w.tracker.flush()
+    for t in list(w.tracker.tracks.values()):
+        w._finish(conn, t)
+    conn.close()
+    return got
+
+
+def test_a_shelf_the_classical_finder_proposes_is_not_reported_unless_the_read_is_sure():
+    assert _scans_reported(LowConfidenceEngine(0.6), neural=False) == []          # guess at a non-plate
+    assert len(_scans_reported(LowConfidenceEngine(0.9), neural=False)) == 1      # a clear plate is still found
+    assert len(_scans_reported(LowConfidenceEngine(0.6), neural=True)) == 1       # the neural detector vouched for it
+
+
+def test_unsure_reads_do_not_count_as_a_plate():
+    assert _scans_reported(LowConfidenceEngine(0.36), neural=True) == []          # below read_confidence

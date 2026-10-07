@@ -114,7 +114,9 @@ class OcrConfig:
     detector_model: str = "yolo-v9-t-384-license-plate-end2end"
     # Several comma-separated OCR models are combined character by character.
     ocr_model: str = "cct-xs-v1-global-model,cct-xs-v2-global-model"
-    detector_confidence: float = 0.35
+    # How sure the neural detector must be that something is a plate. 0.35 let shelves,
+    # windows and signs through; real plates score well above 0.5.
+    detector_confidence: float = 0.5
     # Also try plate candidates from the classical contrast/edge finder, in
     # case the neural detector misses an unusual plate (~20 ms per frame).
     classical_proposals: bool = True
@@ -129,13 +131,18 @@ class OcrConfig:
     # 80 is where single synthetic crops first read about 80-90% (tools/bench_resolution.py);
     # re-measure on real footage.
     min_plate_width_px: float = 80.0
-    # Mean per-character OCR confidence a read needs to count as a vote.
-    read_confidence: float = 0.30
+    # Mean per-character OCR confidence a read needs to count as a vote. The OCR always
+    # returns *some* text, so a low bar turns anything plate-shaped into a "plate".
+    read_confidence: float = 0.50
+    # A candidate that only the classical edge/contrast finder proposed (never the neural
+    # detector) must read at least this well to be reported: those proposals are mostly
+    # windows, shelves and lane marks.
+    classical_only_confidence: float = 0.75
     # When a vehicle leaves before its plate was confirmed, its best guess is
     # still reported if it averages this much (a violation only needs
     # read_confidence: missing a violator is worse than a doubtful alert).
     # Below it, the vehicle is logged as "plate not readable" with a snapshot.
-    report_confidence: float = 0.50
+    report_confidence: float = 0.65
     # A violation alerts on one read this confident; otherwise, and for
     # every other result, `confirm_reads` agreeing reads are required.
     alert_confidence: float = 0.75
@@ -255,6 +262,9 @@ class Config:
     sync: SyncConfig = field(default_factory=SyncConfig)
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
+    # Bumped when defaults change in a way an old config.json must pick up (see _migrate).
+    settings_version: int = 2
+
     home: Path = field(default_factory=app_home, repr=False)
 
     @property
@@ -309,6 +319,19 @@ def save_config(cfg: Config, path: Path | None = None) -> None:
     path.write_text(json.dumps(_to_json(cfg), indent=2), encoding="utf-8")
 
 
+def _migrate(data: dict[str, Any]) -> None:
+    """v1 -> v2: the first release wrote its defaults into config.json, so tightened defaults would never
+    reach an installed app. Move only values still equal to the old default; a value someone chose stays."""
+    if data.get("settings_version", 1) >= 2:
+        return
+    ocr = data.get("ocr")
+    if isinstance(ocr, dict):
+        for key, old, new in (("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5),
+                              ("report_confidence", 0.50, 0.65)):
+            if ocr.get(key) == old:
+                ocr[key] = new
+
+
 def load_config(path: Path | None = None) -> Config:
     home = app_home()
     path = path or home / "config.json"
@@ -316,6 +339,7 @@ def load_config(path: Path | None = None) -> Config:
     if path.exists():
         # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
         data = json.loads(path.read_text(encoding="utf-8-sig"))
+    _migrate(data)
     cfg = _merge(Config, data)
     cfg.home = home
     # Write back so newly added settings show up in the file with defaults.

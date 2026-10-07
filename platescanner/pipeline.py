@@ -563,6 +563,9 @@ class RecognizerWorker(QThread):
         lead = track.leader()
         if lead is None:
             return
+        ocr = self.cfg.ocr
+        if not track.neural_hits and lead.score / lead.reads < ocr.classical_only_confidence:
+            return  # only the edge/contrast finder saw it (a shelf, a window...) and the read is not sure enough
         color = None
         if track.best_frame is not None and track.best_frame_box is not None:
             color = identify.vehicle_color(track.best_frame, track.best_frame_box)
@@ -573,7 +576,6 @@ class RecognizerWorker(QThread):
         key = plates.plate_key(text)
         if key == track.emitted_key:
             return
-        ocr = self.cfg.ocr
         avg = lead.score / lead.reads
         result = db.lookup(conn, text, fuzzy=self.cfg.scan.fuzzy_match)
         if decoded and plates.normalize(text) != plates.normalize(lead.text):
