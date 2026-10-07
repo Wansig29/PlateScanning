@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from .. import db, plates
+from .. import db, plates, timefmt
 from . import theme
 from .widgets import Avatar, ImageSlot, fmt_date, load_pixmap, panel, suspension_text
 
@@ -169,7 +169,10 @@ class DatabaseWindow(QDialog):
         self._vehicles = db.list_vehicles(self.conn)
         self._violations = db.list_violations(self.conn)
         last = db.get_state(self.conn, "last_sync_at")
-        when = datetime.fromisoformat(last).astimezone().strftime("%b %d, %Y %H:%M") if last else "never"
+        when = "never"
+        if last:
+            local = datetime.fromisoformat(last).astimezone()
+            when = f"{local:%b %d, %Y} {timefmt.clock(local, seconds=False)}"
         self.synced.setText(f"Read-only copy of psau-security · last synced {when}")
 
         rows = []

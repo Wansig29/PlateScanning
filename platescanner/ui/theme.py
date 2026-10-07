@@ -114,6 +114,9 @@ QPushButton#Primary, QFrame#Panel QPushButton#Primary, QFrame#TopBar QPushButton
 QPushButton#Primary:hover, QFrame#Panel QPushButton#Primary:hover, QFrame#TopBar QPushButton#Primary:hover {{ background: {ACCENT_HOVER}; border-color: {ACCENT_HOVER}; }}
 QPushButton#Primary:pressed, QFrame#Panel QPushButton#Primary:pressed, QFrame#TopBar QPushButton#Primary:pressed {{ background: #2f6fd8; }}
 QPushButton#Primary:disabled, QFrame#Panel QPushButton#Primary:disabled, QFrame#TopBar QPushButton#Primary:disabled {{ background: {PANEL_ALT}; border-color: {BORDER}; color: {MUTED}; }}
+QPushButton#Nav, QFrame#TopBar QPushButton#Nav {{ background: transparent; border: 1px solid {BORDER_STRONG}; color: {TEXT}; font-weight: 600; padding: 7px 14px; }}
+QPushButton#Nav:hover, QFrame#TopBar QPushButton#Nav:hover {{ background: {PANEL_HOVER}; border-color: {ACCENT}; }}
+QPushButton#Nav:pressed, QFrame#TopBar QPushButton#Nav:pressed {{ background: {BORDER}; }}
 QPushButton#Link, QFrame#Panel QPushButton#Link, QFrame#TopBar QPushButton#Link {{
     background: transparent;
     border: none;
