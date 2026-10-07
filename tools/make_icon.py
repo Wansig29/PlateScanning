@@ -3,14 +3,14 @@
     python tools/make_icon.py
 
 Writes app.ico / app.png (window + taskbar icon) and logo_badge.png (top bar and sign-in screen): the
-transparent logo on a cream rounded tile so its green strokes stay readable on the dark theme.
+transparent logo on a white rounded tile so its green strokes stay readable on the dark theme.
 """
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
 ASSETS = Path(__file__).resolve().parent.parent / "platescanner" / "assets"
-CREAM = (247, 245, 236, 255)
+CREAM = (255, 255, 255, 255)
 
 
 def badge(size: int = 256) -> Image.Image:
