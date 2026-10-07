@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, QUrl, Signal, Slot
-from PySide6.QtGui import QActionGroup, QDesktopServices, QKeySequence, QPixmap, QShortcut
+from PySide6.QtGui import QActionGroup, QDesktopServices, QGuiApplication, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
@@ -37,6 +37,9 @@ from .widgets import (
 log = logging.getLogger(__name__)
 
 SYNC_RETRY_MS = 15 * 60 * 1000
+# How much of the top bar is shown: everything, without the small print, or icons only.
+DENSITY_FULL, DENSITY_MEDIUM, DENSITY_COMPACT = 0, 1, 2
+MIN_WINDOW = (720, 500)
 
 
 class SyncWorker(QObject):
@@ -147,7 +150,6 @@ def _ago(iso: str | None) -> str:
 
 
 class MainWindow(QMainWindow):
-    SYNC_LABEL_MAX_WIDTH = 620           # px; a long sync error is cut short (full text in the tooltip)
     request_sync = Signal(bool)
     token_changed = Signal(str)
     update_found = Signal(object)        # updates.Release; these three are emitted from update threads
@@ -163,7 +165,16 @@ class MainWindow(QMainWindow):
         self.session = session
         self.conn = db.connect(cfg.db_path)
         self.setWindowTitle("PSAU Gate Plate Scanner")
-        self.resize(1440, 860)
+        self._density = DENSITY_FULL
+        self._sync_error_full: str | None = None
+        self._release: updates.Release | None = None
+        self._update_kind = "available"        # what the update button offers: available / downloading / downloaded
+        self._update_pct = 0
+        self._density_timer = QTimer(self, singleShot=True)
+        self._density_timer.timeout.connect(self._measure_density)
+        self._density_needs = [0, 0, 0]       # top-bar width each density needs (measured)
+        self.setMinimumSize(*MIN_WINDOW)
+        self._fit_to_screen()
 
         # Which violator the dashboard shows, and who is queued behind it.
         self.dash = DashboardQueue(self.cfg.scan.require_acknowledge)
@@ -182,6 +193,7 @@ class MainWindow(QMainWindow):
         self._start_sync()
         self._refresh_sync_label()
         self._start_update_check()
+        self._density_changed()
 
         QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
 
@@ -195,6 +207,8 @@ class MainWindow(QMainWindow):
 
         top = QFrame()
         top.setObjectName("TopBar")
+        top.setMinimumWidth(0)
+        self._top = top
         tl = QHBoxLayout(top)
         tl.setContentsMargins(16, 10, 16, 10)
         tl.setSpacing(8)
@@ -209,6 +223,7 @@ class MainWindow(QMainWindow):
         title.setObjectName("AppTitle")
         subtitle = QLabel("Vehicle entry monitoring")
         subtitle.setObjectName("AppSubtitle")
+        self._subtitle = subtitle
         titles.addWidget(title)
         titles.addWidget(subtitle)
         tl.addLayout(titles)
@@ -238,7 +253,6 @@ class MainWindow(QMainWindow):
         self.update_btn = QPushButton()
         self.update_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.update_btn.setObjectName("Primary")
-        self.update_btn.setMinimumWidth(150)   # same width whether it says "Update v1.0.7" or "Downloading… 47%"
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._update_clicked)
         tl.addWidget(self.update_btn)
@@ -303,8 +317,8 @@ class MainWindow(QMainWindow):
         right = QSplitter(Qt.Orientation.Vertical)
         right.setChildrenCollapsible(False)
         right.setHandleWidth(10)
-        right.setMinimumWidth(420)
-        right.setMaximumWidth(640)
+        right.setMinimumWidth(300)
+        right.setMaximumWidth(760)
         self.identity = IdentityPanel()
         self.identity.acknowledged.connect(self._acknowledged)
         right.addWidget(self.identity)
@@ -506,7 +520,6 @@ class MainWindow(QMainWindow):
 
     def _start_update_check(self) -> None:
         """Like sync: once shortly after start, then every update.interval_hours, off the UI thread."""
-        self._release: updates.Release | None = None
         self._update_busy = False
         self.update_found.connect(self._show_update)
         self.update_message.connect(lambda m: self.statusBar().showMessage(m, 8000))
@@ -514,7 +527,6 @@ class MainWindow(QMainWindow):
         self.install_now.connect(self._install_update)
         self.update_progress.connect(self._update_progress)
         self.update_failed.connect(self._update_failed)
-        self._update_pct = 0
         self._installer: Path | None = None   # downloaded and waiting for the operator
         updates.clean_old_installers(self.cfg.home / "updates", __version__)
         self.update_timer = QTimer(self)
@@ -552,14 +564,17 @@ class MainWindow(QMainWindow):
     @Slot(object)
     def _show_update(self, rel: updates.Release) -> None:
         self._release = rel
-        self.update_btn.setText(f"⬆  Update {rel.tag}")
+        self._update_kind = "available"
+        self._render_update_btn()
         self.update_btn.setToolTip(f"Update {rel.tag} is available (you are running v{__version__}). Click to update.")
         self.update_btn.setVisible(True)
+        self._density_changed()
 
     @Slot(str)
     def _update_downloaded(self, path: str) -> None:
         self._installer = Path(path)
-        self.update_btn.setText(f"⬆  Install {self._release.tag}")
+        self._update_kind = "downloaded"
+        self._render_update_btn()
         self.update_btn.setToolTip("The update is downloaded. Click to install it.")
         self.statusBar().showMessage("Update downloaded. It installs only when you click the update button.", 8000)
 
@@ -586,7 +601,8 @@ class MainWindow(QMainWindow):
         self._update_busy = True
         self._update_pct = 0
         self.update_btn.setEnabled(False)
-        self.update_btn.setText("⬇  Downloading… 0%")
+        self._update_kind = "downloading"
+        self._render_update_btn()
         threading.Thread(target=self._download_job, args=(rel,), daemon=True, name="update-download").start()
 
     def _report_progress(self, done: int, total: int) -> None:
@@ -598,7 +614,8 @@ class MainWindow(QMainWindow):
 
     @Slot(int)
     def _update_progress(self, pct: int) -> None:
-        self.update_btn.setText(f"⬇  Downloading… {pct}%")
+        self._update_kind = "downloading"
+        self._render_update_btn()
 
     def _download_job(self, rel: updates.Release) -> None:
         try:
@@ -611,8 +628,8 @@ class MainWindow(QMainWindow):
 
     @Slot(str)
     def _update_failed(self, message: str) -> None:
-        if self._release is not None:
-            self.update_btn.setText(f"⬆  Update {self._release.tag}")
+        self._update_kind = "available"
+        self._render_update_btn()
         self.update_btn.setEnabled(True)
         QMessageBox.warning(self, "Update", message + "\n\nYou can also download PlateScanner-Setup.exe from the "
                             "release page and run it yourself.")
@@ -634,6 +651,79 @@ class MainWindow(QMainWindow):
         if mode == "auto":
             self._check_updates(False)
 
+    # --- responsive layout ------------------------------------------------------
+
+    def _fit_to_screen(self) -> None:
+        """Open at a size that suits this screen: large on a desktop, nearly full on a small laptop."""
+        screen = QGuiApplication.primaryScreen()
+        if screen is None:
+            self.resize(1280, 760)
+            return
+        avail = screen.availableGeometry()
+        w = max(MIN_WINDOW[0], min(1600, int(avail.width() * 0.94)))
+        h = max(MIN_WINDOW[1], min(960, int(avail.height() * 0.92)))
+        self.resize(w, h)
+        self.move(avail.x() + max(0, (avail.width() - w) // 2), avail.y() + max(0, (avail.height() - h) // 2))
+
+    def _sync_idle_text(self) -> str:
+        return "↻  Sync Now" if self._density < DENSITY_COMPACT else "↻"
+
+    def _render_update_btn(self) -> None:
+        tag = self._release.tag if self._release is not None else ""
+        compact = self._density >= DENSITY_COMPACT
+        if self._update_kind == "downloading":
+            text = f"⬇  {self._update_pct}%" if compact else f"⬇  Downloading… {self._update_pct}%"
+        elif self._update_kind == "downloaded":
+            text = "⬆" if compact else f"⬆  Install {tag}"
+        else:
+            text = "⬆" if compact else f"⬆  Update {tag}"
+        self.update_btn.setText(text)
+        self.update_btn.setMinimumWidth(0 if compact else 150)  # steady width while the text changes
+
+    def _set_density(self, level: int) -> None:
+        self._density = level
+        self._subtitle.setVisible(level == DENSITY_FULL)
+        self.clock_date.setVisible(level == DENSITY_FULL)
+        icons_only_nav = level >= DENSITY_MEDIUM            # Reports and Database shrink first
+        self.reports_btn.setText("📊" if icons_only_nav else "📊  Reports")
+        self.database_btn.setText("🗄" if icons_only_nav else "🗄  Database")
+        if self.sync_btn.isEnabled():
+            self.sync_btn.setText(self._sync_idle_text())
+        self._render_update_btn()
+        self._update_account_btn()
+
+    def _density_changed(self) -> None:
+        """Something that changes the top bar's width happened: re-measure on the next turn of the event loop."""
+        if not self._density_timer.isActive():
+            self._density_timer.start(0)
+
+    def _measure_density(self) -> None:
+        """How wide the top bar needs to be at each density, then pick the richest one that fits."""
+        layout = self._top.layout()
+        for level in (DENSITY_FULL, DENSITY_MEDIUM, DENSITY_COMPACT):
+            self._set_density(level)
+            self._density_needs[level] = layout.minimumSize().width()
+        self._pick_density()
+
+    def _pick_density(self) -> None:
+        level = next((lv for lv in (DENSITY_FULL, DENSITY_MEDIUM) if self._density_needs[lv] <= self.width()),
+                     DENSITY_COMPACT)
+        if level != self._density:
+            self._set_density(level)
+
+    def _elide_sync_error(self) -> None:
+        """A long sync error is cut to the room the status bar has (the camera, OCR and database texts keep theirs)."""
+        if self._sync_error_full:
+            room = max(160, min(700, self.width() - 600))
+            self.sync_label.setText(self.sync_label.fontMetrics().elidedText(
+                self._sync_error_full, Qt.TextElideMode.ElideRight, room))
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        if self._density_needs[DENSITY_COMPACT]:
+            self._pick_density()
+        self._elide_sync_error()
+
     # --- sync -----------------------------------------------------------------
 
     def _sync(self, full: bool) -> None:
@@ -646,7 +736,7 @@ class MainWindow(QMainWindow):
 
     def _sync_finished_ui(self) -> None:
         self.sync_btn.setEnabled(True)
-        self.sync_btn.setText("↻  Sync Now")
+        self.sync_btn.setText(self._sync_idle_text())
 
     def _sync_done(self, summary: dict) -> None:
         self._sync_finished_ui()
@@ -684,13 +774,13 @@ class MainWindow(QMainWindow):
                          f"Local DB: {c['vehicles']:,} vehicles · {c['violations']:,} active violations",
                          theme.ACCENT)
         if error:
-            full = f"⚠ {error} · last synced {_ago(last)}"
-            self.sync_label.setText(self.sync_label.fontMetrics().elidedText(
-                full, Qt.TextElideMode.ElideRight, self.SYNC_LABEL_MAX_WIDTH))
-            self.sync_label.setToolTip(full)
+            self._sync_error_full = f"⚠ {error} · last synced {_ago(last)}"
+            self._elide_sync_error()
+            self.sync_label.setToolTip(self._sync_error_full)
             self.sync_label.setStyleSheet(f"color: {theme.AMBER};")
         else:
             prefix = "" if self.session else "Offline mode · "
+            self._sync_error_full = None
             self.sync_label.setText(f"{prefix}Last synced {_ago(last)}")
             self.sync_label.setToolTip("")
             self.sync_label.setStyleSheet("")
@@ -718,11 +808,11 @@ class MainWindow(QMainWindow):
             user = self.session.get("user") or {}
             name = user.get("name") or user.get("email") or "Guard"
             short = name if len(name) <= 14 else name[:13] + "…"
-            self.account_btn.setText(f"👤  {short}  ▾")
+            self.account_btn.setText(f"👤  {short}  ▾" if self._density < DENSITY_COMPACT else "👤  ▾")
             self.account_btn.setToolTip(f"Signed in as {name}. Account and update settings")
             self.account_action.setText("Sign out")
         else:
-            self.account_btn.setText("👤  Not signed in  ▾")
+            self.account_btn.setText("👤  Not signed in  ▾" if self._density < DENSITY_COMPACT else "👤  ▾")
             self.account_action.setText("Sign in")
 
     def _account_clicked(self) -> None:

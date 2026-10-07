@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
 
 from .. import db, export, plates
 from . import theme
-from .widgets import format_ts
+from .widgets import fit_to_screen, format_ts
 
 PERIODS = [("daily", "Daily"), ("weekly", "Weekly"), ("monthly", "Monthly"), ("yearly", "Yearly"),
            ("archive", "Archive")]
@@ -29,7 +29,7 @@ class ReportsWindow(QDialog):
         self.period = "daily"
         self.report: dict = {}
         self.setWindowTitle("Scan reports: PSAU Gate Plate Scanner")
-        self.resize(1100, 680)
+        fit_to_screen(self, 1100, 680)
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(12, 12, 12, 12)
