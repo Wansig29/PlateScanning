@@ -89,6 +89,13 @@ class MotionConfig:
     # ...in a picture that didn't change almost entirely at once (lighting,
     # clouds, the camera adjusting its exposure).
     max_area_ratio: float = 0.6
+    # ...and that actually travels: over the last travel_frames frames its centre moved
+    # at least min_travel_ratio of the picture width, or its area changed by at least
+    # min_growth_ratio (a vehicle driving up to the camera). Someone fidgeting or gesturing
+    # in place, or leaning about at a desk, does neither.
+    travel_frames: int = 10
+    min_travel_ratio: float = 0.05
+    min_growth_ratio: float = 0.3
     warmup_frames: int = 45
     # Keep running plate detection this long after motion stops, so a
     # vehicle that halts in view is still read.

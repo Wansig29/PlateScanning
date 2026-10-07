@@ -1,6 +1,8 @@
 """Motion gating (MOG2 background subtraction) and a sharpness score."""
 from __future__ import annotations
 
+from collections import deque
+
 import cv2
 import numpy as np
 
@@ -19,6 +21,8 @@ class MotionDetector:
             history=cfg.history, varThreshold=cfg.var_threshold, detectShadows=True)
         self.kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         self.frames_seen = 0
+        self._trail: deque[tuple[float, float]] = deque(maxlen=max(2, cfg.travel_frames))  # (centre x, area)
+        self._missed = 0
 
     def apply(self, frame: np.ndarray) -> tuple[bool, Box | None]:
         h, w = frame.shape[:2]
@@ -54,6 +58,14 @@ class MotionDetector:
                 continue  # mostly empty: specks merged together (leaves, rain), not one body
             blobs.append((x, y, bw, bh))
         if not blobs:
+            self._missed += 1
+            if self._missed > 3:  # a brief dropout is tolerated; a real gap starts a new trail
+                self._trail.clear()
+            return False, None
+        self._missed = 0
+        bx, by, bw, bh = max(blobs, key=lambda b: b[2] * b[3])
+        self._trail.append(((bx + bw / 2) / mw, bw * bh / mask.size))
+        if not self._travelling():
             return False, None
         x0 = min(b[0] for b in blobs)
         y0 = min(b[1] for b in blobs)
@@ -61,6 +73,16 @@ class MotionDetector:
         y1 = max(b[1] + b[3] for b in blobs)
         inv = 1.0 / scale
         return True, (int(x0 * inv), int(y0 * inv), int((x1 - x0) * inv), int((y1 - y0) * inv))
+
+
+    def _travelling(self) -> bool:
+        """The biggest moving shape crossed the picture or grew toward the camera, rather than moving in place."""
+        if len(self._trail) < self._trail.maxlen:
+            return False
+        xs = [t[0] for t in self._trail]
+        areas = [t[1] for t in self._trail]
+        grew = max(areas) / max(min(areas), 1e-9) - 1.0
+        return max(xs) - min(xs) >= self.cfg.min_travel_ratio or grew >= self.cfg.min_growth_ratio
 
 
 def sharpness(image: np.ndarray, box: Box | None = None) -> float:
