@@ -171,18 +171,6 @@ To clear just one day (for example today's test scans), with its pictures:
 
 This cannot be undone. Vehicles, violations and the sync data are not touched, only the scanner's own scan log. Archived CSV files are not edited.
 
-### Resolution: does 1080p read better than 720p or 480p?
-
-`tools/bench_resolution.py` renders one synthetic traffic scene at 1080p and downscales it (same field of view) to 720p, 480p and 360p, scans each through the real pipeline, and measures the single-crop reading rate against plate width in pixels. On that scene (10 cars, plates 59-270 px wide): exact reads 1080p 60%, 720p 60%, 480p 50%, 360p 30%, and **720p with a narrower field of view 80%**. Single crops first read 80-90% of the time at about 80-96 px plate width, and voting over several frames read some plates down to about 46 px. So what matters is the **pixels across the plate**, not the camera's resolution on its own: a tighter shot of the lane beats a wider shot at higher resolution. Keep the camera close, point it at the lane and set `camera.roi` to the lane (the detector sees only that area, so plates are bigger to it). The status bar warns when the median plate is narrower than `ocr.min_plate_width_px` (80). Caveats: the footage is synthetic and its rendered cars suit the plate detector poorly (most reads came from the classical finder), so re-measure on real footage before quoting these figures.
-
-### Tried and not used: deskew and contrast enhancement
-
-`ocr.deskew` (straighten tilted plates) and `ocr.enhance` (fix dark, low-contrast or blown-out crops), in `vision/enhance.py`, are off by default. `tools/bench_conditions.py` (synthetic plates, 300 per condition, the real OCR models) found no worthwhile gain: deskew lowered reads on rotated plates by about 1.5 points on average, because the OCR already tolerates tilt and resampling blurs, and enhance changed them by +0.2 points (noise). They are kept so the comparison can be re-run on real footage.
-
-### Tried and not used: multi-frame pixel fusion
-
-`vision/fusion.py` aligns several crops of one plate and takes their per-pixel median, and `tools/bench_fusion.py` compares it with the voting the app already does (synthetic plates, 3-8 frames each, the real OCR models). Combining the *pixels* never beat voting over the *reads* (exact reads at 56 / 80 / 120 px plate width: single frame 24 / 58 / 86%, vote 35 / 73 / 96%, fused 24 / 64 / 91%), so it is not wired in. The same run shows how steeply reading depends on plate width: nothing reads below about 40 px, and reliable reading needs plates well over 80 px wide. Re-measure on real footage before relying on these figures.
-
 ### Multiple violations per vehicle
 
 The spec left this open. The app stores **all** active violations. The dashboard shows the newest one in the wireframe's fields. When there are more, it rotates through them every 4 s, and the ‹ › buttons page manually (pausing rotation for 15 s). The banner and log entry say how many there are.
