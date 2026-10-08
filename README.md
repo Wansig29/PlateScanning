@@ -11,7 +11,7 @@ MOG2 motion gate (skips work when idle)                                  local S
                                                                                          │
   UI (live feed with labelled vehicles, logs, identity dashboard, captured plates) ◀─────┘
                                                                          ▲
-                        native-app REST API ──(sync every 4 h / Sync Now)┘ (into SQLite)
+                        native-app REST API ──(sync every 3 h / Sync Now)┘ (into SQLite)
 ```
 
 ## Quick start (development)
@@ -189,7 +189,7 @@ The spec left this open. The app stores **all** active violations. The dashboard
 
 ## Connection to psau-security
 
-The scanner gets its data from the **psau-security** system (`native-app`, on Railway). Every lookup at the gate is local, so the network is only used for syncing: a full copy about once a day and the changes every 4 hours (or **Sync Now**).
+The scanner gets its data from the **psau-security** system (`native-app`, on Railway). Every lookup at the gate is local, so the network is only used for syncing: a full copy about once a day and the changes every 3 hours (or **Sync Now**, which does a full copy).
 
 - **Accounts**: guards sign in with their **existing psau-security account** (same email and password as the website and the mobile app) through psau-security's normal `POST /api/login`. There are no separate scanner accounts. Only staff roles (`security`, `admin`, `system_admin`) are accepted; a student/vehicle-owner account is refused and the session it opened is closed again. The guard's name is recorded with every acknowledged violation.
 - **Data**: psau-security's read-only gate endpoints (`native-app/src/Controllers/Api/GateScannerApiController.php`), staff roles only:
