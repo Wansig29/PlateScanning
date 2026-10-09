@@ -315,8 +315,8 @@ def test_photo_is_saved(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("resp", [
-    PhotoResp([b"x" * (1 << 20)] * 5 + [b"x"]),                                 # 1 byte over 5 MB, streamed
-    PhotoResp([b"x"], {"Content-Type": "image/jpeg", "Content-Length": str(6 << 20)}),   # says 6 MB
+    PhotoResp([b"x" * (1 << 20)] * 5 + [b"x"]),                     # over 5 MB and not a picture to compress
+    PhotoResp([b"x"], {"Content-Type": "image/jpeg", "Content-Length": str(30 << 20)}),  # says 30 MB: over the cap
     PhotoResp([b"<html>login</html>"], {"Content-Type": "text/html"}),          # an error page, not a photo
     PhotoResp([]),                                                              # empty
     PhotoResp([b"img"], ok=False),                                              # HTTP error

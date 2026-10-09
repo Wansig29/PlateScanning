@@ -1,6 +1,7 @@
 """HTTP client for the existing native-app REST API (Sanctum bearer tokens)."""
 from __future__ import annotations
 
+import logging
 import platform
 from pathlib import Path
 from typing import Any
@@ -8,7 +9,10 @@ from urllib.parse import urlsplit
 
 import requests
 
+from . import photos
 from .config import ApiConfig
+
+log = logging.getLogger(__name__)
 
 MAX_PAGES = 1000
 
@@ -62,8 +66,12 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
 
 STAFF_ROLES = {"security", "admin", "system_admin"}
 
-# Owner photos and violation evidence: larger than this is not a photo worth keeping offline.
+# Owner photos and violation evidence are stored at most this size: a larger one is
+# compressed down to it (photos.shrink_to).
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
+# A download larger than this is not fetched at all (nothing to compress it from would be
+# worth the memory and time): a camera photo is a few MB, an uncompressed one maybe 20.
+MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
 # Content types some servers send for stored files when they don't know the image type.
 _UNTYPED = {"application/octet-stream", "binary/octet-stream"}
 
@@ -196,9 +204,10 @@ class ApiClient:
         bearer token; any other host gets none. (requests also drops the token if the
         server redirects to another host.)
 
-        The photo is streamed to disk and given up on past MAX_PHOTO_BYTES, so a huge or
-        endless response can't fill the laptop's memory or disk; a response that isn't an
-        image (e.g. an HTML error page) is not saved as one."""
+        The photo is streamed to disk and given up on past MAX_DOWNLOAD_BYTES, so a huge or
+        endless response can't fill the laptop's memory or disk; one over MAX_PHOTO_BYTES is
+        compressed down to it. A response that isn't an image (e.g. an HTML error page) is
+        not saved as one."""
         headers = {}
         if self.token and same_origin(url, self.cfg.base_url):
             headers = self._auth_headers()
@@ -210,17 +219,29 @@ class ApiClient:
                 kind = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 if not r.ok or (kind and not kind.startswith("image/") and kind not in _UNTYPED):
                     return False
-                if int(r.headers.get("Content-Length") or 0) > MAX_PHOTO_BYTES:
+                if int(r.headers.get("Content-Length") or 0) > MAX_DOWNLOAD_BYTES:
                     return False
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 with open(tmp, "wb") as f:
                     for chunk in r.iter_content(64 * 1024):
                         size += len(chunk)
-                        if size > MAX_PHOTO_BYTES:
+                        if size > MAX_DOWNLOAD_BYTES:
                             break
                         f.write(chunk)
         except (requests.RequestException, ValueError, OSError):
             size = -1
+        if 0 < size <= MAX_DOWNLOAD_BYTES and size > MAX_PHOTO_BYTES:
+            try:
+                small = photos.shrink_to(tmp.read_bytes(), MAX_PHOTO_BYTES)
+                if small is None:
+                    log.warning("Photo %s (%d bytes) could not be compressed to %d bytes", url, size,
+                                MAX_PHOTO_BYTES)
+                    size = -1
+                else:
+                    tmp.write_bytes(small)
+                    size = len(small)
+            except OSError:
+                size = -1
         if not 0 < size <= MAX_PHOTO_BYTES:
             tmp.unlink(missing_ok=True)
             return False
