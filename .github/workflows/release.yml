@@ -84,6 +84,9 @@ jobs:
           body: |
             Windows 64-bit. No Python needed.
 
+            In-app updates install this release only after the maintainer signs it and uploads
+            `PlateScanner-Setup.exe.sig` here (`python tools\sign_release.py sign ...`).
+
             **Install:** download `PlateScanner-Setup.exe`, double-click it and follow the steps.
             A Desktop shortcut is created. If Windows says "Windows protected your PC", click **More info**, then **Run anyway**.
 

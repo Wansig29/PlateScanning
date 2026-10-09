@@ -1,13 +1,18 @@
 """HTTP client for the existing native-app REST API (Sanctum bearer tokens)."""
 from __future__ import annotations
 
+import logging
 import platform
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
+from . import photos
 from .config import ApiConfig
+
+log = logging.getLogger(__name__)
 
 MAX_PAGES = 1000
 
@@ -61,6 +66,53 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
 
 STAFF_ROLES = {"security", "admin", "system_admin"}
 
+# Owner photos and violation evidence are stored at most this size: a larger one is
+# compressed down to it (photos.shrink_to).
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
+# A download larger than this is not fetched at all (nothing to compress it from would be
+# worth the memory and time): a camera photo is a few MB, an uncompressed one maybe 20.
+MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024
+# Content types some servers send for stored files when they don't know the image type.
+_UNTYPED = {"application/octet-stream", "binary/octet-stream"}
+
+
+def _roles(user: dict[str, Any]) -> set[str]:
+    """The account's role names, lower-case: from "role" ("security" or {"name": "security"})
+    and/or a "roles" list. Empty when the login response doesn't say."""
+    found: list[Any] = [user.get("role")]
+    if isinstance(user.get("roles"), list):
+        found += user["roles"]
+    names = set()
+    for r in found:
+        if isinstance(r, dict):
+            r = r.get("name") or r.get("slug")
+        if isinstance(r, str) and r.strip():
+            names.add(r.strip().lower())
+    return names
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    """(scheme, host, port) of a URL, or None if it has no proper host."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port or _DEFAULT_PORTS.get(parts.scheme.lower())
+    except ValueError:  # e.g. a port that isn't a number
+        return None
+    if not parts.hostname:
+        return None
+    return parts.scheme.lower(), parts.hostname.lower(), port
+
+
+def same_origin(url: str, base_url: str) -> bool:
+    """Is `url` on exactly the server at `base_url` (same scheme, host and port)?
+
+    A prefix check is not enough: "https://psau.example.app.evil.com/x" starts
+    with "https://psau.example.app" but is another server."""
+    a = _origin(url)
+    return a is not None and a == _origin(base_url)
+
 
 class ApiClient:
     def __init__(self, cfg: ApiConfig, token: str | None = None):
@@ -103,20 +155,26 @@ class ApiClient:
         if not token:
             raise ApiError("Login response did not include a token")
         user = body.get("user") or (body.get("data") or {}).get("user") or {}
-        role = str(user.get("role") or "")
-        if role and role not in STAFF_ROLES:
-            # Students/vehicle owners have psau-security accounts too, but the
-            # gate data is for security staff only (the server enforces this as well).
+        if not isinstance(user, dict):
+            user = {}
+        roles = _roles(user)
+        if not roles & STAFF_ROLES:
+            # Students/vehicle owners have psau-security accounts too, but the gate data
+            # is for security staff only (the server enforces this as well). An account
+            # whose role the server didn't send is refused too: fail closed, not open.
             try:  # don't leave the session this login just opened
                 self.session.post(self._url("/api/logout"), headers={"Authorization": f"Bearer {token}"},
                                   timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
             except requests.RequestException:
                 pass
             self.token = None
+            if not roles:
+                raise AuthError("The server did not say what kind of account this is, so the scanner "
+                                "can't confirm it's a security staff account. Contact the system admin.")
             raise AuthError("This account isn't a security staff account. Sign in with your "
                             "psau-security guard or admin account.")
         self.token = token
-        return token, user if isinstance(user, dict) else {}
+        return token, user
 
     def fetch_all(self, path: str, updated_since: str | None = None) -> list[dict]:
         """GET every page of a collection endpoint, optionally only recent changes."""
@@ -142,19 +200,50 @@ class ApiClient:
         return items
 
     def download(self, url: str, dest: Path) -> bool:
-        """Fetch a photo. Same-host URLs get the bearer token; others don't."""
+        """Fetch a photo. Only URLs on the psau-security server itself get the guard's
+        bearer token; any other host gets none. (requests also drops the token if the
+        server redirects to another host.)
+
+        The photo is streamed to disk and given up on past MAX_DOWNLOAD_BYTES, so a huge or
+        endless response can't fill the laptop's memory or disk; one over MAX_PHOTO_BYTES is
+        compressed down to it. A response that isn't an image (e.g. an HTML error page) is
+        not saved as one."""
         headers = {}
-        if url.startswith(self.cfg.base_url.rstrip("/")) and self.token:
+        if self.token and same_origin(url, self.cfg.base_url):
             headers = self._auth_headers()
-        try:
-            r = self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
-                                 verify=self.cfg.verify_tls)
-        except requests.RequestException:
-            return False
-        if not r.ok or not r.content:
-            return False
-        dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".part")
-        tmp.write_bytes(r.content)
+        size = 0
+        try:
+            with self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
+                                  verify=self.cfg.verify_tls, stream=True) as r:
+                kind = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if not r.ok or (kind and not kind.startswith("image/") and kind not in _UNTYPED):
+                    return False
+                if int(r.headers.get("Content-Length") or 0) > MAX_DOWNLOAD_BYTES:
+                    return False
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(64 * 1024):
+                        size += len(chunk)
+                        if size > MAX_DOWNLOAD_BYTES:
+                            break
+                        f.write(chunk)
+        except (requests.RequestException, ValueError, OSError):
+            size = -1
+        if 0 < size <= MAX_DOWNLOAD_BYTES and size > MAX_PHOTO_BYTES:
+            try:
+                small = photos.shrink_to(tmp.read_bytes(), MAX_PHOTO_BYTES)
+                if small is None:
+                    log.warning("Photo %s (%d bytes) could not be compressed to %d bytes", url, size,
+                                MAX_PHOTO_BYTES)
+                    size = -1
+                else:
+                    tmp.write_bytes(small)
+                    size = len(small)
+            except OSError:
+                size = -1
+        if not 0 < size <= MAX_PHOTO_BYTES:
+            tmp.unlink(missing_ok=True)
+            return False
         tmp.replace(dest)
         return True

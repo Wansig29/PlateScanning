@@ -16,6 +16,13 @@ from .. import decode, plates
 
 Box = tuple[int, int, int, int]
 
+# Reads kept per vehicle for the vote (the newest; about 6 s at 10 reads a second). A vehicle
+# parked in view whose plate never gets a clear read would otherwise add one per frame all day,
+# and every vote goes over all of them: the scanner would slow down the longer it stayed.
+MAX_READS = 60
+# OCR text that fit no plate layout, kept for the "plate not readable" log line (it shows 6).
+MAX_UNMATCHED = 20
+
 
 def iou(a: Box, b: Box) -> float:
     ax1, ay1, bx1, by1 = a[0] + a[2], a[1] + a[3], b[0] + b[2], b[1] + b[3]
@@ -88,6 +95,12 @@ class Track:
         if len(probs) != len(text):
             probs = [conf] * len(text)
         self.reads.append((text, raw, conf, probs))
+        del self.reads[:-MAX_READS]
+
+    def note_unmatched(self, text: str) -> None:
+        """OCR text that fit no plate layout (only the first few are kept, for the log)."""
+        if len(self.unmatched) < MAX_UNMATCHED:
+            self.unmatched.append(text)
 
     def leader(self) -> Vote | None:
         """Character-level consensus over every read of this vehicle.

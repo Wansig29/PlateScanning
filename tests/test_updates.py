@@ -1,4 +1,22 @@
+import base64
+import hashlib
+import sys
+from pathlib import Path
+
+import pytest
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
 from platescanner import updates
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tools"))
+import sign_release  # noqa: E402
+
+KEY = Ed25519PrivateKey.generate()
+PUB = sign_release.public_key_b64(KEY)
+
+
+def _sig(tag: str, body: bytes, key=KEY) -> bytes:
+    return base64.b64encode(key.sign(updates.signed_message(tag, hashlib.sha256(body).hexdigest())))
 
 
 def test_parse_version():
@@ -43,14 +61,15 @@ class _Resp:
 
 REL = {"tag_name": "v1.2.0", "html_url": "https://example/rel", "assets": [
     {"name": "PlateScanner-v1.2.0-portable-win64.zip", "browser_download_url": "https://example/zip"},
-    {"name": "PlateScanner-Setup.exe", "browser_download_url": "https://example/setup.exe", "digest": "sha256:abc"}]}
+    {"name": "PlateScanner-Setup.exe", "browser_download_url": "https://example/setup.exe", "digest": "sha256:abc"},
+    {"name": "PlateScanner-Setup.exe.sig", "browser_download_url": "https://example/setup.exe.sig"}]}
 
 
 def test_check_for_update_finds_installer(monkeypatch):
     monkeypatch.setattr(updates.requests, "get", lambda *a, **k: _Resp(REL))
     rel = updates.check_for_update("1.0.0")
-    assert (rel.tag, rel.page, rel.installer_url, rel.sha256) == (
-        "v1.2.0", "https://example/rel", "https://example/setup.exe", "abc")
+    assert (rel.tag, rel.page, rel.installer_url, rel.sha256, rel.signature_url) == (
+        "v1.2.0", "https://example/rel", "https://example/setup.exe", "abc", "https://example/setup.exe.sig")
     assert updates.check_for_update("1.2.0") is None
 
 
@@ -63,20 +82,90 @@ def test_check_for_update_offline_or_error_is_silent(monkeypatch):
     assert updates.check_for_update("1.0.0") is None
 
 
+def _serve(monkeypatch, body: bytes, sig: bytes | None, headers=None):
+    """Fake GitHub: the .sig URL returns `sig`, any other URL the installer bytes."""
+    def get(url, *a, **k):
+        if url.endswith(".sig"):
+            return _Resp(chunks=[sig] if sig is not None else [])
+        r = _Resp(chunks=[body[:5], body[5:]])
+        r.headers = headers or {}
+        return r
+    monkeypatch.setattr(updates.requests, "get", get)
+
+
+def _rel(tag="v1.2.0", sha="", signed=True):
+    return updates.Release(tag, "p", "u", sha, "u.sig" if signed else "")
+
+
 def test_download_checks_checksum(monkeypatch, tmp_path):
-    import hashlib
     body = b"installer-bytes"
-    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: _Resp(chunks=[body]))
-    good = updates.Release("v1.2.0", "p", "u", hashlib.sha256(body).hexdigest())
-    path = updates.download_installer(good, tmp_path)
+    _serve(monkeypatch, body, _sig("v1.2.0", body))
+    path = updates.download_installer(_rel(sha=hashlib.sha256(body).hexdigest()), tmp_path, public_key=PUB)
     assert path.read_bytes() == body and not list(tmp_path.glob("*.part"))
-    bad = updates.Release("v1.3.0", "p", "u", "0" * 64)
-    try:
-        updates.download_installer(bad, tmp_path)
-        raise AssertionError("expected a checksum failure")
-    except ValueError:
-        pass
+    _serve(monkeypatch, body, _sig("v1.3.0", body))
+    with pytest.raises(ValueError):
+        updates.download_installer(_rel("v1.3.0", "0" * 64), tmp_path, public_key=PUB)
     assert not list(tmp_path.glob("*1.3.0*"))                  # nothing half-trusted is left behind
+
+
+def test_signed_installer_is_accepted(monkeypatch, tmp_path):
+    body = b"real installer"
+    _serve(monkeypatch, body, _sig("v1.2.0", body))
+    assert updates.download_installer(_rel(), tmp_path, public_key=PUB).read_bytes() == body
+
+
+@pytest.mark.parametrize("case", ["tampered", "other_key", "other_tag", "garbage", "empty"])
+def test_installer_without_a_valid_signature_is_refused_and_deleted(monkeypatch, tmp_path, case):
+    body = b"real installer"
+    sig = {"tampered": _sig("v1.2.0", b"different bytes"),
+           "other_key": _sig("v1.2.0", body, Ed25519PrivateKey.generate()),
+           "other_tag": _sig("v1.0.0", body),          # an old signed installer passed off as v1.2.0
+           "garbage": b"not base64 !!",
+           "empty": b""}[case]
+    _serve(monkeypatch, body, sig)
+    with pytest.raises(updates.UpdateNotTrusted):
+        updates.download_installer(_rel(), tmp_path, public_key=PUB)
+    assert not list(tmp_path.iterdir())
+
+
+def test_unsigned_release_or_missing_key_is_never_downloaded(monkeypatch, tmp_path):
+    def no_network(*a, **k):
+        raise AssertionError("must not download anything")
+    monkeypatch.setattr(updates.requests, "get", no_network)
+    with pytest.raises(updates.UpdateNotTrusted, match="not signed"):
+        updates.download_installer(_rel(signed=False), tmp_path, public_key=PUB)
+    with pytest.raises(updates.UpdateNotTrusted, match="no release key"):
+        updates.download_installer(_rel(), tmp_path, public_key="")
+
+
+def test_oversized_signature_is_refused(monkeypatch, tmp_path):
+    _serve(monkeypatch, b"x", b"A" * 5000)
+    with pytest.raises(updates.UpdateNotTrusted, match="too large"):
+        updates.download_installer(_rel(), tmp_path, public_key=PUB)
+
+
+def test_no_self_install_without_a_release_key(monkeypatch):
+    monkeypatch.setattr(updates.sys, "frozen", True, raising=False)
+    monkeypatch.setattr(updates.sys, "platform", "win32")
+    monkeypatch.setattr(updates, "RELEASE_PUBLIC_KEY", "")
+    assert not updates.can_self_install()
+    monkeypatch.setattr(updates, "RELEASE_PUBLIC_KEY", PUB)
+    assert updates.can_self_install()
+
+
+def test_sign_release_tool_roundtrip(tmp_path, monkeypatch, capsys):
+    key_file = tmp_path / "k.pem"
+    pub = sign_release.keygen(key_file, "correct horse")
+    assert b"ENCRYPTED" in key_file.read_bytes()                 # the private key is passphrase-protected
+    with pytest.raises(SystemExit):
+        sign_release.keygen(key_file, "x")                       # never silently replaces the key
+    exe = tmp_path / "PlateScanner-Setup.exe"
+    exe.write_bytes(b"installer")
+    monkeypatch.setattr(updates, "RELEASE_PUBLIC_KEY", pub)
+    sig = sign_release.sign(exe, "v2.0.0", key_file, "correct horse").read_bytes()
+    assert updates.verify_signature("v2.0.0", hashlib.sha256(b"installer").hexdigest(), sig, pub)
+    with pytest.raises(ValueError):
+        sign_release.sign(exe, "v2.0.0", key_file, "wrong passphrase")
 
 
 def test_update_config_defaults_and_roundtrip(tmp_path, monkeypatch):
@@ -99,10 +188,8 @@ def test_clean_old_installers_keeps_only_a_pending_newer_one(tmp_path):
 
 
 def test_download_reports_progress(monkeypatch, tmp_path):
-    chunks = [b"a" * 10, b"b" * 10, b"c" * 20]
-    resp = _Resp(chunks=chunks)
-    resp.headers = {"Content-Length": "40"}
-    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: resp)
+    body = b"a" * 5 + b"b" * 35
+    _serve(monkeypatch, body, _sig("v1.2.0", body), {"Content-Length": "40"})
     seen = []
-    updates.download_installer(updates.Release("v1.2.0", "p", "u"), tmp_path, lambda done, total: seen.append((done, total)))
-    assert seen == [(10, 40), (20, 40), (40, 40)]
+    updates.download_installer(_rel(), tmp_path, lambda done, total: seen.append((done, total)), public_key=PUB)
+    assert seen == [(5, 40), (40, 40)]

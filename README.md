@@ -26,9 +26,9 @@ python -m venv .venv
 To try the app with no backend and no camera:
 
 ```powershell
-.\.venv\Scripts\python tools\seed_demo.py                       # demo vehicles + violations
+.\.venv\Scripts\python tools\seed_demo.py                       # demo vehicles + violations + demo guard
 .\.venv\Scripts\python tools\make_test_video.py gate.mp4 NBC1234 ABC1234 XYZ789 QWE4567 --no-stop --blur --gap 0.6 --lanes 2
-.\.venv\Scripts\python -m platescanner --source gate.mp4        # choose "Continue offline"
+.\.venv\Scripts\python -m platescanner --source gate.mp4        # enter demo@psau.local / demo, then "Continue offline"
 ```
 
 `make_test_video.py` options: `--no-stop` (drive through instead of stopping), `--speed` (px/frame; 18 ≈ 6.5 km/h, 45 ≈ 16 km/h), `--gap` (seconds between cars, so several are in view), `--lanes 2`, `--blur` / `--shutter` (motion blur from speed × exposure time).
@@ -51,7 +51,7 @@ The scanner is built to work with an ordinary USB webcam, so the camera's own se
 
 ## Configuration
 
-On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. You can point it somewhere else with the `PLATESCANNER_HOME` environment variable. The same folder holds the database, the downloaded photos, the plate captures and the logs.
+On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. You can point it somewhere else with the `PLATESCANNER_HOME` environment variable. The same folder holds the database, the downloaded photos, the plate captures and the logs. If you edit it and make a mistake (a missing comma, a word where a number belongs), the scanner still starts: the setting falls back to its default, a warning says which one, and your file is kept as `config.json.broken-<date-time>`.
 
 | Setting | Meaning |
 |---|---|
@@ -78,7 +78,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
 | `scan.bring_to_front` | Bring the app to the front on every violation alert |
-| `sync.interval_hours` / `full_resync_hours` | Delta sync every 3 h (nothing is written when there are no new vehicles or violations); a full re-download every 24 h to drop records deleted online |
+| `sync.interval_hours` / `full_resync_hours` | Sync every 3 h: vehicles as a delta, violations always as the complete list of unsettled ones, so a violation deleted online stops alerting at the next sync (nothing is written when nothing changed). A full re-download of the vehicles every 24 h drops vehicles deleted online without a `removed` record |
 
 Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full screen.
 
@@ -97,8 +97,12 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
   - if the vehicle leaves first, its best guess is reported if it averages `report_confidence` (0.65 by default; a violation only needs `read_confidence`, because missing a violator is worse than a doubtful alert). Otherwise it is logged as *plate not readable*, with a snapshot.
 
   After reporting, a vehicle is still re-read now and then. If the consensus clearly changes, a correction is logged.
+
+  A vehicle that stays in view without ever reading clearly (e.g. parked with a dirty plate) keeps only its newest 60 reads, and after 30 attempts is re-read only every 5th frame, so the scanner doesn't slow down the longer it stays.
 - **Database-aware decoding** (`decode.py`): the OCR models output a probability for every character at every position, not just the winner. These are kept, combined over the vehicle's reads (repeat frames count for less, since their errors are correlated) and scored against every registered plate, weighing "one of our vehicles" against "a visitor". A registered plate replaces the plain read only if **all** hold: it wins with at least `ocr.decode_accept` (0.90) certainty; it differs from the plain read in at most `decode_max_changes` (2) characters; every character it changes was at least `decode_min_char_prob` (10%) likely to the OCR itself, so a confident read is never overridden by a nearby registered plate; and its registered colour doesn't clearly contradict the colour seen at the gate (a mild penalty, `decode_colour_penalty`). The result is flagged *approximate*. This resolves two reads that disagree on one doubtful character without waiting for the vehicle to leave. `decode_temperature` (2.0) softens the OCR's overconfidence and should be calibrated on real gate footage. Set `decode_with_database` to false to turn it off.
-- **Lookup** (`db.py`): plates are matched on a confusion-folded key (O/0, I/1, B/8, S/5…), so a slightly misread plate still finds its record. Only local SQLite is queried, never the API.
+- **Lookup** (`db.py`): the plate exactly as read is looked up first. Only if it is not in the database is a confusion-folded key tried (O/D/Q/0, I/L/1, B/8, S/5…), then, with `fuzzy_match`, one character off. Look-alike plates such as `ABD 1234` and `ABO 1234` are different real plates, so such a match is flagged *approximate* (and a violation **VERIFY PLATE**), and a vehicle only ever shows the violations recorded against it or its exact plate, never those of a look-alike. When the same plate is registered more than once, the record with an active violation is shown; otherwise always the most recently updated one (then the highest id), never an arbitrary one. Only local SQLite is queried, never the API.
+- **Suspension dates**: synced dates are stored as ISO (`2026-10-10`); `10/10/2026` or `Oct 10, 2026` are converted. A date that still can't be read keeps the violation alerting until the next sync instead of silently ending it.
+- **Errors never stop the alert**: if a picture can't be saved (disk full) the scan is logged and alerted without it; if the scan log can't be written (database locked) the guard is still alerted. If plate reading stops anyway, the scanner beeps and says so instead of leaving only the live feed running.
 - **Live feed**: every tracked vehicle gets a box, a trail and a label (`#12 ABC 1234 98%`, or `#13 reading...` until decided). Between recognitions, boxes move with the vehicle's measured speed so they stay on the plate. While a **violator** is in view the rest of the picture is dimmed and the violator's whole vehicle gets a thick, blinking red frame, so it stands out from the cars around it.
 - **Several violators at once**: when acknowledgement is not required (the default), each violator in view gets its own card on the Identity Dashboard (up to 3, newest first), with its photo, owner, violation and suspension dates. A "2 violators in view  ‹ ›" bar above the cards jumps between them when they do not all fit. A card stays while its vehicle is in view and for 10 s after; a clear or unregistered vehicle never pushes a violator off the screen. Everything is still logged.
 - **Which vehicle is it?** (`vision/identify.py`): with several cars at the gate a plate number alone is hard to match to a moving car, so the dashboard leads with:
@@ -119,6 +123,7 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 - **Reports** (status bar → *Reports*): the scans of the last day, week, month or year (the same periods as psau-security's violation map), with a count per result, a filter, *Open pictures folder* and *Export to CSV*. The **Archive** button lists the academic years that were archived automatically after they ended. Plates that were seen but never readable are logged too; click the row to see the snapshot.
 - **Chat-style feeds**: Logs and Captured Plates add new entries at the bottom and auto-scroll. Scrolling up pauses this and shows a "▼ N new scans" button.
 
+- **"Verify plate" for look-alike registered matches**: a vehicle that matched a registered plate only as a look-alike or one character off (see *Lookup*) is never shown as a plain green *no violation*: its banner is amber and says **VERIFY PLATE**, and its Logs row too, since it may be an unregistered car with a similar plate.
 - **"Verify plate" alerts**: a violation that rests on a doubtful read (an approximate or decoded match, an average confidence under `ocr.verify_below_confidence` (0.60), or a single read under `ocr.verify_single_read_below` (0.90)) is still raised at once, but its banner and Logs row say **VERIFY PLATE**, so the guard compares the plate with the photo of the vehicle instead of trusting it blindly.
 - **Health warnings** (`health.py`): the status bar warns when the camera image is blurred or dirty, the frame or analysis rate drops, the picture freezes, the scene is too dark or overexposed, or more than half of the recent plates could not be read. Each warning shows once, a stalled feed also beeps, and a green *Recovered* follows when it clears.
 
@@ -191,13 +196,15 @@ The spec left this open. The app stores **all** active violations. The dashboard
 
 The scanner gets its data from the **psau-security** system (`native-app`, on Railway). Every lookup at the gate is local, so the network is only used for syncing: a full copy about once a day and the changes every 4 hours (or **Sync Now**).
 
-- **Accounts**: guards sign in with their **existing psau-security account** (same email and password as the website and the mobile app) through psau-security's normal `POST /api/login`. There are no separate scanner accounts. Only staff roles (`security`, `admin`, `system_admin`) are accepted; a student/vehicle-owner account is refused and the session it opened is closed again. The guard's name is recorded with every acknowledged violation.
+- **Accounts**: guards sign in with their **existing psau-security account** (same email and password as the website and the mobile app) through psau-security's normal `POST /api/login`. There are no separate scanner accounts. Only staff roles (`security`, `admin`, `system_admin`) are accepted; a student/vehicle-owner account is refused and the session it opened is closed again. So is an account whose login response carries no role at all (`user.role`, or a `user.roles` list): the scanner fails closed rather than trusting it. The guard's name is recorded with every acknowledged violation.
+- **Server text is plain text**: owner names, contact numbers, violation types and descriptions, and server error messages are shown exactly as typed, never interpreted as HTML (Qt labels guess HTML by default).
+- **Offline sign-in**: when the server can't be reached, "Continue offline" still needs an email and password: those of a guard who signed in online on this laptop within `api.offline_login_days` (14). Only a salted PBKDF2 hash of the password is kept (`offline_guards.bin`, DPAPI-protected on Windows), never the password. The Database and Reports windows, which hold owners' names, contact numbers and photos, open only for a signed-in guard (online or offline); after *Sign out* they are locked again while scanning continues.
 - **Data**: psau-security's read-only gate endpoints (`native-app/src/Controllers/Api/GateScannerApiController.php`), staff roles only:
 
   | Endpoint | Returns |
   |---|---|
   | `GET /api/security/gate/vehicles?updated_since=&page=&per_page=` | vehicles with owner name, contact, photo, colour/make/model, registration status. Deltas include removed vehicles (`removed: true`) |
-  | `GET /api/security/gate/violations?updated_since=&page=&per_page=` | full sync: every **unsettled** violation. Deltas: every violation or sanction that changed, with `is_active`, so lifted suspensions, approved appeals and deletions clear on the laptop too |
+  | `GET /api/security/gate/violations?page=&per_page=` | every **unsettled** violation, fetched in full on every sync (never as a delta), so lifted suspensions, approved appeals and deletions clear on the laptop at the next sync. Records with `removed: true` or a `deleted_at` are ignored |
   | `GET /api/security/gate/school-years` | every school year with its start and end date (the ones the admin manages in Utilities), fetched on every sync. A year is archived once its end date has passed. If the server doesn't have this endpoint yet the scanner keeps working with `scan.academic_year_start_month` |
   | `GET /api/security/gate/owner-photo/{userId}`, `.../violation-photo/{violationId}` | photos, downloaded once for offline use |
 
@@ -220,7 +227,23 @@ The models run on ONNX Runtime (no PyTorch), so the build is small and starts qu
 2. From that folder, run `..\make_shortcut.ps1 -ExePath PlateScanner.exe` (or point `-ExePath` at wherever you copied `PlateScanner.exe`) to add a **PSAU Gate Plate Scanner** shortcut to the Desktop.
 3. Double-click the shortcut to launch the app. On first run it writes its own `config.json` to `%LOCALAPPDATA%\PlateScanner\` (see *Configuration*) — edit `camera.source` there for that computer's camera.
 
+### Signing a release (in-app updates)
+
+Installed scanners only install an update that is signed with the release key, so a stolen GitHub login can't push code to the gate laptops. The private key stays on your own computer, never on GitHub.
+
+One time: `python tools\sign_release.py keygen` creates the key (passphrase-protected, in `%USERPROFILE%\.platescanner\`) and prints `RELEASE_PUBLIC_KEY = "..."`. Paste that line into `platescanner\updates.py`, commit, and back up the `.pem` file and passphrase. Until a key is set, the update banner only opens the release page.
+
+Each release, after the workflow has published it:
+
+```powershell
+python tools\sign_release.py sign PlateScanner-Setup.exe --tag v1.2.0   # the installer downloaded from the release
+```
+
+then upload the `PlateScanner-Setup.exe.sig` it writes to the same release. The signature covers the installer's SHA-256 and its tag, so an older signed installer can't be passed off as a newer release.
+
 ## Security notes
 
+- Photos are streamed to disk. One over 5 MB is compressed to at most 5 MB (`photos.py`: re-saved as JPEG at lower quality, then smaller, longest side at most 2560 px); one over 25 MB isn't downloaded at all. A response that isn't an image (e.g. an HTML error page) is not saved as one.
+- A camera stream's user name and password (`rtsp://user:pass@...`, or `?user=...&pwd=...`) are never shown on screen or written to the log.
 - The guard's API token is encrypted with Windows DPAPI (`session.bin`), so it's only readable by the same Windows user on that laptop.
 - An expired token (HTTP 401) prompts for sign-in again. Scanning continues on the local database the whole time.

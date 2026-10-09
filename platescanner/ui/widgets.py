@@ -310,7 +310,7 @@ class VehicleView:
     track_id: int | None = None      # the #number shown on the live feed (this session only)
     when: str = ""                   # e.g. "Scanned 10:03:53"
     scan_id: int | None = None       # the scan this is a picture of (for corrections)
-    verify: bool = False             # a violation resting on a doubtful read: check the plate
+    verify: bool = False             # a doubtful violation or look-alike registered match: check the plate
 
     def describe(self) -> str:
         parts = []
@@ -430,10 +430,12 @@ class IdentityCard(QFrame):
         who = QVBoxLayout()
         who.setSpacing(0)
         name = QLabel("—")
+        name.setTextFormat(Qt.TextFormat.PlainText)  # synced text: shown as typed, never as HTML
         name.setStyleSheet("font-size: 12pt; font-weight: 700;")
         name.setWordWrap(True)
         name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         contact = QLabel("—")
+        contact.setTextFormat(Qt.TextFormat.PlainText)
         contact.setObjectName("Muted")
         contact.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         who.addWidget(name)
@@ -449,6 +451,7 @@ class IdentityCard(QFrame):
             lbl = QLabel(label)
             lbl.setObjectName("FieldName")
             value = QLabel("—")
+            value.setTextFormat(Qt.TextFormat.PlainText)
             value.setObjectName("FieldValue")
             value.setWordWrap(True)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -580,6 +583,8 @@ class IdentityCard(QFrame):
         self.set_waiting(0)
         color = theme.RESULT_COLORS[result.status]
         label = theme.RESULT_LABELS[result.status]
+        if seen and seen.verify and result.status == db.RESULT_CLEAR:
+            color = theme.AMBER  # registered only by a look-alike plate: not a green light
         plate_txt = plates.display(result.matched_plate or plate_read)
         if result.status == db.RESULT_VIOLATION and len(result.violations) > 1:
             label = f"{len(result.violations)} VIOLATIONS"
@@ -589,7 +594,7 @@ class IdentityCard(QFrame):
         self.shown_at = time.monotonic()
         self._banner_color = color
         vehicle_no = f"   \u00b7   VEHICLE #{seen.track_id}" if seen.track_id else ""
-        verify = "   ·   VERIFY PLATE" if seen.verify and result.status == db.RESULT_VIOLATION else ""
+        verify = "   ·   VERIFY PLATE" if seen.verify else ""
         self.banner.setToolTip("The plate was read with some doubt. Compare it with the photo of the "
                                "vehicle." if verify else "")
         self.banner.setText(f"{theme.RESULT_ICONS.get(result.status, '')}  {label}{vehicle_no}{verify}")

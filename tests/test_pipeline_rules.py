@@ -87,3 +87,128 @@ def test_a_shelf_the_classical_finder_proposes_is_not_reported_unless_the_read_i
 
 def test_unsure_reads_do_not_count_as_a_plate():
     assert _scans_reported(LowConfidenceEngine(0.36), neural=True) == []          # below read_confidence
+
+
+class BrokenDisk(Exception):
+    pass
+
+
+def test_violation_still_alerts_when_pictures_cannot_be_saved(monkeypatch):
+    # Disk full: the scan must still be logged and the guard alerted, just without pictures.
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1234"}])
+    db.upsert_violations(conn, [{"id": 10, "vehicle_id": 1, "plate": "ABC 1234"}])
+    conn.commit()
+
+    def full(*_a, **_k):
+        raise OSError(28, "No space left on device")
+    monkeypatch.setattr("pathlib.Path.write_bytes", full)
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert got and got[0].lookup.status == db.RESULT_VIOLATION
+    assert got[0].crop_path is None
+    assert db.get_scan(conn, got[0].scan_id)["result"] == db.RESULT_VIOLATION
+    conn.close()
+
+
+def test_violation_still_alerts_when_the_scan_log_cannot_be_written(monkeypatch):
+    import sqlite3
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1234"}])
+    db.upsert_violations(conn, [{"id": 10, "vehicle_id": 1, "plate": "ABC 1234"}])
+    conn.commit()
+
+    def locked(*_a, **_k):
+        raise sqlite3.OperationalError("database is locked")
+    monkeypatch.setattr(db, "add_scan", locked)
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert got and got[0].lookup.status == db.RESULT_VIOLATION and got[0].scan_id < 0
+    conn.close()
+
+
+def test_an_error_while_a_vehicle_leaves_does_not_stop_the_scanner(monkeypatch):
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    w._apply(conn, _Frame(0, image, (0, 0, 400, 200), True, 0.0), [PlateBox((150, 80, 100, 30), 0.9)])
+
+    def boom(*_a, **_k):
+        raise BrokenDisk("disk gone")
+    monkeypatch.setattr(w, "_decide", boom)
+    w._expire(conn, 10.0)  # the vehicle left; finishing it fails, but must not raise
+    assert not w.tracker.tracks
+    conn.close()
+
+
+def test_look_alike_registered_match_is_marked_verify():
+    # "ABC1234" is read but only "ABC 1235" is registered: never a plain green "no violation".
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")  # the test database is shared with the tests above
+    conn.execute("DELETE FROM violations")
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1235"}])  # one character off the read
+    conn.commit()
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert got and got[0].lookup.status == db.RESULT_CLEAR and got[0].lookup.approximate
+    assert got[0].verify and db.get_scan(conn, got[0].scan_id)["verify"] == 1
+    conn.close()
+
+
+def test_exact_registered_match_is_not_marked_verify():
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")  # the test database is shared with the tests above
+    conn.execute("DELETE FROM violations")
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1234"}])
+    conn.commit()
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert got and got[0].lookup.status == db.RESULT_CLEAR and not got[0].verify
+    conn.close()
+
+
+class FlipFlopEngine(FakeEngine):
+    """A parked car whose last digit never reads the same twice in a row: never a clear plate."""
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("ABC123" + "456"[self.reads % 3], 0.9, [0.9] * 7)  # no digit ever wins 60%
+
+
+def test_parked_unreadable_vehicle_does_not_slow_the_scanner_down():
+    from platescanner.pipeline import SLOW_READ_AFTER, SLOW_READ_EVERY
+    from platescanner.vision.tracker import MAX_READS
+    engine = FlipFlopEngine()
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    frames = 600
+    for i in range(frames):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    (track,) = w.tracker.tracks.values()
+    assert not track.emitted_key                       # never clear enough to report
+    assert len(track.reads) <= MAX_READS                # memory and vote time stay bounded
+    assert engine.reads <= SLOW_READ_AFTER + frames // SLOW_READ_EVERY + 1
+    conn.close()

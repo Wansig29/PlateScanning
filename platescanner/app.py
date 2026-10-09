@@ -7,8 +7,9 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from . import db
 from .config import bundle_dir, load_config
@@ -38,6 +39,8 @@ def main() -> None:
         cfg.camera.source = args.source
     _setup_logging(cfg.home)
     logging.getLogger(__name__).info("Data directory: %s", cfg.home)
+    for w in cfg.warnings:
+        logging.getLogger(__name__).warning("config.json: %s", w)
     sys.excepthook = lambda t, v, tb: logging.getLogger("uncaught").error("Uncaught exception", exc_info=(t, v, tb))
 
     conn = db.connect(cfg.db_path)
@@ -52,8 +55,15 @@ def main() -> None:
     app.setStyle("Fusion")
     theme.apply(appearance.load_mode(cfg.home))
     app.setStyleSheet(theme.STYLESHEET)
+    if cfg.warnings:
+        box = QMessageBox(QMessageBox.Icon.Warning, "Settings problem",
+                          "Some settings in config.json could not be used, so their defaults are in effect. "
+                          "The scanner works normally.\n\n" + "\n\n".join(cfg.warnings))
+        box.setTextFormat(Qt.TextFormat.PlainText)
+        box.exec()
 
     session = load_session(cfg.session_path)
+    offline_user = None
     if session is None:
         dlg = LoginDialog(cfg)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -61,8 +71,10 @@ def main() -> None:
         if dlg.token:
             save_session(cfg.session_path, dlg.token, dlg.user)
             session = {"token": dlg.token, "user": dlg.user}
+        elif dlg.offline:
+            offline_user = dlg.user
 
-    win = MainWindow(cfg, session)
+    win = MainWindow(cfg, session, offline_user)
     appearance.install(win, cfg.home)
     win.showFullScreen() if args.fullscreen else win.show()
     sys.exit(app.exec())

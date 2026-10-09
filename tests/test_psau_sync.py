@@ -103,6 +103,39 @@ def test_only_staff_accounts_can_sign_in(monkeypatch, role, allowed):
         assert calls[-1].endswith("/api/logout") and client.token is None
 
 
+@pytest.mark.parametrize("user, allowed", [
+    ({"name": "X"}, False),                                   # no role sent: refused (fail closed)
+    ({"name": "X", "role": ""}, False),
+    ({"name": "X", "role": None}, False),
+    ({"name": "X", "role": " Security "}, True),              # case and spaces don't matter
+    ({"name": "X", "role": {"name": "admin"}}, True),         # role as an object
+    ({"name": "X", "roles": ["vehicle_user", "security"]}, True),
+    ({"name": "X", "roles": [{"name": "vehicle_user"}]}, False),
+])
+def test_login_without_a_staff_role_is_refused(monkeypatch, user, allowed):
+    calls = []
+
+    def post(self, url, **kw):
+        calls.append(url)
+        return _Resp(200, {"token": "t0k", "user": user}) if url.endswith("/api/login") else _Resp(200, {})
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    client = ApiClient(Config().api)
+    if allowed:
+        assert client.login("a@b", "pw")[0] == "t0k"
+    else:
+        with pytest.raises(AuthError):
+            client.login("a@b", "pw")
+        assert calls[-1].endswith("/api/logout") and client.token is None
+
+
+def test_login_response_without_user_is_refused(monkeypatch):
+    monkeypatch.setattr(requests.Session, "post",
+                        lambda self, url, **kw: _Resp(200, {"token": "t0k"} if url.endswith("/login") else {}))
+    with pytest.raises(AuthError, match="did not say"):
+        ApiClient(Config().api).login("a@b", "pw")
+
+
 def test_defaults_point_at_psau_security():
     api = Config().api
     assert api.login_path == "/api/login"
@@ -155,3 +188,26 @@ def test_permanent_revoke_clears_when_server_lifts_it_and_survives_embedded_copy
     assert db.lookup(conn, "NBC1234").vehicle["permanently_revoked"] == 1
     sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False)], []), conn, force_full=True)
     assert all(v["violation_type"] != "Permanently revoked sticker" for v in db.lookup(conn, "NBC1234").violations)
+
+
+def test_violation_deleted_online_stops_alerting_at_the_next_sync(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [violation(10, 1, "NBC 1234")])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+    s = sync.run_sync(cfg, FakeClient([], []), conn)   # a normal (delta) sync: violation 10 is gone
+    assert not s["full"] and s["changed"]
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_soft_deleted_or_removed_violation_is_dropped(tmp_path):
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "ABC 1234", "Maria")],
+                     [violation(10, 1, "NBC 1234", deleted_at="2026-09-28T10:00:00Z"),
+                      violation(11, 2, "ABC 1234", removed=True)])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+    assert db.lookup(conn, "ABC1234").status == db.RESULT_CLEAR
+
+
+def test_sync_with_nothing_new_writes_nothing(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [violation(10, 1, "NBC 1234")])
+    s = sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234")]), conn)
+    assert not s["changed"]
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION

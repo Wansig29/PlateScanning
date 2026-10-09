@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 import cv2
+import pytest
 
 from platescanner import camera
 from platescanner.config import CameraConfig
@@ -83,3 +84,19 @@ def test_probe_picks_the_shortest_shutter_that_is_bright_enough():
             {"exposure": -9, "brightness": 30, "sharpness": 20}]
     assert probe.pick_exposure(rows)["exposure"] == -7
     assert probe.pick_exposure([{"exposure": -9, "brightness": 30, "sharpness": 20}]) is None
+
+
+@pytest.mark.parametrize("source,shown", [
+    ("0", "0"),
+    ("C:\\videos\\gate.mp4", "C:\\videos\\gate.mp4"),
+    ("rtsp://10.0.0.5/live", "rtsp://10.0.0.5/live"),
+    ("rtsp://admin:s3cret@10.0.0.5:554/live", "rtsp://***@10.0.0.5:554/live"),
+    ("rtsp://admin:p@ss@10.0.0.5/live", "rtsp://***@10.0.0.5/live"),        # "@" in the password
+    ("rtsp://admin@10.0.0.5/live", "rtsp://***@10.0.0.5/live"),
+    ("http://cam/video.cgi?user=admin&pwd=s3cret&res=hd", "http://cam/video.cgi?user=***&pwd=***&res=hd"),
+    ("rtsp://admin:s3cret@10.0.0.5:bad/live", "(camera stream)"),
+])
+def test_camera_password_is_never_shown(source, shown):
+    from platescanner.camera import safe_source
+    assert safe_source(source) == shown
+    assert "s3cret" not in safe_source(source)
