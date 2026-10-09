@@ -155,3 +155,26 @@ def test_permanent_revoke_clears_when_server_lifts_it_and_survives_embedded_copy
     assert db.lookup(conn, "NBC1234").vehicle["permanently_revoked"] == 1
     sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False)], []), conn, force_full=True)
     assert all(v["violation_type"] != "Permanently revoked sticker" for v in db.lookup(conn, "NBC1234").violations)
+
+
+def test_violation_deleted_online_stops_alerting_at_the_next_sync(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [violation(10, 1, "NBC 1234")])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+    s = sync.run_sync(cfg, FakeClient([], []), conn)   # a normal (delta) sync: violation 10 is gone
+    assert not s["full"] and s["changed"]
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_soft_deleted_or_removed_violation_is_dropped(tmp_path):
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "ABC 1234", "Maria")],
+                     [violation(10, 1, "NBC 1234", deleted_at="2026-09-28T10:00:00Z"),
+                      violation(11, 2, "ABC 1234", removed=True)])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+    assert db.lookup(conn, "ABC1234").status == db.RESULT_CLEAR
+
+
+def test_sync_with_nothing_new_writes_nothing(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [violation(10, 1, "NBC 1234")])
+    s = sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234")]), conn)
+    assert not s["changed"]
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION

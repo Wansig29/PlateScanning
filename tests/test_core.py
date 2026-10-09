@@ -217,7 +217,9 @@ def test_sync_full_then_delta(tmp_path):
     client.data["/x"] = [{"id": 9, "vehicle_id": 1, "plate_number": "NBC1234", "status": "resolved"}]
     client.data["/v"] = []
     s2 = sync.run_sync(cfg, client, c)
-    assert not s2["full"] and [c for c in client.calls if c[0] == "/x"][-1][1] is not None
+    assert not s2["full"] and [c for c in client.calls if c[0] == "/v"][-1][1] is not None
+    # Violations are always the complete list, so deletions online reach the laptop at once.
+    assert [c for c in client.calls if c[0] == "/x"][-1][1] is None
     assert db.lookup(c, "NBC1234").status == "clear"
 
 

@@ -78,7 +78,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
 | `scan.bring_to_front` | Bring the app to the front on every violation alert |
-| `sync.interval_hours` / `full_resync_hours` | Delta sync every 3 h (nothing is written when there are no new vehicles or violations); a full re-download every 24 h to drop records deleted online |
+| `sync.interval_hours` / `full_resync_hours` | Sync every 3 h: vehicles as a delta, violations always as the complete list of unsettled ones, so a violation deleted online stops alerting at the next sync (nothing is written when nothing changed). A full re-download of the vehicles every 24 h drops vehicles deleted online without a `removed` record |
 
 Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full screen.
 
@@ -121,6 +121,7 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 - **Reports** (status bar → *Reports*): the scans of the last day, week, month or year (the same periods as psau-security's violation map), with a count per result, a filter, *Open pictures folder* and *Export to CSV*. The **Archive** button lists the academic years that were archived automatically after they ended. Plates that were seen but never readable are logged too; click the row to see the snapshot.
 - **Chat-style feeds**: Logs and Captured Plates add new entries at the bottom and auto-scroll. Scrolling up pauses this and shows a "▼ N new scans" button.
 
+- **"Verify plate" for look-alike registered matches**: a vehicle that matched a registered plate only as a look-alike or one character off (see *Lookup*) is never shown as a plain green *no violation*: its banner is amber and says **VERIFY PLATE**, and its Logs row too, since it may be an unregistered car with a similar plate.
 - **"Verify plate" alerts**: a violation that rests on a doubtful read (an approximate or decoded match, an average confidence under `ocr.verify_below_confidence` (0.60), or a single read under `ocr.verify_single_read_below` (0.90)) is still raised at once, but its banner and Logs row say **VERIFY PLATE**, so the guard compares the plate with the photo of the vehicle instead of trusting it blindly.
 - **Health warnings** (`health.py`): the status bar warns when the camera image is blurred or dirty, the frame or analysis rate drops, the picture freezes, the scene is too dark or overexposed, or more than half of the recent plates could not be read. Each warning shows once, a stalled feed also beeps, and a green *Recovered* follows when it clears.
 
@@ -194,13 +195,14 @@ The spec left this open. The app stores **all** active violations. The dashboard
 The scanner gets its data from the **psau-security** system (`native-app`, on Railway). Every lookup at the gate is local, so the network is only used for syncing: a full copy about once a day and the changes every 4 hours (or **Sync Now**).
 
 - **Accounts**: guards sign in with their **existing psau-security account** (same email and password as the website and the mobile app) through psau-security's normal `POST /api/login`. There are no separate scanner accounts. Only staff roles (`security`, `admin`, `system_admin`) are accepted; a student/vehicle-owner account is refused and the session it opened is closed again. The guard's name is recorded with every acknowledged violation.
+- **Server text is plain text**: owner names, contact numbers, violation types and descriptions, and server error messages are shown exactly as typed, never interpreted as HTML (Qt labels guess HTML by default).
 - **Offline sign-in**: when the server can't be reached, "Continue offline" still needs an email and password: those of a guard who signed in online on this laptop within `api.offline_login_days` (14). Only a salted PBKDF2 hash of the password is kept (`offline_guards.bin`, DPAPI-protected on Windows), never the password. The Database and Reports windows, which hold owners' names, contact numbers and photos, open only for a signed-in guard (online or offline); after *Sign out* they are locked again while scanning continues.
 - **Data**: psau-security's read-only gate endpoints (`native-app/src/Controllers/Api/GateScannerApiController.php`), staff roles only:
 
   | Endpoint | Returns |
   |---|---|
   | `GET /api/security/gate/vehicles?updated_since=&page=&per_page=` | vehicles with owner name, contact, photo, colour/make/model, registration status. Deltas include removed vehicles (`removed: true`) |
-  | `GET /api/security/gate/violations?updated_since=&page=&per_page=` | full sync: every **unsettled** violation. Deltas: every violation or sanction that changed, with `is_active`, so lifted suspensions, approved appeals and deletions clear on the laptop too |
+  | `GET /api/security/gate/violations?page=&per_page=` | every **unsettled** violation, fetched in full on every sync (never as a delta), so lifted suspensions, approved appeals and deletions clear on the laptop at the next sync. Records with `removed: true` or a `deleted_at` are ignored |
   | `GET /api/security/gate/school-years` | every school year with its start and end date (the ones the admin manages in Utilities), fetched on every sync. A year is archived once its end date has passed. If the server doesn't have this endpoint yet the scanner keeps working with `scan.academic_year_start_month` |
   | `GET /api/security/gate/owner-photo/{userId}`, `.../violation-photo/{violationId}` | photos, downloaded once for offline use |
 

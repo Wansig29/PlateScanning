@@ -1,6 +1,7 @@
 """Main gate console window (layout per the wireframe)."""
 from __future__ import annotations
 
+import html
 import logging
 import queue
 import sys
@@ -286,7 +287,8 @@ class MainWindow(QMainWindow):
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self._update_clicked)
         tl.addWidget(self.update_btn)
-        self.sync_label = QLabel()          # shown in the status bar: the top bar must stay narrow
+        self.sync_label = QLabel()
+        self.sync_label.setTextFormat(Qt.TextFormat.PlainText)  # may quote the server's error          # shown in the status bar: the top bar must stay narrow
         self.sync_label.setObjectName("Muted")
         self.sync_btn = QPushButton("↻  Sync Now")
         self.sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -423,7 +425,8 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _set_status(label: QLabel, text: str, color: str) -> None:
-        label.setText(theme.dot(color, text))
+        # The dot is rich text; the message (which may quote the server or an error) is escaped.
+        label.setText(theme.dot(color, html.escape(text)))
 
     def _tick(self) -> None:
         now = datetime.now()
@@ -822,7 +825,7 @@ class MainWindow(QMainWindow):
         if error:
             self._sync_error_full = f"⚠ {error} · last synced {_ago(last)}"
             self._elide_sync_error()
-            self.sync_label.setToolTip(self._sync_error_full)
+            self.sync_label.setToolTip(f"<p>{html.escape(self._sync_error_full)}</p>")
             self.sync_label.setStyleSheet(f"color: {theme.AMBER};")
         else:
             prefix = "" if self.session else "Offline mode · "

@@ -25,6 +25,11 @@ def _parse_iso(value: str | None) -> datetime | None:
     return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
+def _is_removed(record: dict) -> bool:
+    """Deleted or archived online (psau-security's "removed" flag, or a Laravel soft delete)."""
+    return bool(record.get("removed") or record.get("deleted_at"))
+
+
 def _photo_path(photos_dir: Path, url: str) -> Path:
     ext = Path(url.split("?")[0]).suffix.lower()
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
@@ -46,7 +51,10 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
     progress("Downloading vehicles…")
     raw_vehicles = client.fetch_all(cfg.api.vehicles_path, since)
     progress("Downloading violations…")
-    raw_violations = client.fetch_all(cfg.api.violations_path, since)
+    # Violations always come as the complete list of unsettled ones, never as a delta: a
+    # violation deleted online can't appear in a delta, and would keep alerting at the gate
+    # until the next full resync. The list is small (only unsettled violations).
+    raw_violations = client.fetch_all(cfg.api.violations_path)
 
     # The school years are a handful of rows, fetched every time. An older server without the
     # endpoint must not break the sync: the scanner then uses its own academic-year setting.
@@ -60,8 +68,9 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
 
     vehicles: dict[str, dict] = {}
     violations: list[dict] = []
-    removed = [r.get("id") for r in raw_vehicles if r.get("removed") and r.get("id") is not None]
-    raw_vehicles = [r for r in raw_vehicles if not r.get("removed")]
+    removed = [r.get("id") for r in raw_vehicles if _is_removed(r) and r.get("id") is not None]
+    raw_vehicles = [r for r in raw_vehicles if not _is_removed(r)]
+    raw_violations = [r for r in raw_violations if not _is_removed(r)]
     for r in raw_violations:
         v = mapping.map_violation(r, base, cfg.sync.resolved_statuses)
         if v:
@@ -73,6 +82,11 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         v = mapping.map_vehicle(r, base)
         if v:
             vehicles[str(v["id"])] = v  # full vehicle record wins over embedded copy
+    # A removed vehicle's violations go with it (see db.remove_vehicles).
+    gone = {str(i) for i in removed}
+    violations = [v for v in violations if str(v.get("vehicle_id")) not in gone]
+    for vid in gone:
+        vehicles.pop(vid, None)
 
     if cfg.sync.download_photos:
         known = db.known_photo_paths(conn)
@@ -97,7 +111,7 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         for v in violations:
             v["evidence_paths"] = [fetch(u) for u in v["evidence_urls"]]
 
-    if not full and not raw_vehicles and not raw_violations and not removed:
+    if not full and not raw_vehicles and not removed and db.same_violations(conn, violations):
         # Nothing new online: only note that we checked.
         with conn:
             db.replace_school_years(conn, school_years)
@@ -113,8 +127,8 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
             db.set_state(conn, "last_full_sync_at", now.isoformat())
         else:
             db.upsert_vehicles(conn, vehicles.values())
-            db.upsert_violations(conn, violations)
             db.remove_vehicles(conn, removed)
+            db.replace_violations(conn, violations)
         db.set_state(conn, "last_sync_at", now.isoformat())
 
     return {"full": full, "changed": True, "vehicles": len(vehicles), "violations": len(violations),

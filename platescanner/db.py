@@ -239,12 +239,23 @@ def remove_vehicles(conn: sqlite3.Connection, vehicle_ids: Iterable[Any]) -> int
     return len(ids)
 
 
+def replace_violations(conn: sqlite3.Connection, violations: list[dict]) -> None:
+    """The server's complete list of violations: any local one not in it was deleted or settled online."""
+    conn.execute("DELETE FROM violations")
+    upsert_violations(conn, violations)
+
+
+def same_violations(conn: sqlite3.Connection, violations: list[dict]) -> bool:
+    """Are the stored violations exactly this list, field for field?"""
+    stored = {tuple(r) for r in conn.execute(f"SELECT {','.join(VIOLATION_COLS)} FROM violations")}
+    return stored == {_violation_row(v) for v in violations}
+
+
 def replace_all(conn: sqlite3.Connection, vehicles: list[dict], violations: list[dict]) -> None:
     """Full resync: drop local records the server no longer has."""
     conn.execute("DELETE FROM vehicles")
-    conn.execute("DELETE FROM violations")
     upsert_vehicles(conn, vehicles)
-    upsert_violations(conn, violations)
+    replace_violations(conn, violations)
 
 
 def counts(conn: sqlite3.Connection) -> dict[str, int]:

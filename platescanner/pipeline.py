@@ -79,7 +79,7 @@ class ScanResult:
     position: str | None = None
     others_in_view: int = 0
     source: str | None = None  # e.g. "video gate.mp4 at 0:23"; None for the live camera
-    verify: bool = False       # a violation resting on a doubtful read: the guard should check the plate
+    verify: bool = False       # a doubtful violation, or a look-alike "registered" match: the guard should check the plate
 
 
 @dataclass
@@ -645,8 +645,12 @@ class RecognizerWorker(QThread):
             log.exception("Track #%d: could not prepare its pictures; logging the scan without them", track.track_id)
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
-        verify = result.status == db.RESULT_VIOLATION and needs_verification(
-            lead.reads, avg, result.approximate, ocr)
+        if result.status == db.RESULT_VIOLATION:
+            verify = needs_verification(lead.reads, avg, result.approximate, ocr)
+        else:
+            # A look-alike or one-character-off match to a registered vehicle must not pass as a
+            # plain "no violation": it may be an unregistered car with a similar plate.
+            verify = result.status == db.RESULT_CLEAR and result.approximate
         try:
             scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
                                   result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,

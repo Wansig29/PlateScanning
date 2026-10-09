@@ -236,8 +236,9 @@ class ScanConfig:
 @dataclass
 class SyncConfig:
     interval_hours: float = 3.0
-    # Periodically do a full re-download so records deleted online disappear
-    # locally too (deltas alone can't express deletions).
+    # Periodically do a full re-download of the vehicles too, so a vehicle deleted online
+    # without a "removed" record disappears locally. (Violations are re-downloaded in full
+    # on every sync, so a deleted violation stops alerting at the next sync.)
     full_resync_hours: float = 24.0
     download_photos: bool = True
     # Violation statuses that mean "no longer active". Anything else is active.

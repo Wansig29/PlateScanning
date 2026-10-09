@@ -150,3 +150,39 @@ def test_an_error_while_a_vehicle_leaves_does_not_stop_the_scanner(monkeypatch):
     w._expire(conn, 10.0)  # the vehicle left; finishing it fails, but must not raise
     assert not w.tracker.tracks
     conn.close()
+
+
+def test_look_alike_registered_match_is_marked_verify():
+    # "ABC1234" is read but only "ABC 1235" is registered: never a plain green "no violation".
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")  # the test database is shared with the tests above
+    conn.execute("DELETE FROM violations")
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1235"}])  # one character off the read
+    conn.commit()
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert got and got[0].lookup.status == db.RESULT_CLEAR and got[0].lookup.approximate
+    assert got[0].verify and db.get_scan(conn, got[0].scan_id)["verify"] == 1
+    conn.close()
+
+
+def test_exact_registered_match_is_not_marked_verify():
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")  # the test database is shared with the tests above
+    conn.execute("DELETE FROM violations")
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1234"}])
+    conn.commit()
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert got and got[0].lookup.status == db.RESULT_CLEAR and not got[0].verify
+    conn.close()

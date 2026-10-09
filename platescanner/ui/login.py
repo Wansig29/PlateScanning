@@ -74,6 +74,7 @@ class LoginDialog(QDialog):
             lay.addSpacing(14)
 
         self.error = QLabel()
+        self.error.setTextFormat(Qt.TextFormat.PlainText)  # the server's message, shown as typed
         self.error.setWordWrap(True)
         self.error.setStyleSheet(f"color: {theme.RED}; background: {theme.RESULT_TINTS['violation']};"
                                  "border-radius: 6px; padding: 7px 9px;")
