@@ -26,9 +26,9 @@ python -m venv .venv
 To try the app with no backend and no camera:
 
 ```powershell
-.\.venv\Scripts\python tools\seed_demo.py                       # demo vehicles + violations
+.\.venv\Scripts\python tools\seed_demo.py                       # demo vehicles + violations + demo guard
 .\.venv\Scripts\python tools\make_test_video.py gate.mp4 NBC1234 ABC1234 XYZ789 QWE4567 --no-stop --blur --gap 0.6 --lanes 2
-.\.venv\Scripts\python -m platescanner --source gate.mp4        # choose "Continue offline"
+.\.venv\Scripts\python -m platescanner --source gate.mp4        # enter demo@psau.local / demo, then "Continue offline"
 ```
 
 `make_test_video.py` options: `--no-stop` (drive through instead of stopping), `--speed` (px/frame; 18 ≈ 6.5 km/h, 45 ≈ 16 km/h), `--gap` (seconds between cars, so several are in view), `--lanes 2`, `--blur` / `--shutter` (motion blur from speed × exposure time).
@@ -98,7 +98,9 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
 
   After reporting, a vehicle is still re-read now and then. If the consensus clearly changes, a correction is logged.
 - **Database-aware decoding** (`decode.py`): the OCR models output a probability for every character at every position, not just the winner. These are kept, combined over the vehicle's reads (repeat frames count for less, since their errors are correlated) and scored against every registered plate, weighing "one of our vehicles" against "a visitor". A registered plate replaces the plain read only if **all** hold: it wins with at least `ocr.decode_accept` (0.90) certainty; it differs from the plain read in at most `decode_max_changes` (2) characters; every character it changes was at least `decode_min_char_prob` (10%) likely to the OCR itself, so a confident read is never overridden by a nearby registered plate; and its registered colour doesn't clearly contradict the colour seen at the gate (a mild penalty, `decode_colour_penalty`). The result is flagged *approximate*. This resolves two reads that disagree on one doubtful character without waiting for the vehicle to leave. `decode_temperature` (2.0) softens the OCR's overconfidence and should be calibrated on real gate footage. Set `decode_with_database` to false to turn it off.
-- **Lookup** (`db.py`): plates are matched on a confusion-folded key (O/0, I/1, B/8, S/5…), so a slightly misread plate still finds its record. Only local SQLite is queried, never the API.
+- **Lookup** (`db.py`): the plate exactly as read is looked up first. Only if it is not in the database is a confusion-folded key tried (O/D/Q/0, I/L/1, B/8, S/5…), then, with `fuzzy_match`, one character off. Look-alike plates such as `ABD 1234` and `ABO 1234` are different real plates, so such a match is flagged *approximate* (and a violation **VERIFY PLATE**), and a vehicle only ever shows the violations recorded against it or its exact plate, never those of a look-alike. Only local SQLite is queried, never the API.
+- **Suspension dates**: synced dates are stored as ISO (`2026-10-10`); `10/10/2026` or `Oct 10, 2026` are converted. A date that still can't be read keeps the violation alerting until the next sync instead of silently ending it.
+- **Errors never stop the alert**: if a picture can't be saved (disk full) the scan is logged and alerted without it; if the scan log can't be written (database locked) the guard is still alerted. If plate reading stops anyway, the scanner beeps and says so instead of leaving only the live feed running.
 - **Live feed**: every tracked vehicle gets a box, a trail and a label (`#12 ABC 1234 98%`, or `#13 reading...` until decided). Between recognitions, boxes move with the vehicle's measured speed so they stay on the plate. While a **violator** is in view the rest of the picture is dimmed and the violator's whole vehicle gets a thick, blinking red frame, so it stands out from the cars around it.
 - **Several violators at once**: when acknowledgement is not required (the default), each violator in view gets its own card on the Identity Dashboard (up to 3, newest first), with its photo, owner, violation and suspension dates. A "2 violators in view  ‹ ›" bar above the cards jumps between them when they do not all fit. A card stays while its vehicle is in view and for 10 s after; a clear or unregistered vehicle never pushes a violator off the screen. Everything is still logged.
 - **Which vehicle is it?** (`vision/identify.py`): with several cars at the gate a plate number alone is hard to match to a moving car, so the dashboard leads with:
@@ -192,6 +194,7 @@ The spec left this open. The app stores **all** active violations. The dashboard
 The scanner gets its data from the **psau-security** system (`native-app`, on Railway). Every lookup at the gate is local, so the network is only used for syncing: a full copy about once a day and the changes every 4 hours (or **Sync Now**).
 
 - **Accounts**: guards sign in with their **existing psau-security account** (same email and password as the website and the mobile app) through psau-security's normal `POST /api/login`. There are no separate scanner accounts. Only staff roles (`security`, `admin`, `system_admin`) are accepted; a student/vehicle-owner account is refused and the session it opened is closed again. The guard's name is recorded with every acknowledged violation.
+- **Offline sign-in**: when the server can't be reached, "Continue offline" still needs an email and password: those of a guard who signed in online on this laptop within `api.offline_login_days` (14). Only a salted PBKDF2 hash of the password is kept (`offline_guards.bin`, DPAPI-protected on Windows), never the password. The Database and Reports windows, which hold owners' names, contact numbers and photos, open only for a signed-in guard (online or offline); after *Sign out* they are locked again while scanning continues.
 - **Data**: psau-security's read-only gate endpoints (`native-app/src/Controllers/Api/GateScannerApiController.php`), staff roles only:
 
   | Endpoint | Returns |

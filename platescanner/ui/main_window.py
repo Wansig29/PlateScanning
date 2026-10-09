@@ -189,10 +189,11 @@ class MainWindow(QMainWindow):
     update_progress = Signal(int)        # download percent, 0-100
     update_failed = Signal(str)          # shown in a message box, not only in the status bar
 
-    def __init__(self, cfg: Config, session: dict | None):
+    def __init__(self, cfg: Config, session: dict | None, offline_user: dict | None = None):
         super().__init__()
         self.cfg = cfg
-        self.session = session
+        self.session = session              # signed in online (has the API token)
+        self.offline_user = offline_user    # signed in offline (password checked locally, no token)
         self.conn = db.connect(cfg.db_path)
         self.setWindowTitle("PSAU Gate Plate Scanner")
         self._density = DENSITY_FULL
@@ -477,6 +478,7 @@ class MainWindow(QMainWindow):
         self.recognizer.status.connect(lambda m: self._set_status(self.ocr_status, f"OCR: {m}", theme.AMBER))
         self.recognizer.ready.connect(lambda m: self._set_status(self.ocr_status, m, theme.GREEN))
         self.recognizer.failed.connect(self._ocr_failed)
+        self.recognizer.stopped.connect(self._ocr_stopped)
         self.recognizer.scanned.connect(self._on_scan)
         self.recognizer.unreadable.connect(self._on_no_plate)
         self.recognizer.in_view.connect(self._on_in_view)
@@ -519,6 +521,13 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Plate recognition unavailable",
                              f"{msg}\n\nThe live feed still works, but plates will not be read. "
                              "Check that the plate models are in the models/alpr folder (tools/fetch_models.py).")
+
+    def _ocr_stopped(self, msg: str) -> None:
+        self._set_status(self.ocr_status, msg, theme.RED)
+        _beep()
+        QMessageBox.critical(self, "Plate reading stopped",
+                             f"{msg}\n\nThe live feed still works, but plates are no longer read. "
+                             "Restart the scanner, and send the log (logs\\scanner.log) to the developer.")
 
     def _start_sync(self) -> None:
         self.sync_thread = QThread(self)
@@ -822,7 +831,18 @@ class MainWindow(QMainWindow):
             self.sync_label.setToolTip("")
             self.sync_label.setStyleSheet("")
 
+    def _signed_in(self) -> bool:
+        return bool(self.session or self.offline_user)
+
+    def _require_sign_in(self) -> bool:
+        """The database and reports hold owners' personal data: only for a signed-in guard."""
+        if not self._signed_in():
+            self._sign_in()
+        return self._signed_in()
+
     def _open_database(self) -> None:
+        if not self._require_sign_in():
+            return
         if self.db_window is None:
             self.db_window = DatabaseWindow(self.conn, self)
         self.db_window.refresh()
@@ -831,6 +851,8 @@ class MainWindow(QMainWindow):
         self.db_window.activateWindow()
 
     def _open_reports(self) -> None:
+        if not self._require_sign_in():
+            return
         if self.reports_window is None:
             self.reports_window = ReportsWindow(self.conn, self.cfg.captures_dir, self)
         self.reports_window.refresh()
@@ -841,13 +863,14 @@ class MainWindow(QMainWindow):
     # --- account ------------------------------------------------------------
 
     def _update_account_btn(self) -> None:
-        if self.session:
-            user = self.session.get("user") or {}
+        if self._signed_in():
+            user = (self.session or {}).get("user") or self.offline_user or {}
             name = user.get("name") or user.get("email") or "Guard"
             short = name if len(name) <= 14 else name[:13] + "…"
+            how = "" if self.session else " (offline)"
             self.account_btn.setIcon(_avatar_icon(_initials(name)))
             self.account_btn.setText(f" {short}  ▾" if self._density < DENSITY_COMPACT else " ▾")
-            self.account_btn.setToolTip(f"Signed in as {name}. Account and update settings")
+            self.account_btn.setToolTip(f"Signed in as {name}{how}. Account and update settings")
             self.account_action.setText("Sign out")
         else:
             self.account_btn.setIcon(_avatar_icon("?"))
@@ -855,27 +878,38 @@ class MainWindow(QMainWindow):
             self.account_action.setText("Sign in")
 
     def _account_clicked(self) -> None:
-        if self.session:
-            if QMessageBox.question(self, "Sign out", "Sign out? Scanning continues with the local "
-                                    "database, but syncing stops until someone signs in.") \
+        if self._signed_in():
+            if QMessageBox.question(self, "Sign out", "Sign out? Scanning continues, but the Database and "
+                                    "Reports are locked and syncing stops until someone signs in.") \
                     != QMessageBox.StandardButton.Yes:
                 return
             clear_session(self.cfg.session_path)
             self.session = None
+            self.offline_user = None
             self.token_changed.emit("")
+            for w in (self.db_window, self.reports_window):
+                if w is not None:
+                    w.hide()
             self._update_account_btn()
             self._refresh_sync_label()
         else:
             self._sign_in()
 
     def _sign_in(self) -> None:
-        dlg = LoginDialog(self.cfg, self, allow_offline=False)
-        if dlg.exec() and dlg.token:
+        dlg = LoginDialog(self.cfg, self)
+        if not dlg.exec():
+            return
+        if dlg.token:
             save_session(self.cfg.session_path, dlg.token, dlg.user)
             self.session = {"token": dlg.token, "user": dlg.user}
+            self.offline_user = None
             self.token_changed.emit(dlg.token)
             self._update_account_btn()
             self._sync(False)
+        elif dlg.offline:
+            self.offline_user = dlg.user
+            self._update_account_btn()
+            self._refresh_sync_label()
 
     # --- scans ----------------------------------------------------------------
 
@@ -942,8 +976,11 @@ class MainWindow(QMainWindow):
         self._update_pending()
 
     def _guard_name(self) -> str:
-        user = (self.session or {}).get("user") or {}
-        return user.get("name") or user.get("email") or "guard on duty (offline mode)"
+        user = (self.session or {}).get("user") or self.offline_user or {}
+        name = user.get("name") or user.get("email")
+        if not name:
+            return "guard on duty (not signed in)"
+        return name if self.session else f"{name} (offline)"
 
     # --- unacknowledged violations: keep alerting until someone confirms -------------
 

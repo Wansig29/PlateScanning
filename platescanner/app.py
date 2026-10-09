@@ -54,6 +54,7 @@ def main() -> None:
     app.setStyleSheet(theme.STYLESHEET)
 
     session = load_session(cfg.session_path)
+    offline_user = None
     if session is None:
         dlg = LoginDialog(cfg)
         if dlg.exec() != QDialog.DialogCode.Accepted:
@@ -61,8 +62,10 @@ def main() -> None:
         if dlg.token:
             save_session(cfg.session_path, dlg.token, dlg.user)
             session = {"token": dlg.token, "user": dlg.user}
+        elif dlg.offline:
+            offline_user = dlg.user
 
-    win = MainWindow(cfg, session)
+    win = MainWindow(cfg, session, offline_user)
     appearance.install(win, cfg.home)
     win.showFullScreen() if args.fullscreen else win.show()
     sys.exit(app.exec())

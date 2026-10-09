@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS vehicles (
     permanently_revoked INTEGER   -- the owner's sticker is permanently revoked (barred on any vehicle)
 );
 CREATE INDEX IF NOT EXISTS ix_vehicles_key ON vehicles(plate_key);
+CREATE INDEX IF NOT EXISTS ix_vehicles_norm ON vehicles(plate_norm);
 
 CREATE TABLE IF NOT EXISTS violations (
     id               TEXT PRIMARY KEY,
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS violations (
 );
 CREATE INDEX IF NOT EXISTS ix_violations_vehicle ON violations(vehicle_id);
 CREATE INDEX IF NOT EXISTS ix_violations_key ON violations(plate_key);
+CREATE INDEX IF NOT EXISTS ix_violations_plate ON violations(plate);
 
 -- School years as set in psau-security (Utilities), synced so the scan log can be archived when one ends.
 CREATE TABLE IF NOT EXISTS school_years (
@@ -285,17 +287,18 @@ def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
 
 # A violation that raises a gate alert. A suspension is over once its end date
 # has passed, even if the laptop hasn't synced since (the server lifts it at
-# midnight the same way).
-_ALERTING = ("is_active=1 AND (suspension_end IS NULL OR suspension_end = '' "
+# midnight the same way). An end date SQLite can't read (date() gives NULL, e.g.
+# "10/10/2026") keeps the violation alerting: a missed violator is worse than a
+# suspension that lasts until the next sync.
+_ALERTING = ("is_active=1 AND (date(suspension_end) IS NULL "
              "OR date(suspension_end) >= date('now', 'localtime'))")
 
 
-def _active_violations(conn: sqlite3.Connection, vehicle_id: str | None, key: str) -> list[dict]:
+def _active_violations(conn: sqlite3.Connection, where: str, params: tuple) -> list[dict]:
     rows = conn.execute(
-        f"SELECT * FROM violations WHERE {_ALERTING} "
-        "AND (plate_key=? OR (vehicle_id IS NOT NULL AND vehicle_id=?)) "
+        f"SELECT * FROM violations WHERE {_ALERTING} AND ({where}) "
         "ORDER BY COALESCE(occurred_at, updated_at) DESC",
-        (key, vehicle_id),
+        params,
     ).fetchall()
     return [_violation_dict(r) for r in rows]
 
@@ -310,21 +313,18 @@ def _permanent_revocation_alert(vehicle: dict[str, Any]) -> dict[str, Any]:
             "evidence_urls": [], "evidence_paths": [], "occurred_at": None, "updated_at": vehicle.get("updated_at")}
 
 
-def _has_active_violation(conn: sqlite3.Connection, vehicle_id: str) -> bool:
-    return bool(conn.execute(
-        f"SELECT 1 FROM violations WHERE {_ALERTING} AND vehicle_id=? LIMIT 1", (vehicle_id,)).fetchone())
-
-
 def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
-    """The violations that would raise an alert for this vehicle at the gate, newest first."""
-    return _active_violations(conn, vehicle["id"], vehicle["plate_key"])
+    """The violations that would raise an alert for this vehicle at the gate, newest first:
+    those recorded against the vehicle, or against its exact plate (a violation logged
+    without a vehicle record). Never those of a different plate that only looks alike."""
+    return _active_violations(conn, "vehicle_id=? OR plate=?", (str(vehicle["id"]), vehicle["plate"]))
 
 
 def list_vehicles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every vehicle with its number of alerting violations; violators first."""
     rows = conn.execute(
         f"SELECT v.*, (SELECT COUNT(*) FROM violations x WHERE {_ALERTING} "
-        "AND (x.plate_key = v.plate_key OR x.vehicle_id = v.id)) + COALESCE(v.permanently_revoked, 0) AS alerting "
+        "AND (x.plate = v.plate OR x.vehicle_id = v.id)) + COALESCE(v.permanently_revoked, 0) AS alerting "
         "FROM vehicles v ORDER BY alerting > 0 DESC, v.plate_norm").fetchall()
     out = []
     for r in rows:
@@ -339,40 +339,59 @@ def list_violations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         f"SELECT x.*, ({_ALERTING}) AS alerting, "
         "COALESCE((SELECT owner_name FROM vehicles WHERE id = x.vehicle_id), "
-        "         (SELECT owner_name FROM vehicles WHERE plate_key = x.plate_key LIMIT 1)) AS owner_name "
+        "         (SELECT owner_name FROM vehicles WHERE plate = x.plate LIMIT 1)) AS owner_name "
         "FROM violations x ORDER BY alerting DESC, COALESCE(x.occurred_at, x.updated_at) DESC").fetchall()
     return [_violation_dict(r) for r in rows]
 
 
 def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> LookupResult:
+    """What the database says about a plate read at the gate.
+
+    First the plate exactly as read: a registered vehicle, or a violation recorded
+    without one. Only when neither exists are look-alike plates tried: OCR
+    confusions (O/D/Q, I/L, B/8...) and, with `fuzzy`, one character dropped,
+    added or misread. Those are different real plates (ABD 1234 and ABO 1234 both
+    exist), so such a match is always marked approximate for the guard to verify,
+    and it never borrows the violations of another plate.
+    """
     norm = plates.normalize(plate_text)
     key = plates.plate_key(plate_text)
+    shown = plates.display(norm)
     approximate = False
 
-    candidates = conn.execute("SELECT * FROM vehicles WHERE plate_key=?", (key,)).fetchall()
-    if not candidates and fuzzy and len(key) >= 5:
-        # One OCR character dropped/added/misread: accept only an unambiguous hit.
-        near = [r for r in conn.execute(
-                    "SELECT * FROM vehicles WHERE length(plate_key) BETWEEN ? AND ?",
-                    (len(key) - 1, len(key) + 1))
-                if plates.within_one_edit(key, r["plate_key"])]
-        if len(near) == 1:
-            candidates, approximate = near, True
+    candidates = conn.execute("SELECT * FROM vehicles WHERE plate_norm=?", (norm,)).fetchall()
+    exact_violations = [] if candidates else _active_violations(conn, "plate=?", (shown,))
+    if not candidates and not exact_violations:
+        approximate = True
+        candidates = conn.execute("SELECT * FROM vehicles WHERE plate_key=?", (key,)).fetchall()
+        if not candidates and fuzzy and len(key) >= 5:
+            # One OCR character dropped/added/misread: accept only an unambiguous hit.
+            near = [r for r in conn.execute(
+                        "SELECT * FROM vehicles WHERE length(plate_key) BETWEEN ? AND ?",
+                        (len(key) - 1, len(key) + 1))
+                    if plates.within_one_edit(key, r["plate_key"])]
+            if len(near) == 1:
+                candidates = near
 
     vehicle = None
     if candidates:
-        exact = [r for r in candidates if r["plate_norm"] == norm] or candidates
-        if len(exact) > 1:
+        if len(candidates) > 1:
             # The same plate registered twice (e.g. "ABC-1234" and "ABC 1234" are
-            # different records online): show the owner whose vehicle has the
-            # active violation, not an arbitrary one.
-            flagged = [r for r in exact if _has_active_violation(conn, r["id"])]
-            exact = flagged or exact
-        vehicle = dict(exact[0])
+            # different records online), or several look-alike plates: show the
+            # owner whose vehicle has the active violation, not an arbitrary one.
+            own = [r for r in candidates if _active_violations(conn, "vehicle_id=?", (r["id"],))]
+            flagged = own or [r for r in candidates if vehicle_violations(conn, dict(r))]
+            candidates = flagged or candidates
+        vehicle = dict(candidates[0])
         vehicle["details"] = json.loads(vehicle.pop("details_json") or "{}")
-        key = vehicle["plate_key"]
 
-    violations = _active_violations(conn, vehicle["id"] if vehicle else None, key)
+    if vehicle:
+        violations = vehicle_violations(conn, vehicle)
+    elif approximate:
+        # No vehicle record at all: a violation logged for a look-alike plate still alerts (to be verified).
+        violations = _active_violations(conn, "plate_key=?", (key,))
+    else:
+        violations = exact_violations
     if vehicle and vehicle.get("permanently_revoked"):
         violations.insert(0, _permanent_revocation_alert(vehicle))
     matched = vehicle["plate"] if vehicle else (violations[0]["plate"] if violations else None)
@@ -382,6 +401,8 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         status = RESULT_CLEAR
     else:
         status = RESULT_NOT_REGISTERED
+    # "Approximate" means the plate shown is not the plate read.
+    approximate = approximate and matched is not None and plates.normalize(matched) != norm
     return LookupResult(status, vehicle, violations, matched, approximate)
 
 

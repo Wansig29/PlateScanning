@@ -46,6 +46,9 @@ class ApiConfig:
     page_size: int = 200
     timeout_seconds: float = 20.0
     verify_tls: bool = True
+    # "Continue offline" accepts a guard's email and password only if they signed in
+    # online on this laptop within this many days (see offline_auth.py).
+    offline_login_days: float = 14.0
 
 
 @dataclass
@@ -286,6 +289,10 @@ class Config:
     @property
     def session_path(self) -> Path:
         return self.home / "session.bin"
+
+    @property
+    def offline_guards_path(self) -> Path:
+        return self.home / "offline_guards.bin"
 
     def resolved_model_dir(self) -> Path | None:
         if self.ocr.model_dir:

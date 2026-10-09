@@ -8,6 +8,7 @@ break syncing.
 """
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from urllib.parse import urljoin
 
@@ -105,6 +106,32 @@ def _evidence_urls(r: dict[str, Any], base_url: str) -> list[str]:
     return urls
 
 
+# Date formats besides ISO-8601 that a suspension date may arrive in (month first, as in the Philippines).
+_DATE_FORMATS = ("%m/%d/%Y", "%m-%d-%Y", "%Y/%m/%d", "%b %d, %Y", "%B %d, %Y", "%d %b %Y", "%d %B %Y")
+
+
+def _iso_date(value: Any) -> Any:
+    """A suspension date as ISO-8601, so SQLite's date() and the UI can read it.
+
+    ISO values pass through unchanged; "10/10/2026" or "Oct 10, 2026" become
+    "2026-10-10". Anything else is kept as it came (the lookup then treats the
+    suspension as still running rather than silently ending it)."""
+    if not isinstance(value, str) or not value.strip():
+        return value
+    text = value.strip()
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+        return text
+    except ValueError:
+        pass
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return value
+
+
 def _suspension_text(r: dict[str, Any]) -> str | None:
     text = pick(r, "suspension_duration", "suspension.duration", "suspension_period", "penalty.duration")
     if text is not None:
@@ -133,10 +160,10 @@ def map_violation(r: dict[str, Any], base_url: str, resolved_statuses: list[str]
                                         "violation.name", "name")),
         "status": status,
         "is_active": bool(is_active),
-        "suspension_start": pick(r, "suspension_start", "suspended_from", "suspension_start_date",
-                                 "suspension.start_date", "suspension.start"),
-        "suspension_end": pick(r, "suspension_end", "suspended_until", "suspension_end_date",
-                               "suspension.end_date", "suspension.end"),
+        "suspension_start": _iso_date(pick(r, "suspension_start", "suspended_from", "suspension_start_date",
+                                           "suspension.start_date", "suspension.start")),
+        "suspension_end": _iso_date(pick(r, "suspension_end", "suspended_until", "suspension_end_date",
+                                         "suspension.end_date", "suspension.end")),
         "suspension_text": _suspension_text(r),
         "description": pick(r, "description", "remarks", "notes", "details"),
         "evidence_urls": _evidence_urls(r, base_url),
