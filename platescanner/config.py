@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import os
 import sys
+import types
+import typing
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
 from pathlib import Path
 from typing import Any
@@ -294,16 +296,54 @@ class Config:
         return bundled if bundled.is_dir() and any(bundled.iterdir()) else None
 
 
-def _merge(cls: type, data: dict[str, Any]):
+class ConfigError(ValueError):
+    """config.json cannot be used. The message says where and what, for the person editing it."""
+
+
+_KINDS = {bool: "true or false", int: "a whole number", float: "a number", str: "text in quotes",
+          list: "a list in [ ]", dict: "a group in { }"}
+
+
+def _check(value: Any, hint: Any, where: str) -> Any:
+    """The value converted to the setting's type, or ConfigError naming the setting."""
+    origin, args = typing.get_origin(hint), typing.get_args(hint)
+    if origin in (typing.Union, types.UnionType):
+        if value is None and type(None) in args:
+            return None
+        (inner,) = [a for a in args if a is not type(None)]
+        return _check(value, inner, where)
+    if origin is list:
+        if not isinstance(value, list):
+            raise ConfigError(f'"{where}" should be {_KINDS[list]}, not {json.dumps(value)}')
+        return [_check(v, args[0], f"{where}[{i}]") for i, v in enumerate(value)] if args else value
+    ok = {bool: lambda v: isinstance(v, bool),
+          int: lambda v: isinstance(v, int) and not isinstance(v, bool),
+          float: lambda v: isinstance(v, (int, float)) and not isinstance(v, bool),
+          # "source": 0 means camera "0": a bare number is fine where text is expected
+          str: lambda v: isinstance(v, (str, int)) and not isinstance(v, bool)}.get(hint)
+    if ok is None:
+        return value
+    if not ok(value):
+        raise ConfigError(f'"{where}" should be {_KINDS[hint]}, not {json.dumps(value)}')
+    return float(value) if hint is float else str(value) if hint is str else value
+
+
+def _merge(cls: type, data: dict[str, Any], where: str = ""):
     kwargs = {}
     defaults = cls()
+    hints = typing.get_type_hints(cls)
     for f in fields(cls):
         if f.name == "home" or f.name not in data:
             continue
         value = data[f.name]
         default = getattr(defaults, f.name)
-        if is_dataclass(default) and isinstance(value, dict):
-            value = _merge(type(default), value)
+        name = f"{where}{f.name}"
+        if is_dataclass(default):
+            if not isinstance(value, dict):
+                raise ConfigError(f'"{name}" should be {_KINDS[dict]}, not {json.dumps(value)}')
+            value = _merge(type(default), value, f"{name}.")
+        else:
+            value = _check(value, hints[f.name], name)
         kwargs[f.name] = value
     return cls(**kwargs)
 
@@ -338,9 +378,20 @@ def load_config(path: Path | None = None) -> Config:
     data: dict[str, Any] = {}
     if path.exists():
         # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+        except json.JSONDecodeError as e:
+            raise ConfigError(f"{path}\n\nLine {e.lineno}, column {e.colno}: {e.msg}. Often a missing or "
+                              "extra comma, or a missing quote, on that line or the one before it.") from e
+        except (OSError, UnicodeDecodeError) as e:
+            raise ConfigError(f"{path}\n\nThe file cannot be read: {e}") from e
+        if not isinstance(data, dict):
+            raise ConfigError(f"{path}\n\nThe settings must be one group in {{ }}.")
     _migrate(data)
-    cfg = _merge(Config, data)
+    try:
+        cfg = _merge(Config, data)
+    except ConfigError as e:
+        raise ConfigError(f"{path}\n\n{e}.") from e
     cfg.home = home
     # Write back so newly added settings show up in the file with defaults.
     save_config(cfg, path)

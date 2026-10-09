@@ -29,7 +29,15 @@ class Release:
     tag: str
     page: str                    # release page, always set
     installer_url: str = ""      # direct download of PlateScanner-Setup.exe ("" if the release has none)
-    sha256: str = ""             # from GitHub's asset digest, when it provides one
+    sha256: str = ""             # from GitHub's asset digest; without one the app never installs the file
+
+    @property
+    def installable(self) -> bool:
+        """The app installs only an installer whose checksum GitHub published; otherwise the release page."""
+        return bool(self.installer_url and _SHA256.fullmatch(self.sha256))
+
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def parse_version(tag: str) -> tuple[int, ...] | None:
@@ -69,14 +77,24 @@ def check_for_update(current: str, url: str = LATEST_RELEASE_API) -> Release | N
         if a.get("name") == INSTALLER_NAME:
             rel.installer_url = str(a.get("browser_download_url", ""))
             digest = str(a.get("digest") or "")
-            rel.sha256 = digest.removeprefix("sha256:") if digest.startswith("sha256:") else ""
+            rel.sha256 = digest.removeprefix("sha256:").lower() if digest.startswith("sha256:") else ""
     return rel
 
 
+def sha256_of(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def download_installer(rel: Release, folder: Path, progress=None) -> Path:
-    """Download to folder; raises on any failure or if the checksum GitHub published does not match.
+    """Download to folder; raises on any failure, when GitHub published no checksum, or when it does not match.
 
     progress(done_bytes, total_bytes) is called after each chunk (total is 0 when the size is unknown)."""
+    if not rel.installable:
+        raise ValueError("the release published no checksum for its installer, so it cannot be verified")
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f"PlateScanner-Setup-{rel.tag}.exe"
     part = dest.with_suffix(".part")
@@ -92,7 +110,7 @@ def download_installer(rel: Release, folder: Path, progress=None) -> Path:
                 done += len(chunk)
                 if progress:
                     progress(done, total)
-    if rel.sha256 and h.hexdigest().lower() != rel.sha256.lower():
+    if h.hexdigest() != rel.sha256:
         part.unlink(missing_ok=True)
         raise ValueError("downloaded installer failed its checksum")
     part.replace(dest)
@@ -118,7 +136,13 @@ def clean_old_installers(folder: Path, current: str) -> int:
     return removed
 
 
-def launch_installer(path: Path) -> None:
-    """Silent upgrade; the installer relaunches the app when it finishes. Only called after the operator's click; caller must then quit."""
+def launch_installer(path: Path, sha256: str) -> None:
+    """Silent upgrade; the installer relaunches the app when it finishes. Only called after the operator's click; caller must then quit.
+
+    The file is checked again first: an installer downloaded earlier (auto mode) has sat on disk since then.
+    Raises ValueError, and removes the file, when it no longer matches the checksum GitHub published."""
+    if not _SHA256.fullmatch(sha256 or "") or sha256_of(path) != sha256:
+        path.unlink(missing_ok=True)
+        raise ValueError("the downloaded installer changed since it was verified, so it was not started")
     subprocess.Popen([str(path), "/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS"],
                      close_fds=True)
