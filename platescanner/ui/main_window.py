@@ -286,6 +286,7 @@ class MainWindow(QMainWindow):
         self.update_btn.clicked.connect(self._update_clicked)
         tl.addWidget(self.update_btn)
         self.sync_label = QLabel()          # shown in the status bar: the top bar must stay narrow
+        self.sync_label.setTextFormat(Qt.TextFormat.PlainText)  # may hold the server's own error message
         self.sync_label.setObjectName("Muted")
         self.sync_btn = QPushButton("↻  Sync Now")
         self.sync_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -813,7 +814,7 @@ class MainWindow(QMainWindow):
         if error:
             self._sync_error_full = f"⚠ {error} · last synced {_ago(last)}"
             self._elide_sync_error()
-            self.sync_label.setToolTip(self._sync_error_full)
+            self.sync_label.setToolTip(theme.plain_tip(self._sync_error_full))
             self.sync_label.setStyleSheet(f"color: {theme.AMBER};")
         else:
             prefix = "" if self.session else "Offline mode · "
@@ -847,7 +848,7 @@ class MainWindow(QMainWindow):
             short = name if len(name) <= 14 else name[:13] + "…"
             self.account_btn.setIcon(_avatar_icon(_initials(name)))
             self.account_btn.setText(f" {short}  ▾" if self._density < DENSITY_COMPACT else " ▾")
-            self.account_btn.setToolTip(f"Signed in as {name}. Account and update settings")
+            self.account_btn.setToolTip(theme.plain_tip(f"Signed in as {name}. Account and update settings"))
             self.account_action.setText("Sign out")
         else:
             self.account_btn.setIcon(_avatar_icon("?"))
@@ -860,6 +861,9 @@ class MainWindow(QMainWindow):
                                     "database, but syncing stops until someone signs in.") \
                     != QMessageBox.StandardButton.Yes:
                 return
+            # Revoke the token online too, on a thread: an offline gate must not wait for the timeout.
+            threading.Thread(target=ApiClient(self.cfg.api, self.session.get("token")).logout,
+                             daemon=True, name="sign-out").start()
             clear_session(self.cfg.session_path)
             self.session = None
             self.token_changed.emit("")

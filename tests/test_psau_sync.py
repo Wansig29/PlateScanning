@@ -155,3 +155,42 @@ def test_permanent_revoke_clears_when_server_lifts_it_and_survives_embedded_copy
     assert db.lookup(conn, "NBC1234").vehicle["permanently_revoked"] == 1
     sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False)], []), conn, force_full=True)
     assert all(v["violation_type"] != "Permanently revoked sticker" for v in db.lookup(conn, "NBC1234").violations)
+
+
+@pytest.mark.parametrize("url, sends_token", [
+    ("https://psau-security-production.up.railway.app/storage/a.jpg", True),
+    ("https://PSAU-security-production.up.railway.app/storage/a.jpg", True),
+    ("https://psau-security-production.up.railway.app.evil.example/a.jpg", False),
+    ("https://psau-security-production.up.railway.app@evil.example/a.jpg", False),
+    ("https://psau-security-production.up.railway.app:8443/a.jpg", False),
+    ("http://psau-security-production.up.railway.app/storage/a.jpg", False),
+    ("https://cdn.example.com/a.jpg", False),
+])
+def test_photo_downloads_send_the_token_only_to_the_server_itself(monkeypatch, tmp_path, url, sends_token):
+    seen = {}
+
+    def get(self, u, headers=None, **kw):
+        seen["headers"] = headers or {}
+        r = _Resp(200, {})
+        r.content = b"jpg"
+        return r
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    assert ApiClient(Config().api, token="t0k").download(url, tmp_path / "a.jpg")
+    assert ("Authorization" in seen["headers"]) == sends_token
+
+
+def test_logout_revokes_the_token_and_survives_being_offline(monkeypatch):
+    calls = []
+
+    def post(self, url, headers=None, **kw):
+        calls.append((url, headers))
+        raise requests.ConnectionError("offline")
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    client = ApiClient(Config().api, token="t0k")
+    client.logout()
+    assert calls == [("https://psau-security-production.up.railway.app/api/logout", {"Authorization": "Bearer t0k"})]
+    assert client.token is None
+    client.logout()            # nothing left to revoke
+    assert len(calls) == 1
