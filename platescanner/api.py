@@ -62,6 +62,21 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
 
 STAFF_ROLES = {"security", "admin", "system_admin"}
 
+
+def _roles(user: dict[str, Any]) -> set[str]:
+    """The account's role names, lower-case: from "role" ("security" or {"name": "security"})
+    and/or a "roles" list. Empty when the login response doesn't say."""
+    found: list[Any] = [user.get("role")]
+    if isinstance(user.get("roles"), list):
+        found += user["roles"]
+    names = set()
+    for r in found:
+        if isinstance(r, dict):
+            r = r.get("name") or r.get("slug")
+        if isinstance(r, str) and r.strip():
+            names.add(r.strip().lower())
+    return names
+
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 
@@ -127,20 +142,26 @@ class ApiClient:
         if not token:
             raise ApiError("Login response did not include a token")
         user = body.get("user") or (body.get("data") or {}).get("user") or {}
-        role = str(user.get("role") or "")
-        if role and role not in STAFF_ROLES:
-            # Students/vehicle owners have psau-security accounts too, but the
-            # gate data is for security staff only (the server enforces this as well).
+        if not isinstance(user, dict):
+            user = {}
+        roles = _roles(user)
+        if not roles & STAFF_ROLES:
+            # Students/vehicle owners have psau-security accounts too, but the gate data
+            # is for security staff only (the server enforces this as well). An account
+            # whose role the server didn't send is refused too: fail closed, not open.
             try:  # don't leave the session this login just opened
                 self.session.post(self._url("/api/logout"), headers={"Authorization": f"Bearer {token}"},
                                   timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
             except requests.RequestException:
                 pass
             self.token = None
+            if not roles:
+                raise AuthError("The server did not say what kind of account this is, so the scanner "
+                                "can't confirm it's a security staff account. Contact the system admin.")
             raise AuthError("This account isn't a security staff account. Sign in with your "
                             "psau-security guard or admin account.")
         self.token = token
-        return token, user if isinstance(user, dict) else {}
+        return token, user
 
     def fetch_all(self, path: str, updated_since: str | None = None) -> list[dict]:
         """GET every page of a collection endpoint, optionally only recent changes."""
