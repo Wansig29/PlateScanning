@@ -433,7 +433,9 @@ class IdentityCard(QFrame):
         name.setStyleSheet("font-size: 12pt; font-weight: 700;")
         name.setWordWrap(True)
         name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        name.setTextFormat(Qt.TextFormat.PlainText)  # synced text: never render it as HTML
         contact = QLabel("—")
+        contact.setTextFormat(Qt.TextFormat.PlainText)
         contact.setObjectName("Muted")
         contact.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         who.addWidget(name)
@@ -450,6 +452,7 @@ class IdentityCard(QFrame):
             lbl.setObjectName("FieldName")
             value = QLabel("—")
             value.setObjectName("FieldValue")
+            value.setTextFormat(Qt.TextFormat.PlainText)
             value.setWordWrap(True)
             value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             grid.addWidget(lbl, row, 0, Qt.AlignmentFlag.AlignTop)

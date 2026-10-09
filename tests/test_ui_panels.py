@@ -76,3 +76,22 @@ def test_violator_arrows_show_only_with_several_violators_and_jump_between_cards
     assert bar.value() == p.cards[1].y()
     p._jump(-1)
     assert bar.value() == 0
+
+
+def test_synced_text_is_shown_as_written_never_as_html(app):
+    from PySide6.QtCore import Qt
+    from platescanner.ui.widgets import IdentityCard
+    card = IdentityCard()
+    html = '<b style="color:green">ALL CLEAR</b><img src="C:/x.png">'
+    result = db.LookupResult(status=db.RESULT_VIOLATION, matched_plate="ABC1234",
+                             vehicle={"owner_name": html, "contact": html},
+                             violations=[{"violation_type": html, "suspension_text": html}])
+    card.show_result("ABC1234", result)
+    for key in ("name", "contact", "type", "suspension"):
+        assert card.fields[key].textFormat() == Qt.TextFormat.PlainText
+    assert card.fields["name"].text() == html
+
+
+def test_plain_tooltips_escape_markup():
+    from platescanner.ui import theme
+    assert theme.plain_tip("<b>x</b> & y\nz") == "<p>&lt;b&gt;x&lt;/b&gt; &amp; y<br>z</p>"

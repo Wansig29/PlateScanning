@@ -89,6 +89,7 @@ def _fill(table: QTableWidget, rows: list[list[QTableWidgetItem]]) -> None:
 
 def _label(text: str, name: str | None = None, wrap: bool = False) -> QLabel:
     lbl = QLabel(text)
+    lbl.setTextFormat(Qt.TextFormat.PlainText)  # mostly synced text: never render it as HTML
     if name:
         lbl.setObjectName(name)
     lbl.setWordWrap(wrap)

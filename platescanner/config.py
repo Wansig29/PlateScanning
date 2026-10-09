@@ -38,6 +38,7 @@ class ApiConfig:
     # security/admin account there; no separate scanner accounts.
     base_url: str = "https://psau-security-production.up.railway.app"
     login_path: str = "/api/login"
+    logout_path: str = "/api/logout"
     vehicles_path: str = "/api/security/gate/vehicles"
     violations_path: str = "/api/security/gate/violations"
     school_years_path: str = "/api/security/gate/school-years"

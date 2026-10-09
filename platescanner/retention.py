@@ -20,6 +20,10 @@ from . import export
 log = logging.getLogger(__name__)
 
 _DATE_DIR = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# A school-year label becomes a folder and file name, and it comes from the server: one plain name
+# such as "2025-2026" or "SY 2025-2026", never a path ("..\\..", "C:\\...") or a reserved character.
+_SAFE_LABEL = re.compile(r"^(?!(?:CON|PRN|AUX|NUL|COM\d|LPT\d)(?:\.|$))"
+                         r"[A-Za-z0-9](?:[A-Za-z0-9 ._-]{0,62}[A-Za-z0-9])?$", re.IGNORECASE)
 _PATH_COLUMNS = ("crop_path", "snapshot_path", "vehicle_path")
 
 
@@ -150,6 +154,9 @@ def archive_ended_years(conn: sqlite3.Connection, archive: Path, start_month: in
                else _ended_years_from_month(conn, start_month, today))
     done = []
     for label, lo, hi in periods:
+        if not _SAFE_LABEL.match(label):
+            log.warning("Not archiving school year %r: its name is not a plain folder name", label)
+            continue
         scans = [dict(r) for r in conn.execute(
             "SELECT * FROM scan_log WHERE ts >= ? AND ts < ? ORDER BY ts", (lo, hi)).fetchall()]
         if not any(r["archived_year"] is None for r in scans):

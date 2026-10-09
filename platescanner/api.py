@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -73,6 +74,12 @@ class ApiClient:
     def _url(self, path: str) -> str:
         return self.cfg.base_url.rstrip("/") + "/" + path.lstrip("/")
 
+    def _same_origin(self, url: str) -> bool:
+        """True only for the API server itself (same scheme, host and port), so the token never goes
+        to a look-alike host such as "<server>.evil.example" or "<server>@evil.example"."""
+        a, b = urlsplit(url), urlsplit(self.cfg.base_url)
+        return bool(a.netloc) and (a.scheme.lower(), a.netloc.lower()) == (b.scheme.lower(), b.netloc.lower())
+
     def _auth_headers(self) -> dict[str, str]:
         if not self.token:
             raise AuthError("Not signed in")
@@ -107,16 +114,23 @@ class ApiClient:
         if role and role not in STAFF_ROLES:
             # Students/vehicle owners have psau-security accounts too, but the
             # gate data is for security staff only (the server enforces this as well).
-            try:  # don't leave the session this login just opened
-                self.session.post(self._url("/api/logout"), headers={"Authorization": f"Bearer {token}"},
-                                  timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
-            except requests.RequestException:
-                pass
-            self.token = None
+            self.token = token
+            self.logout()  # don't leave the session this login just opened
             raise AuthError("This account isn't a security staff account. Sign in with your "
                             "psau-security guard or admin account.")
         self.token = token
         return token, user if isinstance(user, dict) else {}
+
+    def logout(self) -> None:
+        """Revoke the token on the server. Best effort: an offline laptop still signs out locally."""
+        if not self.token:
+            return
+        try:
+            self.session.post(self._url(self.cfg.logout_path), headers=self._auth_headers(),
+                              timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
+        except requests.RequestException:
+            pass
+        self.token = None
 
     def fetch_all(self, path: str, updated_since: str | None = None) -> list[dict]:
         """GET every page of a collection endpoint, optionally only recent changes."""
@@ -144,7 +158,7 @@ class ApiClient:
     def download(self, url: str, dest: Path) -> bool:
         """Fetch a photo. Same-host URLs get the bearer token; others don't."""
         headers = {}
-        if url.startswith(self.cfg.base_url.rstrip("/")) and self.token:
+        if self.token and self._same_origin(url):
             headers = self._auth_headers()
         try:
             r = self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
