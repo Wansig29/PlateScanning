@@ -663,6 +663,9 @@ class MainWindow(QMainWindow):
     def _download_job(self, rel: updates.Release) -> None:
         try:
             self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates", self._report_progress)))
+        except updates.UpdateNotTrusted as e:
+            log.warning("update refused: %s", e)
+            self.update_failed.emit(f"The update was not installed because it could not be verified:\n\n{e}")
         except Exception as e:  # noqa: BLE001
             log.warning("update download failed: %s", e)
             self.update_failed.emit(f"The update could not be downloaded:\n\n{e}")
