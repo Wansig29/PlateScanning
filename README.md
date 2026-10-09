@@ -243,7 +243,7 @@ then upload the `PlateScanner-Setup.exe.sig` it writes to the same release. The 
 
 ## Security notes
 
-- Photos are streamed to disk and dropped past 15 MB, and a response that isn't an image (e.g. an HTML error page) is not saved as one.
+- Photos are streamed to disk and dropped past 5 MB, and a response that isn't an image (e.g. an HTML error page) is not saved as one.
 - A camera stream's user name and password (`rtsp://user:pass@...`, or `?user=...&pwd=...`) are never shown on screen or written to the log.
 - The guard's API token is encrypted with Windows DPAPI (`session.bin`), so it's only readable by the same Windows user on that laptop.
 - An expired token (HTTP 401) prompts for sign-in again. Scanning continues on the local database the whole time.

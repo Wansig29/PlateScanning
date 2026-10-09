@@ -63,7 +63,7 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
 STAFF_ROLES = {"security", "admin", "system_admin"}
 
 # Owner photos and violation evidence: larger than this is not a photo worth keeping offline.
-MAX_PHOTO_BYTES = 15 * 1024 * 1024
+MAX_PHOTO_BYTES = 5 * 1024 * 1024
 # Content types some servers send for stored files when they don't know the image type.
 _UNTYPED = {"application/octet-stream", "binary/octet-stream"}
 

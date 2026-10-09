@@ -315,8 +315,8 @@ def test_photo_is_saved(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("resp", [
-    PhotoResp([b"x" * (1 << 20)] * 16),                                         # 16 MB streamed: too big
-    PhotoResp([b"x"], {"Content-Type": "image/jpeg", "Content-Length": str(50 << 20)}),  # says 50 MB
+    PhotoResp([b"x" * (1 << 20)] * 5 + [b"x"]),                                 # 1 byte over 5 MB, streamed
+    PhotoResp([b"x"], {"Content-Type": "image/jpeg", "Content-Length": str(6 << 20)}),   # says 6 MB
     PhotoResp([b"<html>login</html>"], {"Content-Type": "text/html"}),          # an error page, not a photo
     PhotoResp([]),                                                              # empty
     PhotoResp([b"img"], ok=False),                                              # HTTP error
@@ -325,6 +325,12 @@ def test_photo_is_saved(monkeypatch, tmp_path):
 def test_oversized_or_non_image_download_is_not_kept(monkeypatch, tmp_path, resp):
     ok, dest = _download(monkeypatch, tmp_path, resp)
     assert not ok and not dest.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_photo_of_exactly_5_mb_is_kept(monkeypatch, tmp_path):
+    assert api.MAX_PHOTO_BYTES == 5 << 20
+    ok, dest = _download(monkeypatch, tmp_path, PhotoResp([b"x" * (1 << 20)] * 5))
+    assert ok and dest.stat().st_size == 5 << 20
 
 
 def test_untyped_photo_is_accepted(monkeypatch, tmp_path):
