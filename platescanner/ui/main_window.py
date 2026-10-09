@@ -581,7 +581,7 @@ class MainWindow(QMainWindow):
                     self.update_message.emit(f"PlateScanner is up to date (v{__version__})")
                 return
             self.update_found.emit(rel)
-            if self.cfg.update.mode == "auto" and rel.installer_url and updates.can_self_install():
+            if self.cfg.update.mode == "auto" and rel.installable and updates.can_self_install():
                 self.update_message.emit(f"Downloading update {rel.tag}…")
                 self.update_downloaded.emit(str(updates.download_installer(
                     rel, self.cfg.home / "updates", self._report_progress)))
@@ -613,8 +613,8 @@ class MainWindow(QMainWindow):
         rel = self._release
         if rel is None:
             return
-        if not (rel.installer_url and updates.can_self_install()):
-            QDesktopServices.openUrl(QUrl(rel.page))        # running from source: download by hand
+        if not (rel.installable and updates.can_self_install()):
+            QDesktopServices.openUrl(QUrl(rel.page))        # from source, or no checksum to verify: download by hand
             return
         if self._update_busy:
             QMessageBox.information(self, "Update", f"The update is still downloading ({self._update_pct}%).\n\n"
@@ -668,7 +668,16 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _install_update(self, path: str) -> None:
         try:
-            updates.launch_installer(Path(path))
+            updates.launch_installer(Path(path), self._release.sha256 if self._release else "")
+        except ValueError as e:  # altered on disk since it was verified: deleted, the next click downloads it again
+            log.warning("installer failed its checksum before launch: %s", e)
+            self._installer = None
+            self._update_kind = "available"
+            self._render_update_btn()
+            self.update_btn.setEnabled(True)
+            QMessageBox.critical(self, "Update", f"The update was not installed: {e}.\n\n"
+                                 "Click the update button to download it again.")
+            return
         except OSError as e:  # e.g. antivirus blocked the downloaded installer
             log.warning("could not start the installer: %s", e)
             self.update_btn.setEnabled(True)

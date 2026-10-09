@@ -1,3 +1,5 @@
+import pytest
+
 from platescanner import updates
 
 
@@ -104,5 +106,37 @@ def test_download_reports_progress(monkeypatch, tmp_path):
     resp.headers = {"Content-Length": "40"}
     monkeypatch.setattr(updates.requests, "get", lambda *a, **k: resp)
     seen = []
-    updates.download_installer(updates.Release("v1.2.0", "p", "u"), tmp_path, lambda done, total: seen.append((done, total)))
+    import hashlib
+    rel = updates.Release("v1.2.0", "p", "u", hashlib.sha256(b"".join(chunks)).hexdigest())
+    updates.download_installer(rel, tmp_path, lambda done, total: seen.append((done, total)))
     assert seen == [(10, 40), (20, 40), (40, 40)]
+
+
+def test_an_installer_without_a_published_checksum_is_never_downloaded(monkeypatch, tmp_path):
+    no_digest = dict(REL, assets=[{"name": "PlateScanner-Setup.exe", "browser_download_url": "https://example/setup.exe"}])
+    monkeypatch.setattr(updates.requests, "get", lambda *a, **k: _Resp(no_digest))
+    rel = updates.check_for_update("1.0.0")
+    assert rel.installer_url and not rel.installable           # the app sends the operator to the release page
+    with pytest.raises(ValueError, match="no checksum"):
+        updates.download_installer(rel, tmp_path)
+    assert not list(tmp_path.iterdir())
+    assert not updates.Release("v1", "p", "u", "abc").installable  # not a SHA-256
+
+
+def test_installer_is_checked_again_before_it_runs(monkeypatch, tmp_path):
+    import hashlib
+    started = []
+    monkeypatch.setattr(updates.subprocess, "Popen", lambda args, **k: started.append(args))
+    exe = tmp_path / "PlateScanner-Setup-v1.2.0.exe"
+    exe.write_bytes(b"genuine")
+    digest = hashlib.sha256(b"genuine").hexdigest()
+    updates.launch_installer(exe, digest)
+    assert started and started[0][0] == str(exe)
+
+    exe.write_bytes(b"swapped by something else")               # altered while waiting for the click
+    with pytest.raises(ValueError, match="changed"):
+        updates.launch_installer(exe, digest)
+    assert len(started) == 1 and not exe.exists()
+    exe.write_bytes(b"genuine")
+    with pytest.raises(ValueError):
+        updates.launch_installer(exe, "")                         # nothing to check against: never run

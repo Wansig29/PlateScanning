@@ -3,15 +3,17 @@ from __future__ import annotations
 
 import argparse
 import logging
+import subprocess
 import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PySide6.QtGui import QIcon
-from PySide6.QtWidgets import QApplication, QDialog
+from PySide6.QtCore import QUrl
+from PySide6.QtGui import QDesktopServices, QIcon
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
 from . import db
-from .config import bundle_dir, load_config
+from .config import ConfigError, app_home, bundle_dir, load_config
 from .session import load_session, save_session
 from .ui import appearance, theme
 from .ui.login import LoginDialog
@@ -26,6 +28,24 @@ def _setup_logging(home: Path) -> None:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+def _config_error(err: ConfigError, path: Path) -> None:
+    """A hand-edited config.json the app cannot use: say where and why instead of not opening at all.
+    The file is left as it is, so nothing the person wrote is lost."""
+    app = QApplication.instance() or QApplication(sys.argv)
+    box = QMessageBox(QMessageBox.Icon.Critical, "PSAU Gate Plate Scanner",
+                      "The scanner cannot start: its settings file has a mistake.")
+    box.setInformativeText(f"{err}\n\nFix the file, then start the scanner again.")
+    open_btn = box.addButton("Open settings file", QMessageBox.ButtonRole.ActionRole)
+    box.addButton(QMessageBox.StandardButton.Close)
+    box.exec()
+    if box.clickedButton() is open_btn:
+        if sys.platform == "win32":  # Windows often has no program set for .json files
+            subprocess.Popen(["notepad.exe", str(path)])
+        else:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    app.quit()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="PSAU gate camera plate scanner")
     parser.add_argument("--config", type=Path, help="path to config.json")
@@ -33,7 +53,14 @@ def main() -> None:
     parser.add_argument("--fullscreen", action="store_true")
     args = parser.parse_args()
 
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as e:
+        path = args.config or app_home() / "config.json"
+        logging.basicConfig(level=logging.INFO)
+        logging.getLogger(__name__).error("Unusable config.json: %s", e)
+        _config_error(e, path)
+        sys.exit(1)
     if args.source:
         cfg.camera.source = args.source
     _setup_logging(cfg.home)
