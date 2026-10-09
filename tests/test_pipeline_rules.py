@@ -186,3 +186,29 @@ def test_exact_registered_match_is_not_marked_verify():
         w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
     assert got and got[0].lookup.status == db.RESULT_CLEAR and not got[0].verify
     conn.close()
+
+
+class FlipFlopEngine(FakeEngine):
+    """A parked car whose last digit never reads the same twice in a row: never a clear plate."""
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("ABC123" + "456"[self.reads % 3], 0.9, [0.9] * 7)  # no digit ever wins 60%
+
+
+def test_parked_unreadable_vehicle_does_not_slow_the_scanner_down():
+    from platescanner.pipeline import SLOW_READ_AFTER, SLOW_READ_EVERY
+    from platescanner.vision.tracker import MAX_READS
+    engine = FlipFlopEngine()
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    frames = 600
+    for i in range(frames):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    (track,) = w.tracker.tracks.values()
+    assert not track.emitted_key                       # never clear enough to report
+    assert len(track.reads) <= MAX_READS                # memory and vote time stay bounded
+    assert engine.reads <= SLOW_READ_AFTER + frames // SLOW_READ_EVERY + 1
+    conn.close()

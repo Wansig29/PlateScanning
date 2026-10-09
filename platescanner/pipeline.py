@@ -43,6 +43,11 @@ log = logging.getLogger(__name__)
 
 PREVIEW_MAX_WIDTH = 1280
 
+# A vehicle not reported after this many read attempts (e.g. parked in view, its plate never
+# clear) is then only re-read every SLOW_READ_EVERY frames: the others in view get the time.
+SLOW_READ_AFTER = 30
+SLOW_READ_EVERY = 5
+
 # A plate touching the edge of the picture is not read until it has been followed this
 # many frames: a vehicle that stops there never moves fully in, and still needs reading.
 EDGE_PATIENCE_HITS = 8
@@ -528,6 +533,8 @@ class RecognizerWorker(QThread):
                 continue
             if not track.neural_hits and not track.reads and track.reads_tried >= 3 and track.hits % 10:
                 continue  # a classical guess that never read as a plate: only recheck now and then
+            if not track.emitted_key and track.reads_tried >= SLOW_READ_AFTER and track.hits % SLOW_READ_EVERY:
+                continue  # read many times and still not clear (parked?): only now and then
             if (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2) and track.hits < EDGE_PATIENCE_HITS:
                 continue  # plate cut off by the edge of the picture: wait until it's fully in
             px, py, pw, ph = pad_box(box, 0.06, 0.10, work.shape)
@@ -541,7 +548,7 @@ class RecognizerWorker(QThread):
                 continue
             fixed = plates.best_layout_match(read.text, ocr.plate_layouts)
             if not fixed or read.confidence < ocr.read_confidence:
-                track.unmatched.append(f"{read.text}({read.confidence:.0%})")
+                track.note_unmatched(f"{read.text}({read.confidence:.0%})")
                 continue
             track.add_vote(fixed, read.text, read.confidence, read.char_probs, read.dist)
             score = read.confidence * (1.0 + 0.001 * sharpness(crop))

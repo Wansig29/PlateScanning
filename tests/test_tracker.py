@@ -66,3 +66,13 @@ def test_merge_proposals_adds_only_uncovered_classical_boxes():
     merged = merge_proposals(neural, [(105, 105, 170, 50), (600, 400, 180, 60)])
     assert [m.box for m in merged] == [(100, 100, 180, 60), (600, 400, 180, 60)]
     assert merged[1].neural is False
+
+
+def test_a_long_stay_keeps_a_bounded_number_of_reads():
+    from platescanner.vision import tracker as tr
+    t = tr.Track(1, (0, 0, 10, 5), 0.0, 0.0, layouts=["LLLDDDD"])
+    for i in range(5000):
+        t.add_vote("ABC1234" if i % 2 else "ABC1235", "x", 0.9)
+        t.note_unmatched("??")
+    assert len(t.reads) == tr.MAX_READS and len(t.unmatched) == tr.MAX_UNMATCHED
+    assert t.leader().text in ("ABC1234", "ABC1235")
