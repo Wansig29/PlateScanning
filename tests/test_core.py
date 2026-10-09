@@ -274,15 +274,77 @@ def test_download_sends_token_only_to_own_server(tmp_path, monkeypatch):
     client = api.ApiClient(Config().api, token="secret-token")
     sent = []
 
-    class Resp:
-        ok, content = True, b"img"
-
     def fake_get(url, headers=None, **_kw):
         sent.append((url, dict(headers or {})))
-        return Resp()
+        return PhotoResp([b"img"])
     monkeypatch.setattr(client.session, "get", fake_get)
     base = client.cfg.base_url
     client.download(base + "/photo.jpg", tmp_path / "a.jpg")
     client.download(base + ".evil.com/photo.jpg", tmp_path / "b.jpg")
     assert sent[0][1].get("Authorization") == "Bearer secret-token"
     assert "Authorization" not in sent[1][1]
+
+
+
+class PhotoResp:
+    """A streamed HTTP response for ApiClient.download."""
+
+    def __init__(self, chunks, headers=None, ok=True):
+        self.chunks, self.headers, self.ok = chunks, headers or {"Content-Type": "image/jpeg"}, ok
+
+    def iter_content(self, _n):
+        return iter(self.chunks)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _download(monkeypatch, tmp_path, resp):
+    client = api.ApiClient(Config().api)
+    monkeypatch.setattr(client.session, "get", lambda url, **kw: resp)
+    dest = tmp_path / "photo.jpg"
+    return client.download("https://elsewhere/p.jpg", dest), dest
+
+
+def test_photo_is_saved(monkeypatch, tmp_path):
+    ok, dest = _download(monkeypatch, tmp_path, PhotoResp([b"abc", b"def"]))
+    assert ok and dest.read_bytes() == b"abcdef"
+
+
+@pytest.mark.parametrize("resp", [
+    PhotoResp([b"x" * (1 << 20)] * 16),                                         # 16 MB streamed: too big
+    PhotoResp([b"x"], {"Content-Type": "image/jpeg", "Content-Length": str(50 << 20)}),  # says 50 MB
+    PhotoResp([b"<html>login</html>"], {"Content-Type": "text/html"}),          # an error page, not a photo
+    PhotoResp([]),                                                              # empty
+    PhotoResp([b"img"], ok=False),                                              # HTTP error
+    PhotoResp([b"img"], {"Content-Type": "image/jpeg", "Content-Length": "lots"}),
+])
+def test_oversized_or_non_image_download_is_not_kept(monkeypatch, tmp_path, resp):
+    ok, dest = _download(monkeypatch, tmp_path, resp)
+    assert not ok and not dest.exists() and not list(tmp_path.glob("*.part"))
+
+
+def test_untyped_photo_is_accepted(monkeypatch, tmp_path):
+    ok, _ = _download(monkeypatch, tmp_path, PhotoResp([b"img"], {"Content-Type": "application/octet-stream"}))
+    assert ok
+
+
+def test_duplicate_plate_without_violation_always_shows_the_newest_record(tmp_path):
+    for order in ([("1", "Old owner", "2026-01-01T00:00:00Z"), ("2", "New owner", "2026-09-01T08:00:00+08:00")],
+                  [("2", "New owner", "2026-09-01T08:00:00+08:00"), ("1", "Old owner", "2026-01-01T00:00:00Z")]):
+        c = db.connect(tmp_path / f"d{order[0][0]}.db")
+        db.init_schema(c)
+        db.upsert_vehicles(c, [{"id": i, "plate": "ABC-1234" if i == "1" else "ABC 1234", "owner_name": n,
+                                "updated_at": u} for i, n, u in order])
+        assert db.lookup(c, "ABC1234").vehicle["owner_name"] == "New owner"
+        c.close()
+
+
+def test_duplicate_plate_ties_go_to_the_highest_id(tmp_path):
+    c = db.connect(tmp_path / "t.db")
+    db.init_schema(c)
+    db.upsert_vehicles(c, [{"id": i, "plate": "ABC 1234", "owner_name": f"owner {i}"} for i in (9, 10, 2)])
+    assert db.lookup(c, "ABC1234").vehicle["owner_name"] == "owner 10"     # 10 > 9 as numbers

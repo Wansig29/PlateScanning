@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -355,6 +355,23 @@ def list_violations(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     return [_violation_dict(r) for r in rows]
 
 
+def _newest_first(row: sqlite3.Row) -> tuple:
+    """Sort key: latest updated_at first, then the highest id (numeric ids compared as numbers)."""
+    rid = str(row["id"])
+    return (-_stamp(row["updated_at"]), 0 if rid.isdigit() else 1, -int(rid) if rid.isdigit() else 0, rid)
+
+
+def _stamp(value: str | None) -> float:
+    """updated_at as seconds (0 when missing or unreadable), so "+08:00" and "Z" times compare right."""
+    if not value:
+        return 0.0
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return 0.0
+    return (dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)).timestamp()
+
+
 def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> LookupResult:
     """What the database says about a plate read at the gate.
 
@@ -392,7 +409,9 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
             # owner whose vehicle has the active violation, not an arbitrary one.
             own = [r for r in candidates if _active_violations(conn, "vehicle_id=?", (r["id"],))]
             flagged = own or [r for r in candidates if vehicle_violations(conn, dict(r))]
-            candidates = flagged or candidates
+            # Among equals, always the same one, not whichever SQLite returns first: the most
+            # recently updated record online (the current registration), then the newest id.
+            candidates = sorted(flagged or candidates, key=_newest_first)
         vehicle = dict(candidates[0])
         vehicle["details"] = json.loads(vehicle.pop("details_json") or "{}")
 

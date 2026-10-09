@@ -62,6 +62,11 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
 
 STAFF_ROLES = {"security", "admin", "system_admin"}
 
+# Owner photos and violation evidence: larger than this is not a photo worth keeping offline.
+MAX_PHOTO_BYTES = 15 * 1024 * 1024
+# Content types some servers send for stored files when they don't know the image type.
+_UNTYPED = {"application/octet-stream", "binary/octet-stream"}
+
 
 def _roles(user: dict[str, Any]) -> set[str]:
     """The account's role names, lower-case: from "role" ("security" or {"name": "security"})
@@ -189,19 +194,35 @@ class ApiClient:
     def download(self, url: str, dest: Path) -> bool:
         """Fetch a photo. Only URLs on the psau-security server itself get the guard's
         bearer token; any other host gets none. (requests also drops the token if the
-        server redirects to another host.)"""
+        server redirects to another host.)
+
+        The photo is streamed to disk and given up on past MAX_PHOTO_BYTES, so a huge or
+        endless response can't fill the laptop's memory or disk; a response that isn't an
+        image (e.g. an HTML error page) is not saved as one."""
         headers = {}
         if self.token and same_origin(url, self.cfg.base_url):
             headers = self._auth_headers()
-        try:
-            r = self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
-                                 verify=self.cfg.verify_tls)
-        except requests.RequestException:
-            return False
-        if not r.ok or not r.content:
-            return False
-        dest.parent.mkdir(parents=True, exist_ok=True)
         tmp = dest.with_suffix(dest.suffix + ".part")
-        tmp.write_bytes(r.content)
+        size = 0
+        try:
+            with self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
+                                  verify=self.cfg.verify_tls, stream=True) as r:
+                kind = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+                if not r.ok or (kind and not kind.startswith("image/") and kind not in _UNTYPED):
+                    return False
+                if int(r.headers.get("Content-Length") or 0) > MAX_PHOTO_BYTES:
+                    return False
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(64 * 1024):
+                        size += len(chunk)
+                        if size > MAX_PHOTO_BYTES:
+                            break
+                        f.write(chunk)
+        except (requests.RequestException, ValueError, OSError):
+            size = -1
+        if not 0 < size <= MAX_PHOTO_BYTES:
+            tmp.unlink(missing_ok=True)
+            return False
         tmp.replace(dest)
         return True
