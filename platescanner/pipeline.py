@@ -581,10 +581,12 @@ class RecognizerWorker(QThread):
                                          ocr.plate_layouts, accept=ocr.decode_accept,
                                          max_changes=ocr.decode_max_changes,
                                          min_char_prob=ocr.decode_min_char_prob,
+                                         min_char_ratio=ocr.decode_min_char_ratio,
                                          registered_prior=ocr.registered_prior,
                                          colour_penalty=ocr.decode_colour_penalty)
         self._lexicon.refresh(conn)
-        return self._lexicon.decode(dist, color)
+        # The raw reads (no softening) decide whether the OCR was really torn between two characters.
+        return self._lexicon.decode(dist, color, evidence=track.distribution(1.0))
 
     def _decide(self, conn, track: Track, final: bool) -> None:
         lead = track.leader()
@@ -598,6 +600,12 @@ class RecognizerWorker(QThread):
             color = identify.vehicle_color(track.best_frame, track.best_frame_box)
         dec = self._decode(conn, track, color)
         decoded = dec is not None and dec.accepted
+        if (decoded and ocr.decode_only_violations
+                and plates.normalize(dec.best.plate) != plates.normalize(lead.text)
+                and db.lookup(conn, dec.best.plate, fuzzy=False).status != db.RESULT_VIOLATION):
+            # Decoding may raise an alert, never clear a vehicle: a registered plate without a
+            # violation is left to the agreeing reads (which may still show it as approximate).
+            decoded = False
         # A registered plate that the evidence clearly points to replaces the plain read.
         text = dec.best.plate if decoded else lead.text
         key = plates.plate_key(text)

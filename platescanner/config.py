@@ -166,11 +166,20 @@ class OcrConfig:
     decode_with_database: bool = True
     # A registered plate replaces the plain read when its posterior reaches this...
     decode_accept: float = 0.90
-    # ...and it differs from the plain read in at most this many characters.
-    decode_max_changes: int = 2
+    # ...and it differs from the plain read in at most this many characters...
+    decode_max_changes: int = 1
     # ...and every character it changes was at least this likely to the OCR
-    # (after softening), so a confident read is never overridden.
+    # (after softening)...
     decode_min_char_prob: float = 0.10
+    # ...and at least this many times as likely as the character the OCR read, over
+    # the raw reads (0.5 = at least half as likely: the OCR was torn between the two).
+    # This, not the posterior, is what keeps a visitor's plate from being rewritten
+    # into a nearby registered one (see decode.py).
+    decode_min_char_ratio: float = 0.5
+    # Decoding may only turn a read into a plate with an active violation (the alert
+    # is marked VERIFY PLATE); it never makes a vehicle "registered, no violation".
+    # Registered vehicles without violations are confirmed by agreeing reads instead.
+    decode_only_violations: bool = True
     # >1 softens the OCR's overconfidence. Calibrate on real gate footage.
     decode_temperature: float = 2.0
     # Share of vehicles at the gate expected to be registered.
@@ -268,7 +277,7 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     # Bumped when defaults change in a way an old config.json must pick up (see _migrate).
-    settings_version: int = 2
+    settings_version: int = 3
 
     home: Path = field(default_factory=app_home, repr=False)
     # Problems found in config.json when it was loaded (shown to the operator at start-up; not saved).
@@ -361,16 +370,25 @@ def save_config(cfg: Config, path: Path | None = None) -> None:
 
 
 def _migrate(data: dict[str, Any]) -> None:
-    """v1 -> v2: the first release wrote its defaults into config.json, so tightened defaults would never
-    reach an installed app. Move only values still equal to the old default; a value someone chose stays."""
-    if data.get("settings_version", 1) >= 2:
+    """The app writes its defaults into config.json, so tightened defaults would never reach an
+    installed app. Move only values still equal to the old default; a value someone chose stays.
+    The file is then marked as up to date, so this runs once."""
+    version = data.get("settings_version", 1)
+    if not isinstance(version, int) or version >= 3:
         return
+    data["settings_version"] = 3
     ocr = data.get("ocr")
-    if isinstance(ocr, dict):
-        for key, old, new in (("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5),
-                              ("report_confidence", 0.50, 0.65)):
-            if ocr.get(key) == old:
-                ocr[key] = new
+    if not isinstance(ocr, dict):
+        return
+    changes = []
+    if version < 2:
+        changes += [("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5),
+                    ("report_confidence", 0.50, 0.65)]
+    # v2 -> v3: the database decoder may change one character, not two (see decode.py).
+    changes += [("decode_max_changes", 2, 1)]
+    for key, old, new in changes:
+        if ocr.get(key) == old:
+            ocr[key] = new
 
 
 def _keep_copy(path: Path) -> Path:

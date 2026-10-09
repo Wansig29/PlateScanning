@@ -212,3 +212,44 @@ def test_parked_unreadable_vehicle_does_not_slow_the_scanner_down():
     assert len(track.reads) <= MAX_READS                # memory and vote time stay bounded
     assert engine.reads <= SLOW_READ_AFTER + frames // SLOW_READ_EVERY + 1
     conn.close()
+
+
+def _decoded_to(plate: str):
+    """A decoder that says the evidence points to registered `plate` (one character off the read)."""
+    from platescanner.decode import Candidate, Decoding
+    return lambda conn, track, color: Decoding(best=Candidate(plate, 0.99, 1, 0.4, 0.8), text="ABC1234",
+                                                accepted=True)
+
+
+def _scan_with_decoder(monkeypatch, plate, violation):
+    w = worker(FakeEngine())                      # reads "ABC1234"
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")
+    conn.execute("DELETE FROM violations")
+    db.upsert_vehicles(conn, [{"id": 1, "plate": plate}])
+    if violation:
+        db.upsert_violations(conn, [{"id": 10, "vehicle_id": 1, "plate": plate}])
+    conn.commit()
+    monkeypatch.setattr(w, "_decode", _decoded_to(plate.replace(" ", "")))
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    conn.close()
+    return got[0]
+
+
+def test_decoder_may_turn_a_read_into_a_violator_marked_verify(monkeypatch):
+    scan = _scan_with_decoder(monkeypatch, "ABC 1235", violation=True)
+    assert scan.read.text == "ABC1235" and scan.lookup.status == db.RESULT_VIOLATION
+    assert scan.lookup.approximate and scan.verify
+
+
+def test_decoder_never_clears_a_vehicle_on_its_own(monkeypatch):
+    # Only a clean registered plate is close: the read stays as read, and the one-off
+    # match is shown as an approximate "verify plate", not a decoded green light.
+    scan = _scan_with_decoder(monkeypatch, "ABC 1235", violation=False)
+    assert scan.read.text == "ABC1234"
+    assert scan.lookup.status == db.RESULT_CLEAR and scan.lookup.approximate and scan.verify

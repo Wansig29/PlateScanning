@@ -13,7 +13,7 @@ def test_old_default_thresholds_are_tightened(tmp_path, monkeypatch):
     cfg = _load(tmp_path, monkeypatch, {"ocr": {"detector_confidence": 0.35, "read_confidence": 0.3,
                                                  "report_confidence": 0.5}})
     assert (cfg.ocr.detector_confidence, cfg.ocr.read_confidence, cfg.ocr.report_confidence) == (0.5, 0.5, 0.65)
-    assert cfg.settings_version == 2
+    assert cfg.settings_version == 3
 
 
 def test_values_someone_chose_are_kept(tmp_path, monkeypatch):
@@ -68,3 +68,17 @@ def test_good_file_has_no_warnings_and_warnings_are_not_saved(tmp_path, monkeypa
     cfg = _load(tmp_path, monkeypatch, {"camera": {"source": "rtsp://cam/live"}})
     assert cfg.warnings == [] and not list(tmp_path.glob("*.broken-*"))
     assert "warnings" not in json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+
+
+def test_v2_decoder_setting_is_tightened_once(tmp_path, monkeypatch):
+    cfg = _load(tmp_path, monkeypatch, {"settings_version": 2, "ocr": {"decode_max_changes": 2}})
+    assert cfg.ocr.decode_max_changes == 1 and cfg.settings_version == 3
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    saved["ocr"]["decode_max_changes"] = 2                                     # chosen on purpose afterwards
+    (tmp_path / "config.json").write_text(json.dumps(saved), encoding="utf-8")
+    assert load_config().ocr.decode_max_changes == 2
+
+
+def test_v2_chosen_decoder_value_is_kept(tmp_path, monkeypatch):
+    cfg = _load(tmp_path, monkeypatch, {"settings_version": 2, "ocr": {"decode_max_changes": 3}})
+    assert cfg.ocr.decode_max_changes == 3
