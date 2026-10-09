@@ -15,7 +15,8 @@ a = Analysis(
     ["run.py"],
     datas=datas,
     hiddenimports=collect_submodules("fast_plate_ocr.inference") + collect_submodules("open_image_models.detection"),
-    excludes=["tkinter", "matplotlib", "IPython", "PyQt5", "PyQt6", "torch", "torchvision", "easyocr"],
+    excludes=["tkinter", "matplotlib", "IPython", "PyQt5", "PyQt6", "torch", "torchvision", "easyocr",
+              "tensorflow", "keras", "tensorboard"],  # training-only; the app runs the ONNX models
 )
 pyz = PYZ(a.pure)
 exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="PlateScanner",
