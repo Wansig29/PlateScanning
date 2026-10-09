@@ -251,3 +251,38 @@ def test_embedded_partial_vehicle_does_not_erase_owner(tmp_path):
     assert r.status == "violation"
     assert r.vehicle["owner_name"] == "Juan" and r.vehicle["contact"] == "0917"
     assert r.vehicle["details"] == {"make": "Toyota"}
+
+
+# --- photo downloads: the guard's token only goes to the psau-security server ---------
+
+@pytest.mark.parametrize("url,ok", [
+    ("https://psau-security-production.up.railway.app/api/photo/1", True),
+    ("https://PSAU-security-production.up.railway.app:443/x", True),
+    ("https://psau-security-production.up.railway.app.evil.com/x", False),   # passed the old prefix check
+    ("https://psau-security-production.up.railway.app@evil.com/x", False),   # user-info trick
+    ("http://psau-security-production.up.railway.app/x", False),             # not over HTTPS
+    ("https://psau-security-production.up.railway.app:8443/x", False),
+    ("https://evil.com/?u=https://psau-security-production.up.railway.app", False),
+    ("https://psau-security-production.up.railway.app:bad/x", False),
+    ("not a url", False),
+])
+def test_same_origin(url, ok):
+    assert api.same_origin(url, "https://psau-security-production.up.railway.app") is ok
+
+
+def test_download_sends_token_only_to_own_server(tmp_path, monkeypatch):
+    client = api.ApiClient(Config().api, token="secret-token")
+    sent = []
+
+    class Resp:
+        ok, content = True, b"img"
+
+    def fake_get(url, headers=None, **_kw):
+        sent.append((url, dict(headers or {})))
+        return Resp()
+    monkeypatch.setattr(client.session, "get", fake_get)
+    base = client.cfg.base_url
+    client.download(base + "/photo.jpg", tmp_path / "a.jpg")
+    client.download(base + ".evil.com/photo.jpg", tmp_path / "b.jpg")
+    assert sent[0][1].get("Authorization") == "Bearer secret-token"
+    assert "Authorization" not in sent[1][1]

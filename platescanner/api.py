@@ -4,6 +4,7 @@ from __future__ import annotations
 import platform
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import requests
 
@@ -60,6 +61,29 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
 
 
 STAFF_ROLES = {"security", "admin", "system_admin"}
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _origin(url: str) -> tuple[str, str, int | None] | None:
+    """(scheme, host, port) of a URL, or None if it has no proper host."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port or _DEFAULT_PORTS.get(parts.scheme.lower())
+    except ValueError:  # e.g. a port that isn't a number
+        return None
+    if not parts.hostname:
+        return None
+    return parts.scheme.lower(), parts.hostname.lower(), port
+
+
+def same_origin(url: str, base_url: str) -> bool:
+    """Is `url` on exactly the server at `base_url` (same scheme, host and port)?
+
+    A prefix check is not enough: "https://psau.example.app.evil.com/x" starts
+    with "https://psau.example.app" but is another server."""
+    a = _origin(url)
+    return a is not None and a == _origin(base_url)
 
 
 class ApiClient:
@@ -142,9 +166,11 @@ class ApiClient:
         return items
 
     def download(self, url: str, dest: Path) -> bool:
-        """Fetch a photo. Same-host URLs get the bearer token; others don't."""
+        """Fetch a photo. Only URLs on the psau-security server itself get the guard's
+        bearer token; any other host gets none. (requests also drops the token if the
+        server redirects to another host.)"""
         headers = {}
-        if url.startswith(self.cfg.base_url.rstrip("/")) and self.token:
+        if self.token and same_origin(url, self.cfg.base_url):
             headers = self._auth_headers()
         try:
             r = self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
