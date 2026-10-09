@@ -51,7 +51,7 @@ The scanner is built to work with an ordinary USB webcam, so the camera's own se
 
 ## Configuration
 
-On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. You can point it somewhere else with the `PLATESCANNER_HOME` environment variable. The same folder holds the database, the downloaded photos, the plate captures and the logs.
+On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. You can point it somewhere else with the `PLATESCANNER_HOME` environment variable. The same folder holds the database, the downloaded photos, the plate captures and the logs. If you edit it and make a mistake (a missing comma, a word where a number belongs), the scanner still starts: the setting falls back to its default, a warning says which one, and your file is kept as `config.json.broken-<date-time>`.
 
 | Setting | Meaning |
 |---|---|
@@ -243,5 +243,6 @@ then upload the `PlateScanner-Setup.exe.sig` it writes to the same release. The 
 
 ## Security notes
 
+- A camera stream's user name and password (`rtsp://user:pass@...`, or `?user=...&pwd=...`) are never shown on screen or written to the log.
 - The guard's API token is encrypted with Windows DPAPI (`session.bin`), so it's only readable by the same Windows user on that laptop.
 - An expired token (HTTP 401) prompts for sign-in again. Scanning continues on the local database the whole time.

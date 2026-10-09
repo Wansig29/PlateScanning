@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -270,6 +271,8 @@ class Config:
     settings_version: int = 2
 
     home: Path = field(default_factory=app_home, repr=False)
+    # Problems found in config.json when it was loaded (shown to the operator at start-up; not saved).
+    warnings: list[str] = field(default_factory=list, repr=False)
 
     @property
     def db_path(self) -> Path:
@@ -302,23 +305,53 @@ class Config:
         return bundled if bundled.is_dir() and any(bundled.iterdir()) else None
 
 
-def _merge(cls: type, data: dict[str, Any]):
+_NOT_SAVED = ("home", "warnings")
+
+
+def _fits(value: Any, default: Any) -> bool:
+    """Is `value` the right kind of value for a setting whose default is `default`?"""
+    if default is None:
+        return True                      # optional settings (exposure, roi...): anything goes
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, float):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, type(default))
+
+
+def _merge(cls: type, data: dict[str, Any], problems: list[str], where: str = ""):
+    """Settings from `data` over the defaults of `cls`. A value of the wrong kind (a word where a
+    number belongs, a typo'd section) keeps its default and is reported in `problems`."""
     kwargs = {}
     defaults = cls()
     for f in fields(cls):
-        if f.name == "home" or f.name not in data:
+        if f.name in _NOT_SAVED or f.name not in data:
             continue
         value = data[f.name]
         default = getattr(defaults, f.name)
-        if is_dataclass(default) and isinstance(value, dict):
-            value = _merge(type(default), value)
-        kwargs[f.name] = value
+        name = where + f.name
+        if is_dataclass(default):
+            if isinstance(value, dict):
+                kwargs[f.name] = _merge(type(default), value, problems, name + ".")
+            else:
+                problems.append(f'"{name}" should be a section in {{ }}; its defaults are used')
+            continue
+        if isinstance(default, str) and isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)               # "source": 1 means camera "1"
+        if not _fits(value, default):
+            problems.append(f'"{name}" is {json.dumps(value)}, which is not a valid value; '
+                            f"the default {json.dumps(default)} is used")
+            continue
+        kwargs[f.name] = float(value) if isinstance(default, float) else value
     return cls(**kwargs)
 
 
 def _to_json(cfg: Config) -> dict[str, Any]:
     data = asdict(cfg)
-    data.pop("home", None)
+    for name in _NOT_SAVED:
+        data.pop(name, None)
     return data
 
 
@@ -340,16 +373,40 @@ def _migrate(data: dict[str, Any]) -> None:
                 ocr[key] = new
 
 
+def _keep_copy(path: Path) -> Path:
+    """Save the operator's file as it was before it is rewritten (config.json.broken-YYYYMMDD-HHMMSS)."""
+    backup = path.with_name(f"{path.name}.broken-{datetime.now():%Y%m%d-%H%M%S}")
+    path.replace(backup)
+    return backup
+
+
 def load_config(path: Path | None = None) -> Config:
+    """A hand-edited config.json with a mistake must not stop the gate scanner from starting:
+    whatever can't be used falls back to its default, the original file is kept as
+    config.json.broken-<time>, and cfg.warnings says what happened."""
     home = app_home()
     path = path or home / "config.json"
     data: dict[str, Any] = {}
+    problems: list[str] = []
     if path.exists():
-        # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        try:
+            # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                raise ValueError("it does not hold a { } block of settings")
+        except (OSError, ValueError) as e:  # (json's errors and bad encodings are ValueErrors)
+            problems.append(f"{path.name} could not be read ({e}); all settings are at their defaults")
+            data = {}
     _migrate(data)
-    cfg = _merge(Config, data)
+    cfg = _merge(Config, data, problems)
     cfg.home = home
+    if problems and path.exists():
+        try:
+            problems.append(f"Your file was kept as {_keep_copy(path).name}: fix it there and copy it back, "
+                            f"or edit the new {path.name}.")
+        except OSError:
+            pass
+    cfg.warnings = problems
     # Write back so newly added settings show up in the file with defaults.
     save_config(cfg, path)
     for d in (cfg.captures_dir, cfg.photos_dir):

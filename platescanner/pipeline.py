@@ -270,7 +270,7 @@ class CaptureWorker(QThread):
         while not self._stop.is_set():
             cap, is_file = self._open()
             if cap is None:
-                self.status.emit(f"Camera '{self.cfg.camera.source}' unavailable, retrying…")
+                self.status.emit(f"Camera '{camera.safe_source(self.cfg.camera.source)}' unavailable, retrying…")
                 self._stop.wait(3.0)
                 continue
             self.status.emit("Camera running")
