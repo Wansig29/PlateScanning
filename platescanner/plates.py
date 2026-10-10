@@ -32,6 +32,12 @@ def plate_key(text: str | None) -> str:
     return normalize(text).translate(_FOLD)
 
 
+def is_repeated_pattern(text: str | None) -> bool:
+    """True for a read that is one character over and over once look-alikes are folded,
+    e.g. "II 1111" or "OOO 000". Gate grilles, fences and tiles read like this; real plates don't."""
+    return len(set(plate_key(text))) <= 1
+
+
 def coerce(text: str, layout: str) -> str | None:
     """Force `text` into `layout` (e.g. "LLLDDDD"), fixing confusable characters.
 

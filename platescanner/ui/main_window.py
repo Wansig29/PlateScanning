@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, db, retention, timefmt, updates
+from .. import __version__, db, purge, retention, timefmt, updates
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config, save_config
@@ -420,6 +420,8 @@ class MainWindow(QMainWindow):
             group.addAction(act)
             self._update_mode_actions[mode] = act
         menu.addAction("Check for updates now").triggered.connect(lambda: self._check_updates(True))
+        menu.addSeparator()
+        menu.addAction("Delete scan history…").triggered.connect(self._delete_scan_history)
         self.account_btn.setMenu(menu)
         return self.account_btn
 
@@ -865,6 +867,36 @@ class MainWindow(QMainWindow):
         self.reports_window.show()
         self.reports_window.raise_()
         self.reports_window.activateWindow()
+
+    def _delete_scan_history(self) -> None:
+        """Delete every scan so far (the Logs, Captured Plates and their pictures), e.g. test scans."""
+        if not self._require_sign_in():
+            return
+        roots = [self.cfg.captures_dir, self.cfg.archive_path]
+        plan = purge.plan_delete_all(self.conn, roots)
+        if not plan.scan_ids:
+            QMessageBox.information(self, "Delete scan history", "There are no scans to delete.")
+            return
+        flagged = plan.by_result.get(db.RESULT_VIOLATION, 0)
+        ok = QMessageBox.warning(
+            self, "Delete scan history",
+            f"Delete all {len(plan.scan_ids)} scans and their {len(plan.files)} pictures?\n\n"
+            + (f"{flagged} of them are violations: their evidence is deleted too.\n\n" if flagged else "")
+            + "Registered vehicles and violations from the PSAU system are not affected. This cannot be undone.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel, QMessageBox.StandardButton.Cancel)
+        if ok != QMessageBox.StandardButton.Yes:
+            return
+        scans, pictures = purge.run_delete_before(self.conn, plan, roots)
+        log.info("Scan history deleted by %s: %d scans, %d pictures", self._guard_name(), scans, pictures)
+        self.dash.current, self.dash.viewing = None, False
+        self.dash.waiting.clear()
+        self.identity.clear()
+        self.captured.clear()
+        self.logs.clear()
+        self._update_pending()
+        if self.reports_window is not None:
+            self.reports_window.refresh()
+        self.statusBar().showMessage(f"Deleted {scans} scans and {pictures} pictures", 8000)
 
     # --- account ------------------------------------------------------------
 

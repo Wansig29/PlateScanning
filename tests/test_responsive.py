@@ -65,3 +65,14 @@ def test_bar_gets_denser_as_the_window_narrows(window):
         seen.append(w._density)
     assert seen == sorted(seen) and seen[0] == mw.DENSITY_FULL
     assert seen[-1] >= mw.DENSITY_MEDIUM
+
+
+def test_delete_scan_history_clears_the_log_and_the_screen(window, monkeypatch):
+    window, _app = window
+    db.add_scan(window.conn, ts="2026-10-10T11:34:00", plate_read="ABC1234",
+                result=db.LookupResult(db.RESULT_NOT_REGISTERED), confidence=0.83, crop_path=None)
+    window.logs.add_entry(1, "2026-10-10T11:34:00", "ABC1234", db.RESULT_NOT_REGISTERED, "")
+    monkeypatch.setattr(mw.QMessageBox, "warning", lambda *a, **k: mw.QMessageBox.StandardButton.Yes)
+    window._delete_scan_history()
+    assert window.conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0] == 0
+    assert window.logs.table.rowCount() == 0

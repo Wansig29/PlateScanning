@@ -840,6 +840,13 @@ class IdentityPanel(QFrame):
             if c.is_violation:
                 c.flash(times)
 
+    def clear(self) -> None:
+        """Back to the idle "Waiting for vehicle…" card (the scan history was deleted)."""
+        for c in list(self.cards):
+            self._remove_card(c)
+        self._add_card()
+        self._layout_changed()
+
     def set_collapsed(self, collapsed: bool) -> None:
         self._collapsed = collapsed
         self.scroll.setVisible(not collapsed)
@@ -899,6 +906,8 @@ class FeedFollower(QObject):
     def jump_to_latest(self) -> None:
         self.follow = True
         self.bar.setValue(self.bar.maximum())
+        self.unseen = 0
+        self.button.hide()
 
     def _place(self) -> None:
         b = self.button
@@ -1070,6 +1079,15 @@ class CapturedPlatePanel(QFrame):
         if self._cards:
             self._highlight(self._cards[-1].scan_id)
 
+    def clear(self) -> None:
+        for card in self._cards:
+            self.list.removeWidget(card)
+            card.deleteLater()
+        self._cards.clear()
+        self.empty.show()
+        self.count.setText("")
+        self.follower.jump_to_latest()
+
     def _highlight(self, scan_id: int) -> None:
         for card in self._cards:
             card.set_selected(card.scan_id == scan_id)
@@ -1126,6 +1144,11 @@ class LogsPanel(QFrame):
 
     AWAITING = "⚠ NOT ACKNOWLEDGED"
     show_ack = True  # False when acknowledgement is not required: no "not acknowledged" mark
+
+    def clear(self) -> None:
+        self.table.setRowCount(0)
+        self._update_count()
+        self.follower.jump_to_latest()
 
     def mark_acknowledged(self, scan_id: int, ack: str) -> None:
         for row in range(self.table.rowCount()):
