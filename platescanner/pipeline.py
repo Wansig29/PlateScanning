@@ -547,7 +547,7 @@ class RecognizerWorker(QThread):
             if not read or not read.text:
                 continue
             fixed = plates.best_layout_match(read.text, ocr.plate_layouts)
-            if not fixed or read.confidence < ocr.read_confidence:
+            if not fixed or read.confidence < ocr.read_confidence or plates.is_repeated_pattern(fixed):
                 track.note_unmatched(f"{read.text}({read.confidence:.0%})")
                 continue
             track.add_vote(fixed, read.text, read.confidence, read.char_probs, read.dist)

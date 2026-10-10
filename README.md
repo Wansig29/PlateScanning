@@ -166,6 +166,8 @@ Pictures of clear, unregistered and unreadable scans are no longer saved (`scan.
 
 Only pictures go. The log rows stay, so the Logs, Reports and CSV exports are unchanged, and violation pictures are never touched. It searches `captures\` and the archive folder.
 
+To clear **every** scan from inside the app (also in the installed version, where `tools\` is not included): account menu (top right) → **Delete scan history…**. A signed-in guard confirms it; the Logs, Captured Plates and the Identity Dashboard are emptied, with all pictures, violations included.
+
 To clear test scans entirely, the log rows and all pictures (violations too) dated before a day:
 
 ```powershell

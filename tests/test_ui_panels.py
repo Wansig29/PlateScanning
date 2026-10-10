@@ -76,3 +76,18 @@ def test_violator_arrows_show_only_with_several_violators_and_jump_between_cards
     assert bar.value() == p.cards[1].y()
     p._jump(-1)
     assert bar.value() == 0
+
+
+def test_deleting_the_scan_history_empties_the_panels(app):
+    from platescanner.ui.widgets import CapturedPlatePanel, IdentityPanel
+    logs, captured, identity = LogsPanel(), CapturedPlatePanel(), IdentityPanel()
+    logs.add_entry(1, "2026-01-01T10:00:01", "NBC1234", db.RESULT_VIOLATION, "Illegal parking")
+    captured.add_capture(1, "2026-01-01T10:00:01", None, "NBC1234", 0.9, db.RESULT_VIOLATION)
+    identity.show_result("NBC1234", _result(db.RESULT_VIOLATION, "x"), seen=VehicleView(track_id=1))
+    identity.show_result("ABC1234", _result(db.RESULT_VIOLATION, "y"), seen=VehicleView(track_id=2))
+    logs.clear()
+    captured.clear()
+    identity.clear()
+    assert logs.table.rowCount() == 0 and "flagged" not in logs.count_label.text()
+    assert captured._cards == [] and not captured.empty.isHidden()
+    assert len(identity.cards) == 1 and identity.cards[0].track_id is None

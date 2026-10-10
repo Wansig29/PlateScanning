@@ -117,6 +117,12 @@ def plan_delete_day(conn: sqlite3.Connection, roots: list[Path], day: str) -> De
                        "ts >= ? AND ts < ?", (start.isoformat(), (start + timedelta(days=1)).isoformat()))
 
 
+def plan_delete_all(conn: sqlite3.Connection, roots: list[Path]) -> DeletePlan:
+    """Every scan in the log (every result, violations too), and their pictures."""
+    from datetime import date, timedelta
+    return _plan_scans(conn, roots, DeletePlan((date.today() + timedelta(days=1)).isoformat()), "1=1", ())
+
+
 def _plan_scans(conn: sqlite3.Connection, roots: list[Path], plan: DeletePlan, where: str,
                 params: tuple) -> DeletePlan:
     seen: set[Path] = set()
