@@ -337,3 +337,14 @@ def test_school_year_history_follows_the_active_violation_but_never_alerts_alone
     assert [v["id"] for v in r.history] == ["11"]           # this school year only, not last year's
     r = db.lookup(conn, "ABC1234")
     assert r.status == db.RESULT_CLEAR and r.history == []  # history alone never alerts
+
+
+def test_ended_sanction_not_yet_synced_is_clear_with_a_notice(tmp_path):
+    yesterday, tomorrow = (date.today() - timedelta(days=1)).isoformat(), (date.today() + timedelta(days=1)).isoformat()
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "ABC 1234", "Maria")],
+                     [violation(10, 1, "NBC 1234", suspension_end=yesterday),
+                      violation(11, 2, "ABC 1234", suspension_end=tomorrow)])
+    r = db.lookup(conn, "NBC1234")
+    assert r.status == db.RESULT_CLEAR and [v["id"] for v in r.lapsed] == ["10"]
+    r = db.lookup(conn, "ABC1234")
+    assert r.status == db.RESULT_VIOLATION and r.lapsed == []

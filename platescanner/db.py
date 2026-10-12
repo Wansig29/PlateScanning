@@ -290,6 +290,9 @@ class LookupResult:
     # Settled or ended violations of this vehicle in the current school year: shown after the
     # ones in force so the guard sees the history, but they never raise the alert on their own.
     history: list[dict[str, Any]] = field(default_factory=list)
+    # Violations the server still has as active whose sanction end date has passed since the last
+    # sync: the vehicle is clear (the sanction is over), but the record may be out of date.
+    lapsed: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -347,6 +350,15 @@ def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> lis
     those recorded against the vehicle, or against its exact plate (a violation logged
     without a vehicle record). Never those of a different plate that only looks alike."""
     return _active_violations(conn, "vehicle_id=? OR plate=?", (str(vehicle["id"]), vehicle["plate"]))
+
+
+def lapsed_sanctions(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Active-on-the-server violations of this vehicle whose sanction ended, newest end first."""
+    rows = conn.execute(
+        "SELECT * FROM violations WHERE is_active=1 AND (vehicle_id=? OR plate=?) "
+        "AND date(substr(suspension_end, 1, 10)) < date('now', 'localtime') "
+        "ORDER BY suspension_end DESC", (str(vehicle["id"]), vehicle["plate"])).fetchall()
+    return [_violation_dict(r) for r in rows]
 
 
 def school_year_history(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
@@ -468,7 +480,8 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
     # "Approximate" means the plate shown is not the plate read.
     approximate = approximate and matched is not None and plates.normalize(matched) != norm
     history = school_year_history(conn, vehicle) if vehicle and violations else []
-    return LookupResult(status, vehicle, violations, matched, approximate, history)
+    lapsed = lapsed_sanctions(conn, vehicle) if vehicle and not violations else []
+    return LookupResult(status, vehicle, violations, matched, approximate, history, lapsed)
 
 
 # --- scan log ----------------------------------------------------------------

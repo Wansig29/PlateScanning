@@ -612,6 +612,7 @@ class IdentityCard(QFrame):
         self.fields["contact"].setText(v.get("contact") or "—")
         self.approx.setVisible(result.approximate)
 
+        self._lapsed = result.lapsed
         self._in_force = len(result.violations)
         self._violations = result.violations + result.history  # in force first, then this school year's history
         self._resume.stop()
@@ -630,7 +631,10 @@ class IdentityCard(QFrame):
         if not vs:
             self.fields["type"].setText("None")
             self.fields["type"].setStyleSheet(f"color: {theme.GREEN};")
-            self.fields["suspension"].setText("—")
+            lapsed = getattr(self, "_lapsed", [])
+            self.fields["suspension"].setText(
+                f"Sanction ended {fmt_date(lapsed[0].get('suspension_end'))}, not yet synced: "
+                "the record may be out of date" if lapsed else "—")
             self._evidence = []
             self.evidence_btn.hide()
             self.pager.hide()
