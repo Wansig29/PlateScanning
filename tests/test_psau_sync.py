@@ -236,10 +236,13 @@ def test_sync_download_with_a_non_json_reply_is_an_api_error(monkeypatch):
         c.fetch_all("/api/vehicles")
 
 
-def test_revoked_flag_clears_on_delta_when_the_record_no_longer_mentions_it(tmp_path):
+def test_revoked_owner_stays_flagged_when_a_delta_record_does_not_mention_it(tmp_path):
+    # Fail safe: only the server explicitly saying False lifts a permanent revocation.
     cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True)], [])
-    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
     sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", updated_at="2026-10-01T10:00:00+08:00")], []), conn)
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+    sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False,
+                                           updated_at="2026-10-02T10:00:00+08:00")], []), conn)
     assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
 
 
