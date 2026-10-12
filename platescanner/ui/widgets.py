@@ -629,10 +629,12 @@ class IdentityCard(QFrame):
         if not vs:
             self.fields["type"].setText("None")
             self.fields["type"].setStyleSheet(f"color: {theme.GREEN};")
+            self.fields["suspension"].setToolTip(
+                "The sanction's end date has passed since the last sync, so the record may be out of date."
+                if getattr(self, "_lapsed", []) else "")
             lapsed = getattr(self, "_lapsed", [])
             self.fields["suspension"].setText(
-                f"Sanction ended {fmt_date(lapsed[0].get('suspension_end'))}, not yet synced: "
-                "the record may be out of date" if lapsed else "—")
+                f"Ended {fmt_date(lapsed[0].get('suspension_end'))} · not synced yet" if lapsed else "—")
             self._evidence = []
             self.evidence_btn.hide()
             self.pager.hide()
@@ -640,7 +642,8 @@ class IdentityCard(QFrame):
         self._vi = index % len(vs)
         v = vs[self._vi]
         past = self._vi >= getattr(self, "_in_force", len(vs))  # history: no longer in force
-        self.fields["type"].setText((v.get("violation_type") or "Unspecified") + (" (settled)" if past else ""))
+        self.fields["type"].setText((v.get("violation_type") or "Unspecified") + (
+            (" (ended)" if v.get("is_active") else " (settled)") if past else ""))
         self.fields["type"].setStyleSheet(f"color: {theme.MUTED if past else theme.RED};")
         self.fields["suspension"].setText(suspension_text(v))
         self._evidence = [pm for pm in (load_pixmap(p) for p in v.get("evidence_paths", []) if p) if pm]
