@@ -199,7 +199,7 @@ QToolButton:pressed, QFrame#Panel QToolButton:pressed, QFrame#TopBar QToolButton
 QFrame#TopBar QToolButton {{ background: {TB_BTN}; border: 1px solid {TB_BTN_BORDER}; border-radius: 6px; padding: 4px 10px; color: {TB_TEXT}; }}
 QFrame#TopBar QToolButton:hover {{ background: {TB_BTN_HOVER}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
-QMenu {{
+QMenu, QFrame#Panel QMenu, QFrame#TopBar QMenu {{
     background: {PANEL_ALT};
     border: 1px solid {BORDER_STRONG};
     border-radius: 8px;

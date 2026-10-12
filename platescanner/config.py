@@ -10,6 +10,7 @@ import json
 import os
 import sys
 from dataclasses import asdict, dataclass, field, fields, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -38,6 +39,7 @@ class ApiConfig:
     # security/admin account there; no separate scanner accounts.
     base_url: str = "https://psau-security-production.up.railway.app"
     login_path: str = "/api/login"
+    logout_path: str = "/api/logout"
     vehicles_path: str = "/api/security/gate/vehicles"
     violations_path: str = "/api/security/gate/violations"
     school_years_path: str = "/api/security/gate/school-years"
@@ -46,6 +48,9 @@ class ApiConfig:
     page_size: int = 200
     timeout_seconds: float = 20.0
     verify_tls: bool = True
+    # "Continue offline" accepts a guard's email and password only if they signed in
+    # online on this laptop within this many days (see offline_auth.py).
+    offline_login_days: float = 14.0
 
 
 @dataclass
@@ -162,11 +167,20 @@ class OcrConfig:
     decode_with_database: bool = True
     # A registered plate replaces the plain read when its posterior reaches this...
     decode_accept: float = 0.90
-    # ...and it differs from the plain read in at most this many characters.
-    decode_max_changes: int = 2
+    # ...and it differs from the plain read in at most this many characters...
+    decode_max_changes: int = 1
     # ...and every character it changes was at least this likely to the OCR
-    # (after softening), so a confident read is never overridden.
+    # (after softening)...
     decode_min_char_prob: float = 0.10
+    # ...and at least this many times as likely as the character the OCR read, over
+    # the raw reads (0.5 = at least half as likely: the OCR was torn between the two).
+    # This, not the posterior, is what keeps a visitor's plate from being rewritten
+    # into a nearby registered one (see decode.py).
+    decode_min_char_ratio: float = 0.5
+    # Decoding may only turn a read into a plate with an active violation (the alert
+    # is marked VERIFY PLATE); it never makes a vehicle "registered, no violation".
+    # Registered vehicles without violations are confirmed by agreeing reads instead.
+    decode_only_violations: bool = True
     # >1 softens the OCR's overconfidence. Calibrate on real gate footage.
     decode_temperature: float = 2.0
     # Share of vehicles at the gate expected to be registered.
@@ -236,8 +250,9 @@ class ScanConfig:
 @dataclass
 class SyncConfig:
     interval_hours: float = 3.0
-    # Periodically do a full re-download so records deleted online disappear
-    # locally too (deltas alone can't express deletions).
+    # Periodically do a full re-download of the vehicles too, so a vehicle deleted online
+    # without a "removed" record disappears locally. (Violations are re-downloaded in full
+    # on every sync, so a deleted violation stops alerting at the next sync.)
     full_resync_hours: float = 24.0
     # The local copy is flagged as stale (red warning) when the last good sync is older than this.
     stale_after_hours: float = 8.0
@@ -271,9 +286,11 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     # Bumped when defaults change in a way an old config.json must pick up (see _migrate).
-    settings_version: int = 2
+    settings_version: int = 3
 
     home: Path = field(default_factory=app_home, repr=False)
+    # Problems found in config.json when it was loaded (shown to the operator at start-up; not saved).
+    warnings: list[str] = field(default_factory=list, repr=False)
 
     @property
     def db_path(self) -> Path:
@@ -295,6 +312,10 @@ class Config:
     def session_path(self) -> Path:
         return self.home / "session.bin"
 
+    @property
+    def offline_guards_path(self) -> Path:
+        return self.home / "offline_guards.bin"
+
     def resolved_model_dir(self) -> Path | None:
         if self.ocr.model_dir:
             return Path(self.ocr.model_dir)
@@ -302,23 +323,53 @@ class Config:
         return bundled if bundled.is_dir() and any(bundled.iterdir()) else None
 
 
-def _merge(cls: type, data: dict[str, Any]):
+_NOT_SAVED = ("home", "warnings")
+
+
+def _fits(value: Any, default: Any) -> bool:
+    """Is `value` the right kind of value for a setting whose default is `default`?"""
+    if default is None:
+        return True                      # optional settings (exposure, roi...): anything goes
+    if isinstance(default, bool):
+        return isinstance(value, bool)
+    if isinstance(default, float):
+        return isinstance(value, (int, float)) and not isinstance(value, bool)
+    if isinstance(default, int):
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, type(default))
+
+
+def _merge(cls: type, data: dict[str, Any], problems: list[str], where: str = ""):
+    """Settings from `data` over the defaults of `cls`. A value of the wrong kind (a word where a
+    number belongs, a typo'd section) keeps its default and is reported in `problems`."""
     kwargs = {}
     defaults = cls()
     for f in fields(cls):
-        if f.name == "home" or f.name not in data:
+        if f.name in _NOT_SAVED or f.name not in data:
             continue
         value = data[f.name]
         default = getattr(defaults, f.name)
-        if is_dataclass(default) and isinstance(value, dict):
-            value = _merge(type(default), value)
-        kwargs[f.name] = value
+        name = where + f.name
+        if is_dataclass(default):
+            if isinstance(value, dict):
+                kwargs[f.name] = _merge(type(default), value, problems, name + ".")
+            else:
+                problems.append(f'"{name}" should be a section in {{ }}; its defaults are used')
+            continue
+        if isinstance(default, str) and isinstance(value, int) and not isinstance(value, bool):
+            value = str(value)               # "source": 1 means camera "1"
+        if not _fits(value, default):
+            problems.append(f'"{name}" is {json.dumps(value)}, which is not a valid value; '
+                            f"the default {json.dumps(default)} is used")
+            continue
+        kwargs[f.name] = float(value) if isinstance(default, float) else value
     return cls(**kwargs)
 
 
 def _to_json(cfg: Config) -> dict[str, Any]:
     data = asdict(cfg)
-    data.pop("home", None)
+    for name in _NOT_SAVED:
+        data.pop(name, None)
     return data
 
 
@@ -328,28 +379,61 @@ def save_config(cfg: Config, path: Path | None = None) -> None:
 
 
 def _migrate(data: dict[str, Any]) -> None:
-    """v1 -> v2: the first release wrote its defaults into config.json, so tightened defaults would never
-    reach an installed app. Move only values still equal to the old default; a value someone chose stays."""
-    if data.get("settings_version", 1) >= 2:
+    """The app writes its defaults into config.json, so tightened defaults would never reach an
+    installed app. Move only values still equal to the old default; a value someone chose stays.
+    The file is then marked as up to date, so this runs once."""
+    version = data.get("settings_version", 1)
+    if not isinstance(version, int) or version >= 3:
         return
+    data["settings_version"] = 3
     ocr = data.get("ocr")
-    if isinstance(ocr, dict):
-        for key, old, new in (("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5),
-                              ("report_confidence", 0.50, 0.65)):
-            if ocr.get(key) == old:
-                ocr[key] = new
+    if not isinstance(ocr, dict):
+        return
+    changes = []
+    if version < 2:
+        changes += [("detector_confidence", 0.35, 0.5), ("read_confidence", 0.30, 0.5),
+                    ("report_confidence", 0.50, 0.65)]
+    # v2 -> v3: the database decoder may change one character, not two (see decode.py).
+    changes += [("decode_max_changes", 2, 1)]
+    for key, old, new in changes:
+        if ocr.get(key) == old:
+            ocr[key] = new
+
+
+def _keep_copy(path: Path) -> Path:
+    """Save the operator's file as it was before it is rewritten (config.json.broken-YYYYMMDD-HHMMSS)."""
+    backup = path.with_name(f"{path.name}.broken-{datetime.now():%Y%m%d-%H%M%S}")
+    path.replace(backup)
+    return backup
 
 
 def load_config(path: Path | None = None) -> Config:
+    """A hand-edited config.json with a mistake must not stop the gate scanner from starting:
+    whatever can't be used falls back to its default, the original file is kept as
+    config.json.broken-<time>, and cfg.warnings says what happened."""
     home = app_home()
     path = path or home / "config.json"
     data: dict[str, Any] = {}
+    problems: list[str] = []
     if path.exists():
-        # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
-        data = json.loads(path.read_text(encoding="utf-8-sig"))
+        try:
+            # utf-8-sig: Notepad and PowerShell 5.1 may save the hand-edited file with a BOM.
+            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(data, dict):
+                raise ValueError("it does not hold a { } block of settings")
+        except (OSError, ValueError) as e:  # (json's errors and bad encodings are ValueErrors)
+            problems.append(f"{path.name} could not be read ({e}); all settings are at their defaults")
+            data = {}
     _migrate(data)
-    cfg = _merge(Config, data)
+    cfg = _merge(Config, data, problems)
     cfg.home = home
+    if problems and path.exists():
+        try:
+            problems.append(f"Your file was kept as {_keep_copy(path).name}: fix it there and copy it back, "
+                            f"or edit the new {path.name}.")
+        except OSError:
+            pass
+    cfg.warnings = problems
     # Write back so newly added settings show up in the file with defaults.
     save_config(cfg, path)
     for d in (cfg.captures_dir, cfg.photos_dir):

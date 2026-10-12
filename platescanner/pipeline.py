@@ -14,7 +14,9 @@ Any number of vehicles can be in view at once.
 """
 from __future__ import annotations
 
+import itertools
 import logging
+import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -40,6 +42,11 @@ from .vision.tracker import PlateTracker, Track
 log = logging.getLogger(__name__)
 
 PREVIEW_MAX_WIDTH = 1280
+
+# A vehicle not reported after this many read attempts (e.g. parked in view, its plate never
+# clear) is then only re-read every SLOW_READ_EVERY frames: the others in view get the time.
+SLOW_READ_AFTER = 30
+SLOW_READ_EVERY = 5
 
 # A plate touching the edge of the picture is not read until it has been followed this
 # many frames: a vehicle that stops there never moves fully in, and still needs reading.
@@ -77,7 +84,7 @@ class ScanResult:
     position: str | None = None
     others_in_view: int = 0
     source: str | None = None  # e.g. "video gate.mp4 at 0:23"; None for the live camera
-    verify: bool = False       # a violation resting on a doubtful read: the guard should check the plate
+    verify: bool = False       # a doubtful violation, or a look-alike "registered" match: the guard should check the plate
 
 
 @dataclass
@@ -100,13 +107,14 @@ def needs_manual_check(status: str, reads: int, avg_confidence: float, approxima
     """Violations and unregistered plates both ask the guard to check a doubtful read.
 
     An unregistered result is where a misread violator hides (the wrong characters match no
-    record), so a low-confidence "not registered" is flagged too. Clear results are not.
+    record), so a low-confidence "not registered" is flagged too. A "no violation" is flagged only
+    when it rests on a look-alike plate: it may be an unregistered car with a similar plate.
     """
     if status == db.RESULT_VIOLATION:
         return needs_verification(reads, avg_confidence, approximate, ocr)
     if status == db.RESULT_NOT_REGISTERED:
         return avg_confidence < ocr.verify_below_confidence
-    return False
+    return status == db.RESULT_CLEAR and approximate
 
 
 def video_clock(seconds: float) -> str:
@@ -276,12 +284,13 @@ class CaptureWorker(QThread):
         while not self._stop.is_set():
             cap, is_file = self._open()
             if cap is None:
-                self.status.emit(f"Camera '{self.cfg.camera.source}' unavailable, retrying…")
+                self.status.emit(f"Camera '{camera.safe_source(self.cfg.camera.source)}' unavailable, retrying…")
                 self._stop.wait(3.0)
                 continue
             self.status.emit("Camera running")
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             started, index = time.monotonic(), 0
+            got_frame = False  # a video that never yields a frame must not be rewound in a tight loop
 
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -293,6 +302,10 @@ class CaptureWorker(QThread):
                 ok, frame = cap.read()
                 index += 1
                 if not ok or frame is None:
+                    if is_file and not got_frame:
+                        self.status.emit("Video has no readable frames, retrying…")
+                        self._stop.wait(3.0)
+                        break
                     if is_file:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop test videos
                         started, index = time.monotonic(), 0
@@ -300,6 +313,7 @@ class CaptureWorker(QThread):
                     self.status.emit("Camera signal lost, reconnecting…")
                     break
 
+                got_frame = True
                 roi = self._roi(frame)
                 rx, ry, rw, rh = roi
                 moving, _ = detector.apply(frame[ry:ry + rh, rx:rx + rw])
@@ -326,6 +340,7 @@ class RecognizerWorker(QThread):
     status = Signal(str)
     ready = Signal(str)
     failed = Signal(str)
+    stopped = Signal(str)  # plate reading ended after an unexpected error (the models had loaded)
     scanned = Signal(object)  # ScanResult
     unreadable = Signal(object)  # NoPlateEvent
     in_view = Signal(object)  # set of the track ids currently in the picture
@@ -350,6 +365,9 @@ class RecognizerWorker(QThread):
         self._lexicon: PlateLexicon | None = None
         self._health = HealthMonitor(HealthConfig(min_plate_px=cfg.ocr.min_plate_width_px))
         self._next_health_check = 0.0
+        # Ids for alerts whose scan could not be written to the database (-1, -2, ...):
+        # the guard is still alerted, the row just isn't in the log.
+        self._unsaved_ids = itertools.count(-1, -1)
 
     def _source(self, track: Track) -> str | None:
         # In a video, frame timestamps are the time into the video.
@@ -401,14 +419,20 @@ class RecognizerWorker(QThread):
         path = captures.picture_path(self.cfg, ts, plate, kind, status)
         if path is None:
             return None
-        path.parent.mkdir(parents=True, exist_ok=True)
-        if max_width and img.shape[1] > max_width:
-            f = max_width / img.shape[1]
-            img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
-        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
-        if not ok:
+        # A picture that can't be saved (disk full, folder not writable...) must never
+        # cost the alert or the log row: the scan simply has no picture.
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if max_width and img.shape[1] > max_width:
+                f = max_width / img.shape[1]
+                img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
+            ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
+            if not ok:
+                return None
+            path.write_bytes(buf.tobytes())  # (cv2.imwrite can't handle non-ASCII paths on Windows)
+        except (OSError, cv2.error) as e:
+            log.warning("Could not save picture %s: %s", path, e)
             return None
-        path.write_bytes(buf.tobytes())  # (cv2.imwrite can't handle non-ASCII paths on Windows)
         return str(path)
 
     # --- main loop --------------------------------------------------------------
@@ -446,7 +470,10 @@ class RecognizerWorker(QThread):
         try:
             while not self._stop.is_set():
                 f = self.slot.get_newer(seq, 0.3)
-                self._check_health(time.monotonic())
+                try:
+                    self._check_health(time.monotonic())
+                except Exception:  # noqa: BLE001 - a health check must never stop plate reading
+                    log.exception("Health check failed")
                 if f is None:
                     drain()
                     self._expire(conn, time.monotonic())
@@ -469,6 +496,11 @@ class RecognizerWorker(QThread):
             drain()
             for t in self.tracker.flush():
                 self._finish(conn, t)
+        except Exception as e:  # noqa: BLE001
+            # Should not happen (per-frame and per-vehicle errors are caught below), but if
+            # it does, the guard must know plates are no longer read: the live feed keeps playing.
+            log.exception("Plate recognition stopped")
+            self.stopped.emit(f"Plate reading stopped after an error: {e}")
         finally:
             self._detector.shutdown(wait=True)
             self._pool.shutdown(wait=True)
@@ -529,6 +561,8 @@ class RecognizerWorker(QThread):
                 continue
             if not track.neural_hits and not track.reads and track.reads_tried >= 3 and track.hits % 10:
                 continue  # a classical guess that never read as a plate: only recheck now and then
+            if not track.emitted_key and track.reads_tried >= SLOW_READ_AFTER and track.hits % SLOW_READ_EVERY:
+                continue  # read many times and still not clear (parked?): only now and then
             if (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2) and track.hits < EDGE_PATIENCE_HITS:
                 continue  # plate cut off by the edge of the picture: wait until it's fully in
             px, py, pw, ph = pad_box(box, 0.06, 0.10, work.shape)
@@ -542,7 +576,7 @@ class RecognizerWorker(QThread):
                 continue
             fixed = plates.best_layout_match(read.text, ocr.plate_layouts)
             if not fixed or read.confidence < ocr.read_confidence:
-                track.unmatched.append(f"{read.text}({read.confidence:.0%})")
+                track.note_unmatched(f"{read.text}({read.confidence:.0%})")
                 continue
             track.add_vote(fixed, read.text, read.confidence, read.char_probs, read.dist)
             score = read.confidence * (1.0 + 0.001 * sharpness(crop))
@@ -575,10 +609,12 @@ class RecognizerWorker(QThread):
                                          ocr.plate_layouts, accept=ocr.decode_accept,
                                          max_changes=ocr.decode_max_changes,
                                          min_char_prob=ocr.decode_min_char_prob,
+                                         min_char_ratio=ocr.decode_min_char_ratio,
                                          registered_prior=ocr.registered_prior,
                                          colour_penalty=ocr.decode_colour_penalty)
         self._lexicon.refresh(conn)
-        return self._lexicon.decode(dist, color)
+        # The raw reads (no softening) decide whether the OCR was really torn between two characters.
+        return self._lexicon.decode(dist, color, evidence=track.distribution(1.0))
 
     def _decide(self, conn, track: Track, final: bool) -> None:
         lead = track.leader()
@@ -592,6 +628,12 @@ class RecognizerWorker(QThread):
             color = identify.vehicle_color(track.best_frame, track.best_frame_box)
         dec = self._decode(conn, track, color)
         decoded = dec is not None and dec.accepted
+        if (decoded and ocr.decode_only_violations
+                and plates.normalize(dec.best.plate) != plates.normalize(lead.text)
+                and db.lookup(conn, dec.best.plate, fuzzy=False).status != db.RESULT_VIOLATION):
+            # Decoding may raise an alert, never clear a vehicle: a registered plate without a
+            # violation is left to the agreeing reads (which may still show it as approximate).
+            decoded = False
         # A registered plate that the evidence clearly points to replaces the plain read.
         text = dec.best.plate if decoded else lead.text
         key = plates.plate_key(text)
@@ -626,25 +668,37 @@ class RecognizerWorker(QThread):
             return
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
-        crop_path = self._save_jpeg(crop, ts, text, captures.CROP, result.status) if self.cfg.scan.save_captures else None
         plate_box = track.best_frame_box or (0, 0, 1, 1)
-        vehicle = color = pos = vehicle_path = snap = None
-        if track.best_frame is not None:
-            frame = track.best_frame
-            vehicle = identify.crop(frame, identify.vehicle_box(plate_box, frame.shape))
-            color = identify.vehicle_color(frame, plate_box)
-            pos = identify.position(plate_box, frame.shape)
+        crop_path = vehicle = color = pos = vehicle_path = snap = None
+        # The pictures are extras: whatever goes wrong with them, the scan is still
+        # logged and the guard still alerted below.
+        try:
             if self.cfg.scan.save_captures:
-                vehicle_path = self._save_jpeg(vehicle, ts, text, captures.VEHICLE, result.status, 640, 88)
-            snap = self._save_locator(track, ts, text, result.status, f"#{track.track_id} {plates.display(text)}",
-                                      RESULT_BGR.get(result.status, READING_BGR))
+                crop_path = self._save_jpeg(crop, ts, text, captures.CROP, result.status)
+            if track.best_frame is not None:
+                frame = track.best_frame
+                vehicle = identify.crop(frame, identify.vehicle_box(plate_box, frame.shape))
+                color = identify.vehicle_color(frame, plate_box)
+                pos = identify.position(plate_box, frame.shape)
+                if self.cfg.scan.save_captures:
+                    vehicle_path = self._save_jpeg(vehicle, ts, text, captures.VEHICLE, result.status, 640, 88)
+                snap = self._save_locator(track, ts, text, result.status, f"#{track.track_id} {plates.display(text)}",
+                                          RESULT_BGR.get(result.status, READING_BGR))
+        except Exception:  # noqa: BLE001
+            log.exception("Track #%d: could not prepare its pictures; logging the scan without them", track.track_id)
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
         verify = needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
-        scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
-                              result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
-                              vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
-                              position=pos, source=source, verify=verify)
+        try:
+            scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
+                                  result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
+                                  vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
+                                  position=pos, source=source, verify=verify)
+        except sqlite3.Error:
+            # e.g. the database stayed locked: alert anyway, the scan just isn't in the log.
+            log.exception("Track #%d: %s (%s) could not be written to the scan log", track.track_id, text,
+                          result.status)
+            scan_id = next(self._unsaved_ids)
         log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)%s%s", track.track_id, text, result.status,
                  lead.reads, avg * 100, f" in {source}" if source else "",
                  f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
@@ -661,7 +715,13 @@ class RecognizerWorker(QThread):
         return self._save_jpeg(img, ts, name, captures.SCENE, status, self.cfg.scan.snapshot_max_width, 85)
 
     def _finish(self, conn, track: Track) -> None:
-        """The vehicle left the picture."""
+        """The vehicle left the picture. An error with one vehicle must never stop the scanner."""
+        try:
+            self._finish_track(conn, track)
+        except Exception:  # noqa: BLE001
+            log.exception("Track #%d: finishing failed", track.track_id)
+
+    def _finish_track(self, conn, track: Track) -> None:
         if not track.emitted_key:
             self._decide(conn, track, final=True)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?

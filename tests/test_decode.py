@@ -1,5 +1,6 @@
 """Database-aware decoding: the OCR's full character probabilities scored against registered plates."""
 import numpy as np
+import pytest
 
 from platescanner import decode
 from platescanner.vision.tracker import Track
@@ -118,3 +119,37 @@ def test_track_combines_reads_and_temperature_softens():
     assert decode.evidence_weight(8) <= 3.0 and decode.evidence_weight(1) == 1.0
     soft = t.distribution(3.0)
     assert soft[0, ALPHABET.index("N")] < d[0, ALPHABET.index("N")]
+
+
+# --- a visitor's plate is never rewritten into a nearby registered one ---------------
+
+def _three_reads(text, unsure):
+    t = Track(1, (0, 0, 1, 1), 0, 0)
+    for _ in range(3):
+        t.add_vote(text, text, 0.9, None, dist_for(text, unsure=unsure))
+    return t
+
+
+MANY = {f"Q{chr(65 + i % 26)}{chr(65 + (i // 26) % 26)}{1000 + i}": None for i in range(800)} | {"NBC1234": None}
+
+
+@pytest.mark.parametrize("p_read,p_registered,rewritten", [
+    (0.95, 0.04, False), (0.85, 0.12, False), (0.70, 0.25, False),   # the OCR read 9 with some confidence
+    (0.55, 0.40, True), (0.50, 0.45, True),                          # the OCR was torn between 9 and 4
+])
+def test_visitor_read_with_some_confidence_is_not_rewritten(p_read, p_registered, rewritten):
+    # Visitor NBC1239 at the gate; NBC1234 is registered. The posterior is ~100% either way
+    # (the prior makes any registered plate win): only the OCR's own odds may decide.
+    t = _three_reads("NBC1239", {6: {"9": p_read, "4": p_registered}})
+    dec = lexicon(MANY).decode(t.distribution(2.0), evidence=t.distribution(1.0))
+    assert dec.best.plate == "NBC1234" and dec.best.posterior > 0.99
+    assert dec.accepted is rewritten
+
+
+def test_two_doubtful_characters_are_not_rewritten_by_default():
+    unsure = {5: {"9": 0.5, "3": 0.45}, 6: {"9": 0.5, "4": 0.45}}
+    t = _three_reads("NBC1299", unsure)
+    dec = lexicon({"NBC1234": None}).decode(t.distribution(2.0), evidence=t.distribution(1.0))
+    assert dec.best.changes == 2 and not dec.accepted
+    assert lexicon({"NBC1234": None}, max_changes=2).decode(
+        t.distribution(2.0), evidence=t.distribution(1.0)).accepted

@@ -10,10 +10,18 @@ evidence instead of by a coin flip.
 Two competing explanations are weighed (Bayes): the vehicle carries one of
 the N registered plates, or it carries some other valid plate (a visitor).
 A registered plate is accepted only when it clearly wins, differs from the
-plain read in at most a couple of characters, every character it changes was
+plain read in at most `max_changes` characters, every character it changes was
 a plausible alternative to the OCR itself (a visitor must never be turned
 into a registered vehicle just because their plates are close), and (softly)
 matches the vehicle's colour.
+
+The posterior alone is not a safeguard: with 70% of vehicles registered and
+some hundred million possible visitor plates, *any* registered plate near the
+read scores close to 100%. What actually decides is the OCR's own evidence:
+every changed character must be at least `min_char_ratio` as likely to the OCR
+as the character it read (the OCR was torn between the two), measured on the
+raw reads, not the softened distribution. A plate read with confidence is
+never rewritten, however close a registered plate is.
 """
 from __future__ import annotations
 
@@ -115,6 +123,7 @@ class Candidate:
     posterior: float
     changes: int          # characters that differ from the plain read
     weakest: float = 1.0  # the OCR's probability for the least likely of those changed characters
+    closest: float = 1.0  # smallest odds, over the changed characters, of the registered one vs the one read
     colour: str | None = None
 
 
@@ -138,10 +147,11 @@ class PlateLexicon:
     """The registered plates, scored against an OCR distribution."""
 
     def __init__(self, alphabet: str, pad_char: str, slots: int, layouts: list[str], *,
-                 accept: float = 0.90, max_changes: int = 2, registered_prior: float = 0.7,
-                 colour_penalty: float = 0.3, min_char_prob: float = 0.10):
+                 accept: float = 0.90, max_changes: int = 1, registered_prior: float = 0.7,
+                 colour_penalty: float = 0.3, min_char_prob: float = 0.10, min_char_ratio: float = 0.5):
         self.alphabet, self.pad_char, self.slots = alphabet, pad_char, slots
         self.accept, self.max_changes, self.min_char_prob = accept, max_changes, min_char_prob
+        self.min_char_ratio = min_char_ratio
         self.registered_prior = min(max(registered_prior, 0.01), 0.99)
         self.colour_penalty = colour_penalty
         self.valid_strings = valid_string_count(layouts)
@@ -193,8 +203,12 @@ class PlateLexicon:
         idx = dist.argmax(axis=-1)
         return "".join(self.alphabet[i] for i in idx).rstrip(self.pad_char)
 
-    def decode(self, dist: np.ndarray, seen_colour: str | None = None) -> Decoding:
-        """dist: (slots, alphabet), each row summing to 1 (see `combine`)."""
+    def decode(self, dist: np.ndarray, seen_colour: str | None = None,
+               evidence: np.ndarray | None = None) -> Decoding:
+        """dist: (slots, alphabet), each row summing to 1 (see `combine`), used for scoring.
+        evidence: the same reads without softening (temperature 1), for the `min_char_ratio`
+        check; default `dist`."""
+        ev = dist if evidence is None or evidence.shape != dist.shape else evidence
         text = self.read_text(dist)
         out = Decoding(text=text)
         n = len(self._plates)
@@ -222,14 +236,19 @@ class PlateLexicon:
             codes = self._codes[i]
             differ = codes != read_codes
             weakest = float(dist[slot[differ], codes[differ]].min()) if differ.any() else 1.0
-            cands.append(Candidate(self._plates[i], float(post[i]), int(differ.sum()), weakest,
-                                   self._colours[i]))
+            closest = 1.0
+            if differ.any():
+                pos = slot[differ]
+                closest = float((ev[pos, codes[differ]] / np.maximum(ev[pos, read_codes[differ]], 1e-12)).min())
+            cands.append(Candidate(self._plates[i], float(post[i]), int(differ.sum()), weakest=weakest,
+                                   closest=closest, colour=self._colours[i]))
         out.best = cands[0]
         out.runner_up = cands[1] if len(cands) > 1 else None
         b = out.best
         out.accepted = (b.posterior >= self.accept and b.changes <= self.max_changes
-                        and b.weakest >= self.min_char_prob)
+                        and b.weakest >= self.min_char_prob and b.closest >= self.min_char_ratio)
         if b.posterior >= self.accept and not out.accepted:
             out.notes.append(f"{b.plate} fits the evidence but differs from the read {text} in "
-                             f"{b.changes} character(s), the least likely {b.weakest:.0%}: not trusted")
+                             f"{b.changes} character(s), the least likely {b.weakest:.0%} "
+                             f"({b.closest:.2f}x as likely as the character read): not trusted")
         return out

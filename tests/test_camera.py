@@ -4,6 +4,7 @@ import logging
 from pathlib import Path
 
 import cv2
+import pytest
 
 from platescanner import camera
 from platescanner.config import CameraConfig
@@ -83,3 +84,51 @@ def test_probe_picks_the_shortest_shutter_that_is_bright_enough():
             {"exposure": -9, "brightness": 30, "sharpness": 20}]
     assert probe.pick_exposure(rows)["exposure"] == -7
     assert probe.pick_exposure([{"exposure": -9, "brightness": 30, "sharpness": 20}]) is None
+
+
+@pytest.mark.parametrize("source,shown", [
+    ("0", "0"),
+    ("C:\\videos\\gate.mp4", "C:\\videos\\gate.mp4"),
+    ("rtsp://10.0.0.5/live", "rtsp://10.0.0.5/live"),
+    ("rtsp://admin:s3cret@10.0.0.5:554/live", "rtsp://***@10.0.0.5:554/live"),
+    ("rtsp://admin:p@ss@10.0.0.5/live", "rtsp://***@10.0.0.5/live"),        # "@" in the password
+    ("rtsp://admin@10.0.0.5/live", "rtsp://***@10.0.0.5/live"),
+    ("http://cam/video.cgi?user=admin&pwd=s3cret&res=hd", "http://cam/video.cgi?user=***&pwd=***&res=hd"),
+    ("rtsp://admin:s3cret@10.0.0.5:bad/live", "(camera stream)"),
+])
+def test_camera_password_is_never_shown(source, shown):
+    from platescanner.camera import safe_source
+    assert safe_source(source) == shown
+    assert "s3cret" not in safe_source(source)
+
+
+def test_video_without_frames_is_not_rewound_in_a_tight_loop(tmp_path, monkeypatch):
+    import threading
+    import time
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    video = tmp_path / "empty.mp4"
+    video.write_bytes(b"")
+    reads = []
+
+    class Cap:
+        def isOpened(self): return True
+        def get(self, *_): return 30.0
+        def grab(self): return False
+        def read(self):
+            reads.append(1)
+            return False, None
+        def set(self, *_): reads.append("rewind")
+        def release(self): pass
+
+    monkeypatch.setattr(pipeline.cv2, "VideoCapture", lambda *_: Cap())
+    cfg = Config()
+    cfg.camera.source = str(video)
+    w = pipeline.CaptureWorker(cfg, pipeline.FrameSlot())
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.5)
+    w.stop()
+    t.join(5)
+    assert "rewind" not in reads and len(reads) <= 2

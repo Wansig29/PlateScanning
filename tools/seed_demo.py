@@ -5,6 +5,10 @@
 
 Demo plates: NBC1234 (violation), ABC1234 (2 violations), XYZ789 (clear).
 Anything else reads as "not registered".
+
+It also adds a demo guard for "Continue offline" (demo@psau.local / demo), since
+offline sign-in otherwise needs a guard who signed in online on this computer.
+For development only: never run this on the gate laptop.
 """
 from __future__ import annotations
 
@@ -17,7 +21,7 @@ import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from platescanner import db  # noqa: E402
+from platescanner import db, offline_auth  # noqa: E402
 from platescanner.config import load_config  # noqa: E402
 
 
@@ -70,7 +74,10 @@ def main() -> None:
             conn.execute("DELETE FROM violations")
         db.upsert_vehicles(conn, vehicles)
         db.upsert_violations(conn, violations)
+    offline_auth.remember(cfg.offline_guards_path, "demo@psau.local", "demo",
+                          {"name": "Demo Guard", "email": "demo@psau.local", "role": "security"})
     print(f"Seeded demo data into {cfg.db_path}: {db.counts(conn)}")
+    print("Offline demo sign-in: demo@psau.local / demo")
 
 
 if __name__ == "__main__":

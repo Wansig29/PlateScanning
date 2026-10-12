@@ -76,3 +76,22 @@ def test_violator_arrows_show_only_with_several_violators_and_jump_between_cards
     assert bar.value() == p.cards[1].y()
     p._jump(-1)
     assert bar.value() == 0
+
+
+def test_card_labels_history_and_shows_the_not_synced_notice(app):
+    from platescanner.ui.widgets import IdentityCard
+    veh = {"id": "1", "plate": "NBC 1234", "owner_name": "Juan", "contact": "0917", "owner_photo_path": None}
+    v = lambda i, t, active: {"id": i, "violation_type": t, "evidence_paths": [], "is_active": active}
+    c = IdentityCard()
+    c.show_result("NBC1234", db.LookupResult(db.RESULT_VIOLATION, veh, [v("1", "A", 1)], "NBC 1234", False,
+                                             [v("2", "B", 1), v("3", "C", 0)]))
+    assert c.banner.text().endswith("VIOLATION") and c.fields["type"].text() == "A"
+    c._show_violation(1)
+    assert c.fields["type"].text() == "B (ended)"
+    c._show_violation(2)
+    assert c.fields["type"].text() == "C (settled)"
+    c.show_result("NBC1234", db.LookupResult(db.RESULT_CLEAR, veh, [], "NBC 1234", False, [],
+                                             [{"id": "4", "suspension_end": "2026-10-11"}]))
+    assert "not synced yet" in c.fields["suspension"].text()
+    c.show_result("NBC1234", db.LookupResult(db.RESULT_CLEAR, veh, [], "NBC 1234"))
+    assert c.fields["suspension"].text() == "—"  # no leftover notice from the previous scan

@@ -14,3 +14,6 @@ probe_out/
 datasets/
 runs/
 Dataset/
+
+# Never commit a release-signing private key (tools/sign_release.py keeps it in your user folder)
+*.pem

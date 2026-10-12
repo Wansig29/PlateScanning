@@ -7,6 +7,7 @@ from html import escape
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout
 
+from .. import offline_auth
 from ..api import ApiClient, ApiError
 from ..config import Config
 from . import theme
@@ -19,8 +20,9 @@ class _Relay(QObject):
 class LoginDialog(QDialog):
     """exec() returns Accepted with .token/.user set, or Rejected.
 
-    `.offline` is True when the guard chose to run on the existing local
-    database without signing in (e.g. the network is down).
+    `.offline` is True when the guard signed in offline (e.g. the network is
+    down): their email and password were checked against the ones they last
+    signed in with online on this laptop (offline_auth.py), and `.user` is set.
     """
 
     def __init__(self, cfg: Config, parent=None, allow_offline: bool = True):
@@ -72,6 +74,7 @@ class LoginDialog(QDialog):
             lay.addSpacing(14)
 
         self.error = QLabel()
+        self.error.setTextFormat(Qt.TextFormat.PlainText)  # the server's message, shown as typed
         self.error.setWordWrap(True)
         self.error.setStyleSheet(f"color: {theme.RED}; background: {theme.RESULT_TINTS['violation']};"
                                  "border-radius: 6px; padding: 7px 9px;")
@@ -90,7 +93,8 @@ class LoginDialog(QDialog):
         self.offline_btn = QPushButton("Continue offline with the local database  →")
         self.offline_btn.setObjectName("Link")
         self.offline_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.offline_btn.setToolTip("Scan against the last synced database without signing in")
+        self.offline_btn.setToolTip("No connection? Enter the email and password you last signed in "
+                                    "with on this laptop to use the last synced database")
         self.offline_btn.clicked.connect(self._go_offline)
         self.offline_btn.setVisible(allow_offline)
         lay.addSpacing(6)
@@ -112,7 +116,20 @@ class LoginDialog(QDialog):
         self.password.returnPressed.connect(self._submit)
 
     def _go_offline(self) -> None:
-        self.offline = True
+        email, password = self.email.text().strip(), self.password.text()
+        if not email or not password:
+            self._show_error("To continue offline, enter your email and password.")
+            return
+        user = offline_auth.verify(self.cfg.offline_guards_path, email, password,
+                                   self.cfg.api.offline_login_days)
+        if user is None:
+            days = int(self.cfg.api.offline_login_days)
+            self._show_error("Offline sign-in needs the email and password of a security account that "
+                             f"signed in online on this laptop in the last {days} days.")
+            self.password.selectAll()
+            self.password.setFocus()
+            return
+        self.user, self.offline = user, True
         self.accept()
 
     def _submit(self) -> None:
@@ -127,6 +144,10 @@ class LoginDialog(QDialog):
         def work() -> None:
             try:
                 token, user = ApiClient(self.cfg.api).login(email, password)
+                try:  # so this guard can sign in offline later
+                    offline_auth.remember(self.cfg.offline_guards_path, email, password, user)
+                except OSError:
+                    pass
                 self._relay.done.emit(token, user)
             except ApiError as e:
                 self._relay.done.emit(None, str(e))

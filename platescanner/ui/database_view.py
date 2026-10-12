@@ -89,6 +89,8 @@ def _fill(table: QTableWidget, rows: list[list[QTableWidgetItem]]) -> None:
 
 def _label(text: str, name: str | None = None, wrap: bool = False) -> QLabel:
     lbl = QLabel(text)
+    # Synced text (owner names, violation descriptions...) is shown as typed, never as HTML.
+    lbl.setTextFormat(Qt.TextFormat.PlainText)
     if name:
         lbl.setObjectName(name)
     lbl.setWordWrap(wrap)
