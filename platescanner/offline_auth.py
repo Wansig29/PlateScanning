@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from .session import _protect, _unprotect
+from .session import _protect, _unprotect, write_atomic
 
 ITERATIONS = 200_000
 
@@ -50,7 +50,7 @@ def remember(path: Path, email: str, password: str, user: dict[str, Any],
     keep = {k: user.get(k) for k in ("name", "email", "role") if user.get(k)}
     guards[_key(email)] = {"salt": salt.hex(), "hash": _hash(password, salt), "user": keep,
                            "signed_in_at": (now or datetime.now(timezone.utc)).isoformat()}
-    path.write_bytes(_protect(json.dumps(guards).encode("utf-8")))
+    write_atomic(path, _protect(json.dumps(guards).encode("utf-8")))
 
 
 def verify(path: Path, email: str, password: str, max_age_days: float,

@@ -168,7 +168,7 @@ class ApiClient:
             # is for security staff only (the server enforces this as well). An account
             # whose role the server didn't send is refused too: fail closed, not open.
             try:  # don't leave the session this login just opened
-                self.session.post(self._url("/api/logout"), headers={"Authorization": f"Bearer {token}"},
+                self.session.post(self._url(self.cfg.logout_path), headers={"Authorization": f"Bearer {token}"},
                                   timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
             except requests.RequestException:
                 pass
@@ -184,6 +184,7 @@ class ApiClient:
     def fetch_all(self, path: str, updated_since: str | None = None) -> list[dict]:
         """GET every page of a collection endpoint, optionally only recent changes."""
         items: list[dict] = []
+        previous: list | None = None
         params: dict[str, Any] = {"per_page": self.cfg.page_size}
         if updated_since:
             params[self.cfg.updated_since_param] = updated_since
@@ -203,6 +204,9 @@ class ApiClient:
             except ValueError as e:  # e.g. an HTML error page with status 200
                 raise ApiError(f"GET {path} returned something other than JSON") from e
             page_items, has_more = _extract_page(body)
+            if page_items and page_items == previous:
+                break  # the server ignores "page" and sends the same records again: stop, don't loop
+            previous = page_items
             items.extend(i for i in page_items if isinstance(i, dict))
             if not has_more or not page_items:
                 break

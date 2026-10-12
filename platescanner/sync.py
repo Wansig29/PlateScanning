@@ -81,6 +81,10 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
     for r in raw_vehicles:
         v = mapping.map_vehicle(r, base)
         if v:
+            if v.get("permanently_revoked") is None:
+                # A full vehicle record that doesn't mention it: not revoked. (Only an embedded
+                # partial copy leaves it unknown, and that one keeps the stored value.)
+                v["permanently_revoked"] = False
             vehicles[str(v["id"])] = v  # full vehicle record wins over embedded copy
     # A removed vehicle's violations go with it (see db.remove_vehicles).
     gone = {str(i) for i in removed}

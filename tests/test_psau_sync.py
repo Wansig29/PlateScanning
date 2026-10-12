@@ -234,3 +234,52 @@ def test_sync_download_with_a_non_json_reply_is_an_api_error(monkeypatch):
     monkeypatch.setattr(c.session, "get", lambda *a, **k: _html_reply())
     with pytest.raises(ApiError):
         c.fetch_all("/api/vehicles")
+
+
+def test_revoked_flag_clears_on_delta_when_the_record_no_longer_mentions_it(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True)], [])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+    sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", updated_at="2026-10-01T10:00:00+08:00")], []), conn)
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_suspension_end_with_a_timezone_ends_on_the_written_date(tmp_path):
+    today = date.today().isoformat()
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")],
+                     [violation(10, 1, "NBC 1234", suspension_end=f"{today}T00:00:00+08:00")])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION  # still running today
+
+
+def test_fetch_all_stops_when_the_server_ignores_the_page_number(monkeypatch):
+    c = ApiClient(Config().api, token="t")
+    calls = []
+
+    def get(*a, **k):
+        calls.append(1)
+        r = requests.Response()
+        r.status_code = 200
+        r._content = b'{"data": [{"id": 1}, {"id": 2}], "next_page_url": "x"}'
+        return r
+
+    monkeypatch.setattr(c.session, "get", get)
+    assert c.fetch_all("/api/vehicles") == [{"id": 1}, {"id": 2}]
+    assert len(calls) == 2
+
+
+def test_rejected_login_logs_out_through_the_configured_path(monkeypatch):
+    cfg = Config().api
+    cfg.logout_path = "/custom/logout"
+    c = ApiClient(cfg)
+    urls = []
+
+    def post(url, **k):
+        urls.append(url)
+        r = requests.Response()
+        r.status_code = 200
+        r._content = b'{"token": "t", "user": {"role": "student"}}'
+        return r
+
+    monkeypatch.setattr(c.session, "post", post)
+    with pytest.raises(AuthError):
+        c.login("s@psau.local", "pw")
+    assert urls[-1].endswith("/custom/logout")

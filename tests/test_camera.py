@@ -100,3 +100,35 @@ def test_camera_password_is_never_shown(source, shown):
     from platescanner.camera import safe_source
     assert safe_source(source) == shown
     assert "s3cret" not in safe_source(source)
+
+
+def test_video_without_frames_is_not_rewound_in_a_tight_loop(tmp_path, monkeypatch):
+    import threading
+    import time
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    video = tmp_path / "empty.mp4"
+    video.write_bytes(b"")
+    reads = []
+
+    class Cap:
+        def isOpened(self): return True
+        def get(self, *_): return 30.0
+        def grab(self): return False
+        def read(self):
+            reads.append(1)
+            return False, None
+        def set(self, *_): reads.append("rewind")
+        def release(self): pass
+
+    monkeypatch.setattr(pipeline.cv2, "VideoCapture", lambda *_: Cap())
+    cfg = Config()
+    cfg.camera.source = str(video)
+    w = pipeline.CaptureWorker(cfg, pipeline.FrameSlot())
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.5)
+    w.stop()
+    t.join(5)
+    assert "rewind" not in reads and len(reads) <= 2

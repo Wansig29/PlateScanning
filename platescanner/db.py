@@ -300,9 +300,10 @@ def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
 # has passed, even if the laptop hasn't synced since (the server lifts it at
 # midnight the same way). An end date SQLite can't read (date() gives NULL, e.g.
 # "10/10/2026") keeps the violation alerting: a missed violator is worse than a
-# suspension that lasts until the next sync.
-_ALERTING = ("is_active=1 AND (date(suspension_end) IS NULL "
-             "OR date(suspension_end) >= date('now', 'localtime'))")
+# suspension that lasts until the next sync. Only the date as written (first 10 characters) is
+# compared: date() on "2026-10-12T00:00:00+08:00" would convert to UTC and end it a day early.
+_ALERTING = ("is_active=1 AND (date(substr(suspension_end, 1, 10)) IS NULL "
+             "OR date(substr(suspension_end, 1, 10)) >= date('now', 'localtime'))")
 
 
 def _active_violations(conn: sqlite3.Connection, where: str, params: tuple) -> list[dict]:

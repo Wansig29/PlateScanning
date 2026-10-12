@@ -89,3 +89,12 @@ def test_database_is_locked_until_someone_signs_in(cfg, monkeypatch):
     assert w.db_window is not None
     assert w._guard_name() == "Guard Juan (offline)"
     w.db_window.hide()
+
+
+def test_saving_leaves_no_temporary_file_and_replaces_the_old_one(tmp_path):
+    from platescanner import session
+    p = tmp_path / "session.json"
+    session.save_session(p, "tok1", {"email": "a@b.c"})
+    session.save_session(p, "tok2", {"email": "a@b.c"})
+    assert session.load_session(p)["token"] == "tok2"
+    assert [f.name for f in tmp_path.iterdir()] == ["session.json"]
