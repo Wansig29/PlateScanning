@@ -6,6 +6,7 @@ thread write while the recognizer and UI read.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -336,7 +337,8 @@ def _sanction_rank(v: dict[str, Any]) -> tuple:
     (revoked for good), then the one whose sanction lasts longest, then the newest."""
     end = str(v.get("suspension_end") or "")[:10]
     permanent = str(v["id"]).startswith("permanent-revoke-")
-    open_ended = not end or end >= "2900"
+    # An end date that isn't YYYY-MM-DD keeps alerting (see _ALERTING), so it ranks like an open end.
+    open_ended = not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) or end >= "2900"
     return (0 if permanent else 1, 0 if open_ended else 1, "" if open_ended else _flip(end))
 
 

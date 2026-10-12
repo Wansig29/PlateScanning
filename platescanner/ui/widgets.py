@@ -586,8 +586,6 @@ class IdentityCard(QFrame):
         if seen and seen.verify and result.status == db.RESULT_CLEAR:
             color = theme.AMBER  # registered only by a look-alike plate: not a green light
         plate_txt = plates.display(result.matched_plate or plate_read)
-        if result.status == db.RESULT_VIOLATION and len(result.violations) > 1:
-            label = f"{len(result.violations)} VIOLATIONS"
         seen = seen or VehicleView()
         self.track_id = seen.track_id
         self.is_violation = result.status == db.RESULT_VIOLATION

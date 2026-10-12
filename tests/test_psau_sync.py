@@ -348,3 +348,9 @@ def test_ended_sanction_not_yet_synced_is_clear_with_a_notice(tmp_path):
     assert r.status == db.RESULT_CLEAR and [v["id"] for v in r.lapsed] == ["10"]
     r = db.lookup(conn, "ABC1234")
     assert r.status == db.RESULT_VIOLATION and r.lapsed == []
+
+
+def test_unreadable_end_date_ranks_as_open_ended_not_as_a_date():
+    old = {"id": "1", "suspension_end": "2026-12-31"}
+    odd = {"id": "2", "suspension_end": "10/10/2026"}
+    assert sorted([old, odd], key=db._sanction_rank)[0] is odd
