@@ -1,3 +1,5 @@
 -r requirements.txt
 pytest>=8
 pyinstaller>=6.5
+# OCR fine-tuning tool (tools/ocr_data/finetune.py) and its test; not used by the app itself
+albumentations>=1.4
