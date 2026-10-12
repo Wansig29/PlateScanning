@@ -374,3 +374,33 @@ def test_evidence_photos_are_not_downloaded_for_settled_violations(tmp_path):
                    violation(11, 1, "NBC 1234", photo_url="/p/11", is_active=False)])
     sync.run_sync(cfg, cl, conn)
     assert [u.rsplit("/", 1)[-1] for u in cl.downloads] == ["10"]
+
+
+def test_truncated_full_sync_does_not_wipe_the_local_data(tmp_path):
+    from platescanner.api import ApiError
+    many = [vehicle(i, f"ABC {1000 + i}", f"Owner {i}") for i in range(1, 21)]
+    cfg, conn = synced(tmp_path, many, [violation(100, 1, "ABC 1001")])
+    with pytest.raises(ApiError):
+        sync.run_sync(cfg, FakeClient(many[:2], []), conn, force_full=True)
+    assert db.lookup(conn, "ABC1001").status == db.RESULT_VIOLATION
+
+
+def test_stale_detection():
+    from datetime import datetime, timezone
+    now = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
+    assert sync.is_stale(None, 8, now)
+    assert sync.is_stale("2026-10-07T01:00:00+00:00", 8, now)
+    assert not sync.is_stale("2026-10-07T08:00:00+00:00", 8, now)
+
+
+def test_plain_http_and_lookalike_hosts_are_refused(monkeypatch):
+    from platescanner import api
+    from platescanner.config import ApiConfig
+    monkeypatch.delenv("PLATESCANNER_ALLOW_INSECURE", raising=False)
+    with pytest.raises(api.ApiError):
+        ApiClient(ApiConfig(base_url="http://example.org"))._url("/api/login")
+    ApiClient(ApiConfig(base_url="http://localhost:8000"))._url("/api/login")  # local dev is fine
+    assert ApiClient(ApiConfig(verify_tls=False))._verify is True              # config cannot turn TLS off
+    base = "https://psau-security-production.up.railway.app"
+    assert api.same_origin(base + "/photo.jpg", base)
+    assert not api.same_origin(base + ".evil.net/photo.jpg", base)
