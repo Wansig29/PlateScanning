@@ -287,6 +287,9 @@ class LookupResult:
     violations: list[dict[str, Any]] = field(default_factory=list)
     matched_plate: str | None = None
     approximate: bool = False
+    # Settled or ended violations of this vehicle in the current school year: shown after the
+    # ones in force so the guard sees the history, but they never raise the alert on their own.
+    history: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -344,6 +347,21 @@ def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> lis
     those recorded against the vehicle, or against its exact plate (a violation logged
     without a vehicle record). Never those of a different plate that only looks alike."""
     return _active_violations(conn, "vehicle_id=? OR plate=?", (str(vehicle["id"]), vehicle["plate"]))
+
+
+def school_year_history(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
+    """The vehicle's violations in the active school year (synced from psau-security) that no longer
+    alert, newest first. Empty when no active school year is known."""
+    year = conn.execute("SELECT start_date, end_date FROM school_years WHERE is_active=1 "
+                        "ORDER BY start_date DESC LIMIT 1").fetchone()
+    if not year:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM violations WHERE (vehicle_id=? OR plate=?) "
+        f"AND NOT ({_ALERTING}) AND substr(COALESCE(occurred_at, updated_at), 1, 10) BETWEEN ? AND ? "
+        "ORDER BY COALESCE(occurred_at, updated_at) DESC",
+        (str(vehicle["id"]), vehicle["plate"], year["start_date"], year["end_date"])).fetchall()
+    return [_violation_dict(r) for r in rows]
 
 
 def list_vehicles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -449,7 +467,8 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         status = RESULT_NOT_REGISTERED
     # "Approximate" means the plate shown is not the plate read.
     approximate = approximate and matched is not None and plates.normalize(matched) != norm
-    return LookupResult(status, vehicle, violations, matched, approximate)
+    history = school_year_history(conn, vehicle) if vehicle and violations else []
+    return LookupResult(status, vehicle, violations, matched, approximate, history)
 
 
 # --- scan log ----------------------------------------------------------------

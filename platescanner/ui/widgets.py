@@ -612,7 +612,8 @@ class IdentityCard(QFrame):
         self.fields["contact"].setText(v.get("contact") or "—")
         self.approx.setVisible(result.approximate)
 
-        self._violations = result.violations
+        self._in_force = len(result.violations)
+        self._violations = result.violations + result.history  # in force first, then this school year's history
         self._resume.stop()
         self._show_violation(0)
         # The violation in force comes first (db.lookup); the guard sees that one with its
@@ -636,8 +637,9 @@ class IdentityCard(QFrame):
             return
         self._vi = index % len(vs)
         v = vs[self._vi]
-        self.fields["type"].setText(v.get("violation_type") or "Unspecified")
-        self.fields["type"].setStyleSheet(f"color: {theme.RED};")
+        past = self._vi >= getattr(self, "_in_force", len(vs))  # history: no longer in force
+        self.fields["type"].setText((v.get("violation_type") or "Unspecified") + (" (settled)" if past else ""))
+        self.fields["type"].setStyleSheet(f"color: {theme.MUTED if past else theme.RED};")
         self.fields["suspension"].setText(suspension_text(v))
         self._evidence = [pm for pm in (load_pixmap(p) for p in v.get("evidence_paths", []) if p) if pm]
         n = len(self._evidence)
@@ -646,7 +648,8 @@ class IdentityCard(QFrame):
         self.pager.setVisible(len(vs) > 1)
         when = fmt_date(v.get("occurred_at"))
         dots = " ".join("●" if i == self._vi else "○" for i in range(len(vs)))
-        self.pager_label.setText(f"{dots}   Violation {self._vi + 1} of {len(vs)}" + (f" · {when}" if when else ""))
+        self.pager_label.setText(f"{dots}   {'Earlier this school year' if past else 'Violation'} {self._vi + 1} of {len(vs)}"
+                                   + (f" · {when}" if when else ""))
 
 
 class IdentityPanel(QFrame):

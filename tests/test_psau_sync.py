@@ -313,3 +313,27 @@ def test_the_violation_in_force_comes_first(tmp_path):
     _, conn = synced(tmp_path / "b", [vehicle(2, "ABC 1234", "Ana", owner_permanently_revoked=True)],
                      [violation(12, 2, "ABC 1234", suspension_end=later)])
     assert db.lookup(conn, "ABC1234").violations[0]["id"] == "permanent-revoke-2"
+
+
+def test_school_year_history_follows_the_active_violation_but_never_alerts_alone(tmp_path):
+    (tmp_path / "a").mkdir()
+    today = date.today()
+    cfg = _cfg(tmp_path / "a")
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    year = {"year_label": "Y", "start_date": (today - timedelta(days=100)).isoformat(),
+            "end_date": (today + timedelta(days=100)).isoformat(), "is_active": True}
+    old = (today - timedelta(days=400)).isoformat() + "T09:00:00+08:00"
+    mine = (today - timedelta(days=20)).isoformat() + "T09:00:00+08:00"
+    cl = FakeClient([vehicle(1, "NBC 1234", "Juan"), vehicle(2, "ABC 1234", "Ana")],
+                    [violation(10, 1, "NBC 1234", suspension_end=(today + timedelta(days=5)).isoformat(), occurred_at=mine),
+                     violation(11, 1, "NBC 1234", status="Resolved", is_active=False, occurred_at=mine),
+                     violation(12, 1, "NBC 1234", status="Resolved", is_active=False, occurred_at=old),
+                     violation(13, 2, "ABC 1234", status="Resolved", is_active=False, occurred_at=mine)])
+    cl.data["/api/security/gate/school-years"] = [year]
+    sync.run_sync(cfg, cl, conn)
+    r = db.lookup(conn, "NBC1234")
+    assert [v["id"] for v in r.violations] == ["10"]        # the alert: one active sanction
+    assert [v["id"] for v in r.history] == ["11"]           # this school year only, not last year's
+    r = db.lookup(conn, "ABC1234")
+    assert r.status == db.RESULT_CLEAR and r.history == []  # history alone never alerts
