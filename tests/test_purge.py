@@ -99,3 +99,14 @@ def test_delete_day_removes_only_that_days_scans(conn, tmp_path):
     assert len(plan.scan_ids) == 2
     assert purge.run_delete_before(conn, plan, [tmp_path / "captures"]) == (2, 2)
     assert conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0] == 2
+
+
+def test_delete_all_removes_every_scan_with_its_pictures(conn, tmp_path):
+    cap = tmp_path / "captures"
+    _scan(conn, cap / "violation/2026-09-01/v.jpg", db.RESULT_VIOLATION, "2026-09-01T10:00:00")
+    _scan(conn, cap / "not_registered/2026-10-10/n.jpg", db.RESULT_NOT_REGISTERED, "2026-10-10T11:34:00")
+    plan = purge.plan_delete_all(conn, [cap])
+    assert len(plan.scan_ids) == 2 and len(plan.files) == 2
+    assert purge.run_delete_before(conn, plan, [cap]) == (2, 2)
+    assert conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0] == 0
+    assert not any(cap.rglob("*.jpg"))

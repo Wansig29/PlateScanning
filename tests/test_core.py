@@ -354,3 +354,14 @@ def test_duplicate_plate_ties_go_to_the_highest_id(tmp_path):
     db.init_schema(c)
     db.upsert_vehicles(c, [{"id": i, "plate": "ABC 1234", "owner_name": f"owner {i}"} for i in (9, 10, 2)])
     assert db.lookup(c, "ABC1234").vehicle["owner_name"] == "owner 10"     # 10 > 9 as numbers
+
+
+@pytest.mark.parametrize("text", ["II 1111", "III111", "OOO 000", "LL 1111"])
+def test_one_character_over_and_over_is_a_pattern_not_a_plate(text):
+    # Gate grilles and fences read as stripes of I / 1 (or rings of O / 0).
+    assert plates.is_repeated_pattern(text)
+
+
+@pytest.mark.parametrize("text", ["AAA 1111", "ABC 1234", "NBC 1111", "IIA 111"])
+def test_real_plates_are_not_patterns(text):
+    assert not plates.is_repeated_pattern(text)
