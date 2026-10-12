@@ -325,6 +325,20 @@ def _permanent_revocation_alert(vehicle: dict[str, Any]) -> dict[str, Any]:
             "evidence_urls": [], "evidence_paths": [], "occurred_at": None, "updated_at": vehicle.get("updated_at")}
 
 
+def _sanction_rank(v: dict[str, Any]) -> tuple:
+    """Sort key, the violation in force first: a permanent revocation, then one with no end date
+    (revoked for good), then the one whose sanction lasts longest, then the newest."""
+    end = str(v.get("suspension_end") or "")[:10]
+    permanent = str(v["id"]).startswith("permanent-revoke-")
+    open_ended = not end or end >= "2900"
+    return (0 if permanent else 1, 0 if open_ended else 1, "" if open_ended else _flip(end))
+
+
+def _flip(day: str) -> str:
+    """So that a later date sorts first in an ascending sort."""
+    return "".join(chr(ord("0") + 9 - int(c)) if c.isdigit() else c for c in day)
+
+
 def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
     """The violations that would raise an alert for this vehicle at the gate, newest first:
     those recorded against the vehicle, or against its exact plate (a violation logged
@@ -425,6 +439,7 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         violations = exact_violations
     if vehicle and vehicle.get("permanently_revoked"):
         violations.insert(0, _permanent_revocation_alert(vehicle))
+    violations.sort(key=_sanction_rank)  # stable: equal sanctions stay newest first
     matched = vehicle["plate"] if vehicle else (violations[0]["plate"] if violations else None)
     if violations:
         status = RESULT_VIOLATION

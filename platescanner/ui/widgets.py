@@ -615,10 +615,9 @@ class IdentityCard(QFrame):
         self._violations = result.violations
         self._resume.stop()
         self._show_violation(0)
-        if len(self._violations) > 1:
-            self._rotate.start()
-        else:
-            self._rotate.stop()
+        # The violation in force comes first (db.lookup); the guard sees that one with its
+        # sanction time and pages to the others by hand.
+        self._rotate.stop()
 
     def _manual_step(self, delta: int) -> None:
         self._rotate.stop()

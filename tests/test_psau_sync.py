@@ -300,3 +300,16 @@ def test_several_revocations_are_all_violations(tmp_path):
                      [violation(11, 2, "ABC 1234", status="Revoked"), violation(12, 2, "ABC 1234", status="Revoked")])
     r = db.lookup(conn, "ABC1234")
     assert r.status == db.RESULT_VIOLATION and len(r.violations) == 2
+
+
+def test_the_violation_in_force_comes_first(tmp_path):
+    (tmp_path / "a").mkdir()
+    soon, later = (date.today() + timedelta(days=2)).isoformat(), (date.today() + timedelta(days=30)).isoformat()
+    _, conn = synced(tmp_path / "a", [vehicle(1, "NBC 1234", "Juan")],
+                     [violation(10, 1, "NBC 1234", suspension_end=soon),
+                      violation(11, 1, "NBC 1234", suspension_end=later, updated_at="2026-01-01T00:00:00+08:00")])
+    assert [v["id"] for v in db.lookup(conn, "NBC1234").violations] == ["11", "10"]
+    (tmp_path / "b").mkdir()
+    _, conn = synced(tmp_path / "b", [vehicle(2, "ABC 1234", "Ana", owner_permanently_revoked=True)],
+                     [violation(12, 2, "ABC 1234", suspension_end=later)])
+    assert db.lookup(conn, "ABC1234").violations[0]["id"] == "permanent-revoke-2"
