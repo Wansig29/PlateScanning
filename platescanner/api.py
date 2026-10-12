@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import platform
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,14 @@ def _extract_page(body: Any) -> tuple[list[dict], bool]:
     return data, has_more
 
 
+_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+
+
+def _insecure_allowed() -> bool:
+    """Developer escape hatch (environment variable only, never the saved config file)."""
+    return os.environ.get("PLATESCANNER_ALLOW_INSECURE") == "1"
+
+
 STAFF_ROLES = {"security", "admin", "system_admin"}
 
 # Owner photos and violation evidence are stored at most this size: a larger one is
@@ -122,7 +131,16 @@ class ApiClient:
         self.session.headers.update({"Accept": "application/json",
                                      "User-Agent": "PSAU-GatePlateScanner/1.0"})
 
+    @property
+    def _verify(self) -> bool:
+        """Certificates are always checked unless the developer override is set."""
+        return True if not _insecure_allowed() else self.cfg.verify_tls
+
     def _url(self, path: str) -> str:
+        parts = urlsplit(self.cfg.base_url)
+        if parts.scheme != "https" and not (parts.hostname in _LOCAL_HOSTS or _insecure_allowed()):
+            # The password and token would cross the network readable by anyone.
+            raise ApiError("The server address must start with https:// (plain http is refused).")
         return self.cfg.base_url.rstrip("/") + "/" + path.lstrip("/")
 
     def _auth_headers(self) -> dict[str, str]:
@@ -137,7 +155,7 @@ class ApiClient:
                 self._url(self.cfg.login_path),
                 json={"email": email, "password": password,
                       "device_name": f"gate-scanner-{platform.node()}"},
-                timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls,
+                timeout=self.cfg.timeout_seconds, verify=self._verify,
             )
         except requests.RequestException as e:
             raise ApiError(f"Cannot reach server: {e}") from e
@@ -169,7 +187,7 @@ class ApiClient:
             # whose role the server didn't send is refused too: fail closed, not open.
             try:  # don't leave the session this login just opened
                 self.session.post(self._url(self.cfg.logout_path), headers={"Authorization": f"Bearer {token}"},
-                                  timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
+                                  timeout=self.cfg.timeout_seconds, verify=self._verify)
             except requests.RequestException:
                 pass
             self.token = None
@@ -203,7 +221,7 @@ class ApiClient:
             params["page"] = page
             try:
                 r = self.session.get(self._url(path), params=params, headers=self._auth_headers(),
-                                     timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
+                                     timeout=self.cfg.timeout_seconds, verify=self._verify)
             except requests.RequestException as e:
                 raise ApiError(f"Cannot reach server: {e}") from e
             if r.status_code == 401:
@@ -239,7 +257,7 @@ class ApiClient:
         size = 0
         try:
             with self.session.get(url, headers=headers, timeout=self.cfg.timeout_seconds,
-                                  verify=self.cfg.verify_tls, stream=True) as r:
+                                  verify=self._verify, stream=True) as r:
                 kind = (r.headers.get("Content-Type") or "").split(";")[0].strip().lower()
                 if not r.ok or (kind and not kind.startswith("image/") and kind not in _UNTYPED):
                     return False

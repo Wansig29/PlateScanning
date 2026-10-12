@@ -253,3 +253,22 @@ def test_decoder_never_clears_a_vehicle_on_its_own(monkeypatch):
     scan = _scan_with_decoder(monkeypatch, "ABC 1235", violation=False)
     assert scan.read.text == "ABC1234"
     assert scan.lookup.status == db.RESULT_CLEAR and scan.lookup.approximate and scan.verify
+
+
+def test_violator_who_returns_is_alerted_again_and_a_lingering_car_cannot_extend_the_window():
+    w = worker()
+    v = db.RESULT_VIOLATION
+    window = w.cfg.scan.violation_cooldown_seconds
+    assert not w._in_cooldown("NBC1234", 0.0, v)
+    assert w._in_cooldown("NBC1234", window - 1, v)             # same pass, suppressed
+    assert not w._in_cooldown("NBC1234", window + 1, v)         # window ran from the alert: alert again
+    assert not w._in_cooldown("NBC1234", window * 5, v)         # leaves and returns
+
+
+def test_unregistered_low_confidence_read_asks_for_a_manual_check():
+    from platescanner.pipeline import needs_manual_check
+    ocr = Config().ocr
+    low, high = ocr.verify_below_confidence - 0.1, 0.95
+    assert needs_manual_check(db.RESULT_NOT_REGISTERED, 3, low, False, ocr)
+    assert not needs_manual_check(db.RESULT_NOT_REGISTERED, 3, high, False, ocr)
+    assert not needs_manual_check(db.RESULT_CLEAR, 3, low, False, ocr)

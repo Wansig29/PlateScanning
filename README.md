@@ -74,6 +74,9 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `scan.academic_year_start_month` | Fallback only, used until the school years have synced from psau-security: the month the academic year starts (default 8 = August; 1 = a calendar year) |
 | `scan.save_pictures_for` | Which results get pictures saved (the log row is always kept). Default `["violation"]`: pictures are what take the disk space, so only the evidence is kept. Add `"no_plate"`, `"clear"` or `"not_registered"` to keep those too |
 | `scan.plate_cooldown_seconds` | Ignore repeat reads of the same plate while it's still at the gate |
+| `scan.violation_cooldown_seconds` | Same, but for violations: a short window (default 10 s) counted from the alert itself, so a violator who leaves and returns is alerted again |
+| `sync.stale_after_hours` | The status bar shows a red "DATA OUT OF DATE" warning when the last good sync is older than this (default 8) |
+| `sync.min_full_sync_ratio` | A full sync returning fewer than this share of the stored vehicles is refused, so a truncated response can't wipe the violation list (default 0.5) |
 | `scan.fuzzy_match` | Accept a read that's one character off, if exactly one plate matches. The UI flags these as *approximate* |
 | `scan.require_acknowledge` | `false` (default): a violation alert flashes and sounds once, then the next scan replaces it; every scan is still logged. `true`: the alert stays until a guard acknowledges it (the options below then apply) |
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
