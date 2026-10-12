@@ -286,3 +286,17 @@ def test_rejected_login_logs_out_through_the_configured_path(monkeypatch):
     with pytest.raises(AuthError):
         c.login("s@psau.local", "pw")
     assert urls[-1].endswith("/custom/logout")
+
+
+def test_several_revocations_are_all_violations(tmp_path):
+    # A permanent revocation plus a revoked violation, or two revoked violations: still a violation.
+    (tmp_path / "a").mkdir()
+    _, conn = synced(tmp_path / "a", [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True)],
+                     [violation(10, 1, "NBC 1234", status="Revoked", suspension_end=None)])
+    r = db.lookup(conn, "NBC1234")
+    assert r.status == db.RESULT_VIOLATION and len(r.violations) == 2
+    (tmp_path / "b").mkdir()
+    _, conn = synced(tmp_path / "b", [vehicle(2, "ABC 1234", "Ana")],
+                     [violation(11, 2, "ABC 1234", status="Revoked"), violation(12, 2, "ABC 1234", status="Revoked")])
+    r = db.lookup(conn, "ABC1234")
+    assert r.status == db.RESULT_VIOLATION and len(r.violations) == 2
