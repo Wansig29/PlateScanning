@@ -404,3 +404,53 @@ def test_plain_http_and_lookalike_hosts_are_refused(monkeypatch):
     base = "https://psau-security-production.up.railway.app"
     assert api.same_origin(base + "/photo.jpg", base)
     assert not api.same_origin(base + ".evil.net/photo.jpg", base)
+
+
+@pytest.mark.parametrize("url, sends_token", [
+    ("https://psau-security-production.up.railway.app/storage/a.jpg", True),
+    ("https://PSAU-security-production.up.railway.app/storage/a.jpg", True),
+    ("https://psau-security-production.up.railway.app.evil.example/a.jpg", False),
+    ("https://psau-security-production.up.railway.app@evil.example/a.jpg", False),
+    ("https://psau-security-production.up.railway.app:8443/a.jpg", False),
+    ("http://psau-security-production.up.railway.app/storage/a.jpg", False),
+    ("https://cdn.example.com/a.jpg", False),
+])
+def test_photo_downloads_send_the_token_only_to_the_server_itself(monkeypatch, tmp_path, url, sends_token):
+    seen = {}
+
+    class _Stream:
+        ok = True
+        headers = {"Content-Type": "image/jpeg"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def iter_content(self, n):
+            yield b"jpg"
+
+    def get(self, u, headers=None, **kw):
+        seen["headers"] = headers or {}
+        return _Stream()
+
+    monkeypatch.setattr(requests.Session, "get", get)
+    assert ApiClient(Config().api, token="t0k").download(url, tmp_path / "a.jpg")
+    assert ("Authorization" in seen["headers"]) == sends_token
+
+
+def test_logout_revokes_the_token_and_survives_being_offline(monkeypatch):
+    calls = []
+
+    def post(self, url, headers=None, **kw):
+        calls.append((url, headers))
+        raise requests.ConnectionError("offline")
+
+    monkeypatch.setattr(requests.Session, "post", post)
+    client = ApiClient(Config().api, token="t0k")
+    client.logout()
+    assert calls == [("https://psau-security-production.up.railway.app/api/logout", {"Authorization": "Bearer t0k"})]
+    assert client.token is None
+    client.logout()            # nothing left to revoke
+    assert len(calls) == 1

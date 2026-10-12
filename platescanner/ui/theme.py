@@ -4,6 +4,8 @@ The palette comes from the university logo (deep green strokes, gold ring). Call
 once at start-up, before the stylesheet is built; the other modules read the colours as theme.<NAME>.
 """
 
+import html
+
 MONO_FONT = '"Cascadia Mono", Consolas, monospace'
 
 _DARK = dict(
@@ -43,6 +45,11 @@ STYLESHEET = ""
 RESULT_LABELS = {"violation": "VIOLATION", "clear": "NO VIOLATION", "not_registered": "NOT REGISTERED",
                  "no_plate": "NO PLATE READ"}
 RESULT_ICONS = {"violation": "⛔", "clear": "✔", "not_registered": "?", "no_plate": "–"}
+
+
+def plain_tip(text: str) -> str:
+    """A tooltip that shows `text` as written: Qt renders tooltip text that looks like HTML as HTML."""
+    return "<p>" + html.escape(text).replace("\n", "<br>") + "</p>"
 
 
 def dot(color: str, text: str) -> str:

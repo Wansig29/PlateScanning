@@ -199,6 +199,17 @@ class ApiClient:
         self.token = token
         return token, user
 
+    def logout(self) -> None:
+        """Revoke the token on the server. Best effort: an offline laptop still signs out locally."""
+        if not self.token:
+            return
+        try:
+            self.session.post(self._url(self.cfg.logout_path), headers=self._auth_headers(),
+                              timeout=self.cfg.timeout_seconds, verify=self.cfg.verify_tls)
+        except requests.RequestException:
+            pass
+        self.token = None
+
     def fetch_all(self, path: str, updated_since: str | None = None) -> list[dict]:
         """GET every page of a collection endpoint, optionally only recent changes."""
         items: list[dict] = []

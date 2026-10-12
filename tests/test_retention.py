@@ -159,3 +159,21 @@ def test_archiving_can_be_stopped_and_the_log_matches_what_was_moved(conn, tmp_p
     # The next run finishes the job.
     assert retention.archive_old_captures(conn, cap, arc, 30, today=date(2026, 10, 4)) == 2
     assert all(Path(r["crop_path"]).exists() for r in conn.execute("SELECT crop_path FROM scan_log"))
+
+
+@pytest.mark.parametrize("label", [r"..\..\Desktop", "../../Desktop", r"C:\Windows", "D:x", "CON", "nul.txt", ".."])
+def test_a_school_year_name_that_is_a_path_is_never_used_as_one(conn, tmp_path, label):
+    db.replace_school_years(conn, [{"year_label": label, "start_date": "2024-08-01", "end_date": "2025-06-30"}])
+    scan = _scan_at(conn, "2024-10-01T09:00:00")
+    arc = tmp_path / "box" / "arc"
+    assert retention.archive_ended_years(conn, arc, 8, today=date(2026, 10, 4)) == []
+    assert not arc.exists() and not any((tmp_path / "box").iterdir() if (tmp_path / "box").exists() else [])
+    assert {r["id"] for r in db.recent_scans(conn)} == {scan}   # left in the Logs
+
+
+def test_a_plain_school_year_name_is_still_archived(conn, tmp_path):
+    db.replace_school_years(conn, [{"year_label": "SY 2024-2025", "start_date": "2024-08-01",
+                                    "end_date": "2025-06-30"}])
+    _scan_at(conn, "2024-10-01T09:00:00")
+    assert retention.archive_ended_years(conn, tmp_path / "arc", 8, today=date(2026, 10, 4)) == ["SY 2024-2025"]
+    assert (tmp_path / "arc" / "SY 2024-2025" / "scan_log_SY 2024-2025.csv").is_file()

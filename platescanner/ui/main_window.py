@@ -828,7 +828,7 @@ class MainWindow(QMainWindow):
         if error:
             self._sync_error_full = f"⚠ {error} · last synced {_ago(last)}"
             self._elide_sync_error()
-            self.sync_label.setToolTip(f"<p>{html.escape(self._sync_error_full)}</p>")
+            self.sync_label.setToolTip(theme.plain_tip(self._sync_error_full))
             self.sync_label.setStyleSheet(f"color: {theme.AMBER};")
         elif is_stale(last, self.cfg.sync.stale_after_hours):
             # Violations added online since then are unknown here: tell the guard plainly.
@@ -883,7 +883,7 @@ class MainWindow(QMainWindow):
             how = "" if self.session else " (offline)"
             self.account_btn.setIcon(_avatar_icon(_initials(name)))
             self.account_btn.setText(f" {short}  ▾" if self._density < DENSITY_COMPACT else " ▾")
-            self.account_btn.setToolTip(f"Signed in as {name}{how}. Account and update settings")
+            self.account_btn.setToolTip(theme.plain_tip(f"Signed in as {name}{how}. Account and update settings"))
             self.account_action.setText("Sign out")
         else:
             self.account_btn.setIcon(_avatar_icon("?"))
@@ -896,6 +896,9 @@ class MainWindow(QMainWindow):
                                     "Reports are locked and syncing stops until someone signs in.") \
                     != QMessageBox.StandardButton.Yes:
                 return
+            # Revoke the token online too, on a thread: an offline gate must not wait for the timeout.
+            threading.Thread(target=ApiClient(self.cfg.api, self.session.get("token")).logout,
+                             daemon=True, name="sign-out").start()
             clear_session(self.cfg.session_path)
             self.session = None
             self.offline_user = None
