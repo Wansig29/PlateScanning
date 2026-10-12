@@ -7,6 +7,7 @@ JSON (development only).
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -42,9 +43,16 @@ else:
         return data
 
 
+def write_atomic(path: Path, data: bytes) -> None:
+    """Write via a temporary file, so a crash mid-write can't leave a corrupt file behind."""
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+
+
 def save_session(path: Path, token: str, user: dict[str, Any]) -> None:
     payload = json.dumps({"token": token, "user": user}).encode("utf-8")
-    path.write_bytes(_protect(payload))
+    write_atomic(path, _protect(payload))
 
 
 def load_session(path: Path) -> dict[str, Any] | None:
