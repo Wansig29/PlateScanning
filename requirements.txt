@@ -2,6 +2,7 @@ opencv-python-headless>=4.9
 numpy>=1.26
 PySide6>=6.7,<6.12  # 6.12 aborts when Python garbage-collects a Qt window; revisit before raising
 requests>=2.31
+cryptography>=42   # checks the signature of in-app updates (updates.py)
 # Plate detector + plate OCR (MIT-licensed ONNX models, no PyTorch needed)
 onnxruntime>=1.19
 open-image-models>=0.6

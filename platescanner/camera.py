@@ -11,12 +11,35 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import cv2
 
 from .config import CameraConfig
 
 log = logging.getLogger(__name__)
+
+# Query parameters some IP cameras take their login in (http://cam/video?user=admin&pwd=...).
+_SECRET_PARAMS = {"user", "username", "usr", "login", "pwd", "pass", "passwd", "password", "token", "key", "auth"}
+
+
+def safe_source(source: str) -> str:
+    """The camera source as it may be shown on screen or written to the log: a stream URL keeps
+    its address but not its user name or password ("rtsp://admin:1234@10.0.0.5/live" ->
+    "rtsp://***@10.0.0.5/live"). Camera numbers and file paths are returned as they are."""
+    try:
+        parts = urlsplit(source)
+        host = parts.hostname
+        port = parts.port
+    except ValueError:  # not a URL we can take apart: show nothing of it rather than a password
+        return "(camera stream)" if "@" in source else source
+    if not parts.scheme or not host or "://" not in source:
+        return source
+    netloc = ("***@" if parts.username or parts.password else "") + host + (f":{port}" if port else "")
+    query = urlencode([(k, "***" if k.lower() in _SECRET_PARAMS else v)
+                       for k, v in parse_qsl(parts.query, keep_blank_values=True)], safe="*")
+    return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
+
 
 # DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).
 AUTO_EXPOSURE_MANUAL = 0.25

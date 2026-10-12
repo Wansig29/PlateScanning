@@ -310,7 +310,7 @@ class VehicleView:
     track_id: int | None = None      # the #number shown on the live feed (this session only)
     when: str = ""                   # e.g. "Scanned 10:03:53"
     scan_id: int | None = None       # the scan this is a picture of (for corrections)
-    verify: bool = False             # a violation resting on a doubtful read: check the plate
+    verify: bool = False             # a doubtful violation or look-alike registered match: check the plate
 
     def describe(self) -> str:
         parts = []
@@ -430,6 +430,7 @@ class IdentityCard(QFrame):
         who = QVBoxLayout()
         who.setSpacing(0)
         name = QLabel("—")
+        name.setTextFormat(Qt.TextFormat.PlainText)  # synced text: shown as typed, never as HTML
         name.setStyleSheet("font-size: 12pt; font-weight: 700;")
         name.setWordWrap(True)
         name.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
@@ -451,6 +452,7 @@ class IdentityCard(QFrame):
             lbl = QLabel(label)
             lbl.setObjectName("FieldName")
             value = QLabel("—")
+            value.setTextFormat(Qt.TextFormat.PlainText)
             value.setObjectName("FieldValue")
             value.setTextFormat(Qt.TextFormat.PlainText)
             value.setWordWrap(True)
@@ -583,16 +585,16 @@ class IdentityCard(QFrame):
         self.set_waiting(0)
         color = theme.RESULT_COLORS[result.status]
         label = theme.RESULT_LABELS[result.status]
+        if seen and seen.verify and result.status == db.RESULT_CLEAR:
+            color = theme.AMBER  # registered only by a look-alike plate: not a green light
         plate_txt = plates.display(result.matched_plate or plate_read)
-        if result.status == db.RESULT_VIOLATION and len(result.violations) > 1:
-            label = f"{len(result.violations)} VIOLATIONS"
         seen = seen or VehicleView()
         self.track_id = seen.track_id
         self.is_violation = result.status == db.RESULT_VIOLATION
         self.shown_at = time.monotonic()
         self._banner_color = color
         vehicle_no = f"   \u00b7   VEHICLE #{seen.track_id}" if seen.track_id else ""
-        verify = "   ·   VERIFY PLATE" if seen.verify and result.status == db.RESULT_VIOLATION else ""
+        verify = "   ·   VERIFY PLATE" if seen.verify else ""
         self.banner.setToolTip("The plate was read with some doubt. Compare it with the photo of the "
                                "vehicle." if verify else "")
         self.banner.setText(f"{theme.RESULT_ICONS.get(result.status, '')}  {label}{vehicle_no}{verify}")
@@ -610,13 +612,14 @@ class IdentityCard(QFrame):
         self.fields["contact"].setText(v.get("contact") or "—")
         self.approx.setVisible(result.approximate)
 
-        self._violations = result.violations
+        self._lapsed = result.lapsed
+        self._in_force = len(result.violations)
+        self._violations = result.violations + result.history  # in force first, then this school year's history
         self._resume.stop()
         self._show_violation(0)
-        if len(self._violations) > 1:
-            self._rotate.start()
-        else:
-            self._rotate.stop()
+        # The violation in force comes first (db.lookup); the guard sees that one with its
+        # sanction time and pages to the others by hand.
+        self._rotate.stop()
 
     def _manual_step(self, delta: int) -> None:
         self._rotate.stop()
@@ -628,15 +631,22 @@ class IdentityCard(QFrame):
         if not vs:
             self.fields["type"].setText("None")
             self.fields["type"].setStyleSheet(f"color: {theme.GREEN};")
-            self.fields["suspension"].setText("—")
+            self.fields["suspension"].setToolTip(
+                "The sanction's end date has passed since the last sync, so the record may be out of date."
+                if getattr(self, "_lapsed", []) else "")
+            lapsed = getattr(self, "_lapsed", [])
+            self.fields["suspension"].setText(
+                f"Ended {fmt_date(lapsed[0].get('suspension_end'))} · not synced yet" if lapsed else "—")
             self._evidence = []
             self.evidence_btn.hide()
             self.pager.hide()
             return
         self._vi = index % len(vs)
         v = vs[self._vi]
-        self.fields["type"].setText(v.get("violation_type") or "Unspecified")
-        self.fields["type"].setStyleSheet(f"color: {theme.RED};")
+        past = self._vi >= getattr(self, "_in_force", len(vs))  # history: no longer in force
+        self.fields["type"].setText((v.get("violation_type") or "Unspecified") + (
+            (" (ended)" if v.get("is_active") else " (settled)") if past else ""))
+        self.fields["type"].setStyleSheet(f"color: {theme.MUTED if past else theme.RED};")
         self.fields["suspension"].setText(suspension_text(v))
         self._evidence = [pm for pm in (load_pixmap(p) for p in v.get("evidence_paths", []) if p) if pm]
         n = len(self._evidence)
@@ -645,7 +655,8 @@ class IdentityCard(QFrame):
         self.pager.setVisible(len(vs) > 1)
         when = fmt_date(v.get("occurred_at"))
         dots = " ".join("●" if i == self._vi else "○" for i in range(len(vs)))
-        self.pager_label.setText(f"{dots}   Violation {self._vi + 1} of {len(vs)}" + (f" · {when}" if when else ""))
+        self.pager_label.setText(f"{dots}   {'Earlier this school year' if past else 'Violation'} {self._vi + 1} of {len(vs)}"
+                                   + (f" · {when}" if when else ""))
 
 
 class IdentityPanel(QFrame):
