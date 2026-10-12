@@ -6,6 +6,7 @@ thread write while the recognizer and UI read.
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -287,6 +288,12 @@ class LookupResult:
     violations: list[dict[str, Any]] = field(default_factory=list)
     matched_plate: str | None = None
     approximate: bool = False
+    # Settled or ended violations of this vehicle in the current school year: shown after the
+    # ones in force so the guard sees the history, but they never raise the alert on their own.
+    history: list[dict[str, Any]] = field(default_factory=list)
+    # Violations the server still has as active whose sanction end date has passed since the last
+    # sync: the vehicle is clear (the sanction is over), but the record may be out of date.
+    lapsed: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
@@ -300,9 +307,10 @@ def _violation_dict(row: sqlite3.Row) -> dict[str, Any]:
 # has passed, even if the laptop hasn't synced since (the server lifts it at
 # midnight the same way). An end date SQLite can't read (date() gives NULL, e.g.
 # "10/10/2026") keeps the violation alerting: a missed violator is worse than a
-# suspension that lasts until the next sync.
-_ALERTING = ("is_active=1 AND (date(suspension_end) IS NULL "
-             "OR date(suspension_end) >= date('now', 'localtime'))")
+# suspension that lasts until the next sync. Only the date as written (first 10 characters) is
+# compared: date() on "2026-10-12T00:00:00+08:00" would convert to UTC and end it a day early.
+_ALERTING = ("is_active=1 AND (date(substr(suspension_end, 1, 10)) IS NULL "
+             "OR date(substr(suspension_end, 1, 10)) >= date('now', 'localtime'))")
 
 
 def _active_violations(conn: sqlite3.Connection, where: str, params: tuple) -> list[dict]:
@@ -324,11 +332,50 @@ def _permanent_revocation_alert(vehicle: dict[str, Any]) -> dict[str, Any]:
             "evidence_urls": [], "evidence_paths": [], "occurred_at": None, "updated_at": vehicle.get("updated_at")}
 
 
+def _sanction_rank(v: dict[str, Any]) -> tuple:
+    """Sort key, the violation in force first: a permanent revocation, then one with no end date
+    (revoked for good), then the one whose sanction lasts longest, then the newest."""
+    end = str(v.get("suspension_end") or "")[:10]
+    permanent = str(v["id"]).startswith("permanent-revoke-")
+    # An end date that isn't YYYY-MM-DD keeps alerting (see _ALERTING), so it ranks like an open end.
+    open_ended = not re.fullmatch(r"\d{4}-\d{2}-\d{2}", end) or end >= "2900"
+    return (0 if permanent else 1, 0 if open_ended else 1, "" if open_ended else _flip(end))
+
+
+def _flip(day: str) -> str:
+    """So that a later date sorts first in an ascending sort."""
+    return "".join(chr(ord("0") + 9 - int(c)) if c.isdigit() else c for c in day)
+
+
 def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
     """The violations that would raise an alert for this vehicle at the gate, newest first:
     those recorded against the vehicle, or against its exact plate (a violation logged
     without a vehicle record). Never those of a different plate that only looks alike."""
     return _active_violations(conn, "vehicle_id=? OR plate=?", (str(vehicle["id"]), vehicle["plate"]))
+
+
+def lapsed_sanctions(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Active-on-the-server violations of this vehicle whose sanction ended, newest end first."""
+    rows = conn.execute(
+        "SELECT * FROM violations WHERE is_active=1 AND (vehicle_id=? OR plate=?) "
+        "AND date(substr(suspension_end, 1, 10)) < date('now', 'localtime') "
+        "ORDER BY suspension_end DESC", (str(vehicle["id"]), vehicle["plate"])).fetchall()
+    return [_violation_dict(r) for r in rows]
+
+
+def school_year_history(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
+    """The vehicle's violations in the active school year (synced from psau-security) that no longer
+    alert, newest first. Empty when no active school year is known."""
+    year = conn.execute("SELECT start_date, end_date FROM school_years WHERE is_active=1 "
+                        "ORDER BY start_date DESC LIMIT 1").fetchone()
+    if not year:
+        return []
+    rows = conn.execute(
+        "SELECT * FROM violations WHERE (vehicle_id=? OR plate=?) "
+        f"AND NOT ({_ALERTING}) AND substr(COALESCE(occurred_at, updated_at), 1, 10) BETWEEN ? AND ? "
+        "ORDER BY COALESCE(occurred_at, updated_at) DESC",
+        (str(vehicle["id"]), vehicle["plate"], year["start_date"], year["end_date"])).fetchall()
+    return [_violation_dict(r) for r in rows]
 
 
 def list_vehicles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
@@ -424,6 +471,7 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         violations = exact_violations
     if vehicle and vehicle.get("permanently_revoked"):
         violations.insert(0, _permanent_revocation_alert(vehicle))
+    violations.sort(key=_sanction_rank)  # stable: equal sanctions stay newest first
     matched = vehicle["plate"] if vehicle else (violations[0]["plate"] if violations else None)
     if violations:
         status = RESULT_VIOLATION
@@ -433,7 +481,9 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         status = RESULT_NOT_REGISTERED
     # "Approximate" means the plate shown is not the plate read.
     approximate = approximate and matched is not None and plates.normalize(matched) != norm
-    return LookupResult(status, vehicle, violations, matched, approximate)
+    history = school_year_history(conn, vehicle) if vehicle and violations else []
+    lapsed = lapsed_sanctions(conn, vehicle) if vehicle and not violations else []
+    return LookupResult(status, vehicle, violations, matched, approximate, history, lapsed)
 
 
 # --- scan log ----------------------------------------------------------------

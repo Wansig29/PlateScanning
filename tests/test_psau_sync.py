@@ -211,3 +211,166 @@ def test_sync_with_nothing_new_writes_nothing(tmp_path):
     s = sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234")]), conn)
     assert not s["changed"]
     assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+
+
+def _html_reply():
+    r = requests.Response()
+    r.status_code = 200
+    r._content = b"<html>Application error</html>"
+    return r
+
+
+def test_login_with_a_non_json_reply_is_an_api_error(monkeypatch):
+    from platescanner.api import ApiError
+    c = ApiClient(Config().api)
+    monkeypatch.setattr(c.session, "post", lambda *a, **k: _html_reply())
+    with pytest.raises(ApiError):
+        c.login("guard@psau.local", "pw")
+
+
+def test_sync_download_with_a_non_json_reply_is_an_api_error(monkeypatch):
+    from platescanner.api import ApiError
+    c = ApiClient(Config().api, token="t")
+    monkeypatch.setattr(c.session, "get", lambda *a, **k: _html_reply())
+    with pytest.raises(ApiError):
+        c.fetch_all("/api/vehicles")
+
+
+def test_revoked_owner_stays_flagged_when_a_delta_record_does_not_mention_it(tmp_path):
+    # Fail safe: only the server explicitly saying False lifts a permanent revocation.
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True)], [])
+    sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", updated_at="2026-10-01T10:00:00+08:00")], []), conn)
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+    sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False,
+                                           updated_at="2026-10-02T10:00:00+08:00")], []), conn)
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_suspension_end_with_a_timezone_ends_on_the_written_date(tmp_path):
+    today = date.today().isoformat()
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")],
+                     [violation(10, 1, "NBC 1234", suspension_end=f"{today}T00:00:00+08:00")])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION  # still running today
+
+
+def test_fetch_all_stops_when_the_server_ignores_the_page_number(monkeypatch):
+    c = ApiClient(Config().api, token="t")
+    calls = []
+
+    def get(*a, **k):
+        calls.append(1)
+        r = requests.Response()
+        r.status_code = 200
+        r._content = b'{"data": [{"id": 1}, {"id": 2}], "next_page_url": "x"}'
+        return r
+
+    monkeypatch.setattr(c.session, "get", get)
+    assert c.fetch_all("/api/vehicles") == [{"id": 1}, {"id": 2}]
+    assert len(calls) == 2
+
+
+def test_rejected_login_logs_out_through_the_configured_path(monkeypatch):
+    cfg = Config().api
+    cfg.logout_path = "/custom/logout"
+    c = ApiClient(cfg)
+    urls = []
+
+    def post(url, **k):
+        urls.append(url)
+        r = requests.Response()
+        r.status_code = 200
+        r._content = b'{"token": "t", "user": {"role": "student"}}'
+        return r
+
+    monkeypatch.setattr(c.session, "post", post)
+    with pytest.raises(AuthError):
+        c.login("s@psau.local", "pw")
+    assert urls[-1].endswith("/custom/logout")
+
+
+def test_several_revocations_are_all_violations(tmp_path):
+    # A permanent revocation plus a revoked violation, or two revoked violations: still a violation.
+    (tmp_path / "a").mkdir()
+    _, conn = synced(tmp_path / "a", [vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=True)],
+                     [violation(10, 1, "NBC 1234", status="Revoked", suspension_end=None)])
+    r = db.lookup(conn, "NBC1234")
+    assert r.status == db.RESULT_VIOLATION and len(r.violations) == 2
+    (tmp_path / "b").mkdir()
+    _, conn = synced(tmp_path / "b", [vehicle(2, "ABC 1234", "Ana")],
+                     [violation(11, 2, "ABC 1234", status="Revoked"), violation(12, 2, "ABC 1234", status="Revoked")])
+    r = db.lookup(conn, "ABC1234")
+    assert r.status == db.RESULT_VIOLATION and len(r.violations) == 2
+
+
+def test_the_violation_in_force_comes_first(tmp_path):
+    (tmp_path / "a").mkdir()
+    soon, later = (date.today() + timedelta(days=2)).isoformat(), (date.today() + timedelta(days=30)).isoformat()
+    _, conn = synced(tmp_path / "a", [vehicle(1, "NBC 1234", "Juan")],
+                     [violation(10, 1, "NBC 1234", suspension_end=soon),
+                      violation(11, 1, "NBC 1234", suspension_end=later, updated_at="2026-01-01T00:00:00+08:00")])
+    assert [v["id"] for v in db.lookup(conn, "NBC1234").violations] == ["11", "10"]
+    (tmp_path / "b").mkdir()
+    _, conn = synced(tmp_path / "b", [vehicle(2, "ABC 1234", "Ana", owner_permanently_revoked=True)],
+                     [violation(12, 2, "ABC 1234", suspension_end=later)])
+    assert db.lookup(conn, "ABC1234").violations[0]["id"] == "permanent-revoke-2"
+
+
+def test_school_year_history_follows_the_active_violation_but_never_alerts_alone(tmp_path):
+    (tmp_path / "a").mkdir()
+    today = date.today()
+    cfg = _cfg(tmp_path / "a")
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    year = {"year_label": "Y", "start_date": (today - timedelta(days=100)).isoformat(),
+            "end_date": (today + timedelta(days=100)).isoformat(), "is_active": True}
+    old = (today - timedelta(days=400)).isoformat() + "T09:00:00+08:00"
+    mine = (today - timedelta(days=20)).isoformat() + "T09:00:00+08:00"
+    cl = FakeClient([vehicle(1, "NBC 1234", "Juan"), vehicle(2, "ABC 1234", "Ana")],
+                    [violation(10, 1, "NBC 1234", suspension_end=(today + timedelta(days=5)).isoformat(), occurred_at=mine),
+                     violation(11, 1, "NBC 1234", status="Resolved", is_active=False, occurred_at=mine),
+                     violation(12, 1, "NBC 1234", status="Resolved", is_active=False, occurred_at=old),
+                     violation(13, 2, "ABC 1234", status="Resolved", is_active=False, occurred_at=mine)])
+    cl.data["/api/security/gate/school-years"] = [year]
+    sync.run_sync(cfg, cl, conn)
+    r = db.lookup(conn, "NBC1234")
+    assert [v["id"] for v in r.violations] == ["10"]        # the alert: one active sanction
+    assert [v["id"] for v in r.history] == ["11"]           # this school year only, not last year's
+    r = db.lookup(conn, "ABC1234")
+    assert r.status == db.RESULT_CLEAR and r.history == []  # history alone never alerts
+
+
+def test_ended_sanction_not_yet_synced_is_clear_with_a_notice(tmp_path):
+    yesterday, tomorrow = (date.today() - timedelta(days=1)).isoformat(), (date.today() + timedelta(days=1)).isoformat()
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "ABC 1234", "Maria")],
+                     [violation(10, 1, "NBC 1234", suspension_end=yesterday),
+                      violation(11, 2, "ABC 1234", suspension_end=tomorrow)])
+    r = db.lookup(conn, "NBC1234")
+    assert r.status == db.RESULT_CLEAR and [v["id"] for v in r.lapsed] == ["10"]
+    r = db.lookup(conn, "ABC1234")
+    assert r.status == db.RESULT_VIOLATION and r.lapsed == []
+
+
+def test_unreadable_end_date_ranks_as_open_ended_not_as_a_date():
+    old = {"id": "1", "suspension_end": "2026-12-31"}
+    odd = {"id": "2", "suspension_end": "10/10/2026"}
+    assert sorted([old, odd], key=db._sanction_rank)[0] is odd
+
+
+def test_evidence_photos_are_not_downloaded_for_settled_violations(tmp_path):
+    class Counting(FakeClient):
+        def __init__(self, *a):
+            super().__init__(*a)
+            self.downloads = []
+
+        def download(self, url, dest):
+            self.downloads.append(url)
+            return super().download(url, dest)
+
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    cl = Counting([vehicle(1, "NBC 1234", "Juan")],
+                  [violation(10, 1, "NBC 1234", photo_url="/p/10"),
+                   violation(11, 1, "NBC 1234", photo_url="/p/11", is_active=False)])
+    sync.run_sync(cfg, cl, conn)
+    assert [u.rsplit("/", 1)[-1] for u in cl.downloads] == ["10"]

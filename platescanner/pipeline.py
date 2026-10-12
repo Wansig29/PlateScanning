@@ -276,6 +276,7 @@ class CaptureWorker(QThread):
             self.status.emit("Camera running")
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             started, index = time.monotonic(), 0
+            got_frame = False  # a video that never yields a frame must not be rewound in a tight loop
 
             while not self._stop.is_set():
                 t0 = time.monotonic()
@@ -287,6 +288,10 @@ class CaptureWorker(QThread):
                 ok, frame = cap.read()
                 index += 1
                 if not ok or frame is None:
+                    if is_file and not got_frame:
+                        self.status.emit("Video has no readable frames, retrying…")
+                        self._stop.wait(3.0)
+                        break
                     if is_file:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop test videos
                         started, index = time.monotonic(), 0
@@ -294,6 +299,7 @@ class CaptureWorker(QThread):
                     self.status.emit("Camera signal lost, reconnecting…")
                     break
 
+                got_frame = True
                 roi = self._roi(frame)
                 rx, ry, rw, rh = roi
                 moving, _ = detector.apply(frame[ry:ry + rh, rx:rx + rw])
