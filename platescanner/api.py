@@ -150,7 +150,12 @@ class ApiClient:
             raise AuthError(msg or "Invalid credentials")
         if not r.ok:
             raise ApiError(f"Login failed (HTTP {r.status_code})")
-        body = r.json()
+        try:
+            body = r.json()
+        except ValueError as e:  # e.g. an HTML error page with status 200
+            raise ApiError("The server's login reply was not understood") from e
+        if not isinstance(body, dict):
+            raise ApiError("The server's login reply was not understood")
         token = _extract_token(body)
         if not token:
             raise ApiError("Login response did not include a token")
@@ -193,7 +198,11 @@ class ApiClient:
                 raise AuthError("Session expired, sign in again")
             if not r.ok:
                 raise ApiError(f"GET {path} failed (HTTP {r.status_code})")
-            page_items, has_more = _extract_page(r.json())
+            try:
+                body = r.json()
+            except ValueError as e:  # e.g. an HTML error page with status 200
+                raise ApiError(f"GET {path} returned something other than JSON") from e
+            page_items, has_more = _extract_page(body)
             items.extend(i for i in page_items if isinstance(i, dict))
             if not has_more or not page_items:
                 break

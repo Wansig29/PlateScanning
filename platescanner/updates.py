@@ -95,6 +95,8 @@ def check_for_update(current: str, url: str = LATEST_RELEASE_API) -> Release | N
         r = requests.get(url, timeout=TIMEOUT_S, headers={"Accept": "application/vnd.github+json"})
         r.raise_for_status()
         data = r.json()
+        if not isinstance(data, dict):
+            raise ValueError("unexpected release data")
         tag, page = str(data.get("tag_name", "")), str(data.get("html_url", ""))
         assets = data.get("assets") or []
     except (requests.RequestException, ValueError) as e:

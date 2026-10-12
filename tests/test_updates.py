@@ -193,3 +193,13 @@ def test_download_reports_progress(monkeypatch, tmp_path):
     seen = []
     updates.download_installer(_rel(), tmp_path, lambda done, total: seen.append((done, total)), public_key=PUB)
     assert seen == [(5, 40), (40, 40)]
+
+
+@pytest.mark.parametrize("body", [b"[]", b"null", b"<html>", b'"text"'])
+def test_check_for_update_never_raises_on_unexpected_replies(monkeypatch, body):
+    import requests
+    r = requests.Response()
+    r.status_code = 200
+    r._content = body
+    monkeypatch.setattr(requests, "get", lambda *a, **k: r)
+    assert updates.check_for_update("1.0.0") is None

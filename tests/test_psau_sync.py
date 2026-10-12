@@ -211,3 +211,26 @@ def test_sync_with_nothing_new_writes_nothing(tmp_path):
     s = sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234")]), conn)
     assert not s["changed"]
     assert db.lookup(conn, "NBC1234").status == db.RESULT_VIOLATION
+
+
+def _html_reply():
+    r = requests.Response()
+    r.status_code = 200
+    r._content = b"<html>Application error</html>"
+    return r
+
+
+def test_login_with_a_non_json_reply_is_an_api_error(monkeypatch):
+    from platescanner.api import ApiError
+    c = ApiClient(Config().api)
+    monkeypatch.setattr(c.session, "post", lambda *a, **k: _html_reply())
+    with pytest.raises(ApiError):
+        c.login("guard@psau.local", "pw")
+
+
+def test_sync_download_with_a_non_json_reply_is_an_api_error(monkeypatch):
+    from platescanner.api import ApiError
+    c = ApiClient(Config().api, token="t")
+    monkeypatch.setattr(c.session, "get", lambda *a, **k: _html_reply())
+    with pytest.raises(ApiError):
+        c.fetch_all("/api/vehicles")
