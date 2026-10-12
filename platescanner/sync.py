@@ -91,7 +91,8 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
     if cfg.sync.download_photos:
         known = db.known_photo_paths(conn)
         todo = [v for v in vehicles.values() if v.get("owner_photo_url")]
-        total = len(todo) + sum(len(v["evidence_urls"]) for v in violations)
+        # Settled violations are only history: their evidence photos are not downloaded.
+        total = len(todo) + sum(len(v["evidence_urls"]) for v in violations if v.get("is_active", True))
         done = 0
 
         def fetch(url: str) -> str | None:
@@ -109,7 +110,8 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         for v in todo:
             v["owner_photo_path"] = fetch(v["owner_photo_url"])
         for v in violations:
-            v["evidence_paths"] = [fetch(u) for u in v["evidence_urls"]]
+            if v.get("is_active", True):
+                v["evidence_paths"] = [fetch(u) for u in v["evidence_urls"]]
 
     if not full and not raw_vehicles and not removed and db.same_violations(conn, violations):
         # Nothing new online: only note that we checked.

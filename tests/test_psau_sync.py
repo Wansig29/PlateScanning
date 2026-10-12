@@ -354,3 +354,23 @@ def test_unreadable_end_date_ranks_as_open_ended_not_as_a_date():
     old = {"id": "1", "suspension_end": "2026-12-31"}
     odd = {"id": "2", "suspension_end": "10/10/2026"}
     assert sorted([old, odd], key=db._sanction_rank)[0] is odd
+
+
+def test_evidence_photos_are_not_downloaded_for_settled_violations(tmp_path):
+    class Counting(FakeClient):
+        def __init__(self, *a):
+            super().__init__(*a)
+            self.downloads = []
+
+        def download(self, url, dest):
+            self.downloads.append(url)
+            return super().download(url, dest)
+
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    cl = Counting([vehicle(1, "NBC 1234", "Juan")],
+                  [violation(10, 1, "NBC 1234", photo_url="/p/10"),
+                   violation(11, 1, "NBC 1234", photo_url="/p/11", is_active=False)])
+    sync.run_sync(cfg, cl, conn)
+    assert [u.rsplit("/", 1)[-1] for u in cl.downloads] == ["10"]
