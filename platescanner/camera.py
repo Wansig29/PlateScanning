@@ -41,6 +41,18 @@ def safe_source(source: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
+def list_names() -> list[str]:
+    """Names of the connected cameras, in the order OpenCV's DirectShow camera numbers use
+    (so entry 0 is camera 0). Empty when they can't be listed (not Windows, or pygrabber is
+    missing); the caller then falls back to plain numbers."""
+    try:
+        from pygrabber.dshow_graph import FilterGraph
+        return list(FilterGraph().get_input_devices())
+    except Exception:  # noqa: BLE001 - a missing library or COM error must never stop the app
+        log.info("Could not list camera names", exc_info=True)
+        return []
+
+
 # DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).
 AUTO_EXPOSURE_MANUAL = 0.25
 

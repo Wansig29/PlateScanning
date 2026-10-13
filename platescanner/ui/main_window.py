@@ -12,14 +12,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
-    QAction, QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
+    QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, db, purge, retention, timefmt, updates
+from .. import __version__, camera, db, purge, retention, timefmt, updates
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config, save_config
@@ -408,19 +408,10 @@ class MainWindow(QMainWindow):
         self.account_action = menu.addAction("Sign out")
         self.account_action.triggered.connect(self._account_clicked)
         menu.addSeparator()
-        # Camera numbers as Windows lists them: 0 is usually the laptop's own camera, 1 and up
-        # are USB webcams. A number with no camera shows "unavailable" in the status bar.
-        cam_menu = menu.addMenu("Camera")
-        self._camera_group = QActionGroup(cam_menu)
-        self._camera_actions: dict[str, QAction] = {}
-        for n in range(5):
-            act = cam_menu.addAction(f"Camera {n}" + ("  (built-in)" if n == 0 else ""))
-            act.setCheckable(True)
-            act.triggered.connect(lambda _c=False, s=str(n): self._set_camera(s))
-            self._camera_group.addAction(act)
-            self._camera_actions[str(n)] = act
-        if self.cfg.camera.source.strip() in self._camera_actions:
-            self._camera_actions[self.cfg.camera.source.strip()].setChecked(True)
+        # Listed again each time the menu opens, so a webcam plugged in later shows up.
+        self._camera_menu = menu.addMenu("Camera")
+        self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
+        self._fill_camera_menu()
         menu.addSeparator()
         menu.addAction("Software updates").setEnabled(False)
         group = QActionGroup(menu)
@@ -706,6 +697,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Update", f"The installer could not be started:\n\n{e}\n\nThe file is at:\n{path}")
             return
         self.close()                                          # installer relaunches the app when done
+
+    def _fill_camera_menu(self) -> None:
+        """One entry per connected camera, by name; the one in use is ticked."""
+        self._camera_menu.clear()
+        group = QActionGroup(self._camera_menu)
+        names = camera.list_names()
+        current = self.cfg.camera.source.strip()
+        for n, name in enumerate(names or [f"Camera {n}" for n in range(5)]):
+            act = self._camera_menu.addAction(f"{n}: {name}")
+            act.setCheckable(True)
+            act.setChecked(str(n) == current)
+            act.triggered.connect(lambda _c=False, s=str(n): self._set_camera(s))
+            group.addAction(act)
+        if not current.isdigit():  # a stream URL or video file set in config.json
+            self._camera_menu.addSeparator()
+            self._camera_menu.addAction(f"In use: {camera.safe_source(current)}").setEnabled(False)
 
     def _set_camera(self, source: str) -> None:
         """Switch the gate camera now and remember it for the next start."""

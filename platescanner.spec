@@ -14,7 +14,8 @@ else:
 a = Analysis(
     ["run.py"],
     datas=datas,
-    hiddenimports=collect_submodules("fast_plate_ocr.inference") + collect_submodules("open_image_models.detection"),
+    hiddenimports=collect_submodules("fast_plate_ocr.inference") + collect_submodules("open_image_models.detection")
+        + collect_submodules("pygrabber") + ["comtypes"],
     excludes=["tkinter", "matplotlib", "IPython", "PyQt5", "PyQt6", "torch", "torchvision", "easyocr",
               "tensorflow", "keras", "tensorboard"],  # training-only; the app runs the ONNX models
 )
