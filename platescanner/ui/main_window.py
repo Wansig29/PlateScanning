@@ -12,7 +12,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
-    QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
+    QAction, QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
@@ -408,6 +408,20 @@ class MainWindow(QMainWindow):
         self.account_action = menu.addAction("Sign out")
         self.account_action.triggered.connect(self._account_clicked)
         menu.addSeparator()
+        # Camera numbers as Windows lists them: 0 is usually the laptop's own camera, 1 and up
+        # are USB webcams. A number with no camera shows "unavailable" in the status bar.
+        cam_menu = menu.addMenu("Camera")
+        self._camera_group = QActionGroup(cam_menu)
+        self._camera_actions: dict[str, QAction] = {}
+        for n in range(5):
+            act = cam_menu.addAction(f"Camera {n}" + ("  (built-in)" if n == 0 else ""))
+            act.setCheckable(True)
+            act.triggered.connect(lambda _c=False, s=str(n): self._set_camera(s))
+            self._camera_group.addAction(act)
+            self._camera_actions[str(n)] = act
+        if self.cfg.camera.source.strip() in self._camera_actions:
+            self._camera_actions[self.cfg.camera.source.strip()].setChecked(True)
+        menu.addSeparator()
         menu.addAction("Software updates").setEnabled(False)
         group = QActionGroup(menu)
         self._update_mode_actions = {}
@@ -692,6 +706,12 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Update", f"The installer could not be started:\n\n{e}\n\nThe file is at:\n{path}")
             return
         self.close()                                          # installer relaunches the app when done
+
+    def _set_camera(self, source: str) -> None:
+        """Switch the gate camera now and remember it for the next start."""
+        self.capture.switch_source(source)
+        save_config(self.cfg)
+        self._set_status(self.cam_status, f"Camera: opening camera {source}", theme.AMBER)
 
     def _set_update_mode(self, mode: str) -> None:
         self.cfg.update.mode = mode
