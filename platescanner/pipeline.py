@@ -174,11 +174,17 @@ class CaptureWorker(QThread):
         self.cfg = cfg
         self.slot = slot
         self._stop = threading.Event()
+        self._reopen = threading.Event()  # set when the operator picks another camera
         self._overlays: list[Overlay] = []
         self._lock = threading.Lock()
 
     def stop(self) -> None:
         self._stop.set()
+
+    def switch_source(self, source: str) -> None:
+        """Use another camera (or stream) from now on: the current one is closed and the new one opened."""
+        self.cfg.camera.source = source
+        self._reopen.set()
 
     def set_overlays(self, overlays: list[Overlay]) -> None:
         """Boxes and labels of the vehicles currently tracked (called by the recognizer)."""
@@ -282,6 +288,7 @@ class CaptureWorker(QThread):
         last_motion = 0.0
 
         while not self._stop.is_set():
+            self._reopen.clear()
             cap, is_file = self._open()
             if cap is None:
                 self.status.emit(f"Camera '{camera.safe_source(self.cfg.camera.source)}' unavailable, retrying…")
@@ -292,7 +299,7 @@ class CaptureWorker(QThread):
             started, index = time.monotonic(), 0
             got_frame = False  # a video that never yields a frame must not be rewound in a tight loop
 
-            while not self._stop.is_set():
+            while not self._stop.is_set() and not self._reopen.is_set():
                 t0 = time.monotonic()
                 if is_file:
                     # Play in real time like a live camera: when behind, drop frames.

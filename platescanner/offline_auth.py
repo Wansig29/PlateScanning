@@ -70,3 +70,20 @@ def verify(path: Path, email: str, password: str, max_age_days: float,
     if not hmac.compare_digest(_hash(password, salt), str(entry.get("hash", ""))):
         return None
     return dict(entry.get("user") or {"email": email.strip()})
+
+
+def why_refused(path: Path, email: str, password: str, max_age_days: float,
+                now: datetime | None = None) -> str:
+    """Plain-words reason `verify` said no, for the sign-in screen."""
+    entry = _load(path).get(_key(email))
+    if not isinstance(entry, dict):
+        return ("This laptop has no saved sign-in for that email. Connect to the internet and sign in "
+                "once with this account (not by resuming a saved session); after that it works offline.")
+    try:
+        signed_in_at = datetime.fromisoformat(entry["signed_in_at"])
+    except (KeyError, TypeError, ValueError):
+        return "The saved sign-in for that email is damaged. Sign in online once to renew it."
+    if (now or datetime.now(timezone.utc)) - signed_in_at > timedelta(days=max_age_days):
+        return (f"The last online sign-in for that email was more than {int(max_age_days)} days ago. "
+                "Sign in online once to renew offline access.")
+    return "Wrong password for that email."

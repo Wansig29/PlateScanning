@@ -1,6 +1,7 @@
 """Security-guard sign-in, reusing the mobile app's account + token API."""
 from __future__ import annotations
 
+import logging
 import threading
 from html import escape
 
@@ -11,6 +12,8 @@ from .. import offline_auth
 from ..api import ApiClient, ApiError
 from ..config import Config
 from . import theme
+
+log = logging.getLogger(__name__)
 
 
 class _Relay(QObject):
@@ -123,9 +126,8 @@ class LoginDialog(QDialog):
         user = offline_auth.verify(self.cfg.offline_guards_path, email, password,
                                    self.cfg.api.offline_login_days)
         if user is None:
-            days = int(self.cfg.api.offline_login_days)
-            self._show_error("Offline sign-in needs the email and password of a security account that "
-                             f"signed in online on this laptop in the last {days} days.")
+            self._show_error(offline_auth.why_refused(self.cfg.offline_guards_path, email, password,
+                                                      self.cfg.api.offline_login_days))
             self.password.selectAll()
             self.password.setFocus()
             return
@@ -146,8 +148,8 @@ class LoginDialog(QDialog):
                 token, user = ApiClient(self.cfg.api).login(email, password)
                 try:  # so this guard can sign in offline later
                     offline_auth.remember(self.cfg.offline_guards_path, email, password, user)
-                except OSError:
-                    pass
+                except Exception:  # noqa: BLE001 - offline access is optional; online sign-in must still work
+                    log.warning("Could not save the offline sign-in", exc_info=True)
                 self._relay.done.emit(token, user)
             except ApiError as e:
                 self._relay.done.emit(None, str(e))
@@ -168,3 +170,5 @@ class LoginDialog(QDialog):
     def _show_error(self, msg: str) -> None:
         self.error.setText(msg)
         self.error.show()
+        self.layout().activate()
+        self.adjustSize()  # the width is fixed: grow the height so a long message is not cut off

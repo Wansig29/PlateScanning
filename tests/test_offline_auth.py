@@ -98,3 +98,15 @@ def test_saving_leaves_no_temporary_file_and_replaces_the_old_one(tmp_path):
     session.save_session(p, "tok2", {"email": "a@b.c"})
     assert session.load_session(p)["token"] == "tok2"
     assert [f.name for f in tmp_path.iterdir()] == ["session.json"]
+
+
+def test_refusal_says_why(tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from platescanner import offline_auth
+    p = tmp_path / "guards.bin"
+    assert "no saved sign-in" in offline_auth.why_refused(p, "a@b.c", "pw", 14)
+    old = datetime.now(timezone.utc) - timedelta(days=30)
+    offline_auth.remember(p, "a@b.c", "pw", {"email": "a@b.c"}, now=old)
+    assert "days ago" in offline_auth.why_refused(p, "a@b.c", "pw", 14)
+    offline_auth.remember(p, "a@b.c", "pw", {"email": "a@b.c"})
+    assert "Wrong password" in offline_auth.why_refused(p, "a@b.c", "nope", 14)
