@@ -155,6 +155,14 @@ class FrameSlot:
             return f if f is not None and f.seq > seq else None
 
 
+def plate_size_text(width_px: int, min_width_px: float) -> str:
+    """The plate's width in camera pixels, for its label on the live feed: shows whether the camera
+    resolves plates well enough (below ocr.min_plate_width_px, reading gets unreliable). Plain ASCII:
+    the labels are drawn with OpenCV's built-in font."""
+    small = min_width_px > 0 and width_px < min_width_px
+    return f" | {width_px}px" + (" SMALL" if small else "")
+
+
 @dataclass
 class Overlay:
     box: tuple[int, int, int, int]   # frame coordinates
@@ -844,6 +852,7 @@ class RecognizerWorker(QThread):
             else:
                 label = f"#{t.track_id} reading..."
                 color = READING_BGR
+            label += plate_size_text(w, self.cfg.ocr.min_plate_width_px)
             trail = [(px + rx, py + ry) for px, py in t.trail]
             out.append(Overlay((x + rx, y + ry, w, h), label, color, trail, t.velocity, t.last_seen,
                                t.status == db.RESULT_VIOLATION))
