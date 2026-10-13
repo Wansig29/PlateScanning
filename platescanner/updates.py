@@ -37,7 +37,7 @@ MAX_SIGNATURE_BYTES = 1024
 # The release-signing public key (Ed25519, base64), printed by `python tools\sign_release.py keygen`.
 # Empty = no key set up yet: the app then never installs an update by itself, it only opens the
 # release page so the operator can download and run the installer by hand.
-RELEASE_PUBLIC_KEY = ""
+RELEASE_PUBLIC_KEY = "xUWAI3zF+GSTT43RYVXB7zjE8bjOigNkJLPHj5RVTFI="
 
 
 class UpdateNotTrusted(ValueError):
