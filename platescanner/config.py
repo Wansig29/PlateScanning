@@ -131,7 +131,9 @@ class OcrConfig:
     # Small, far plates: besides the whole picture, also run the detector on a close-up of
     # the moving vehicle and of plates being followed, where they look 2-4x bigger to it
     # (vision/focus.py). Costs up to two extra detector passes per frame while vehicles are in view.
-    focus_detect: bool = True
+    # Off by default: on synthetic footage it read no extra plates and slowed scanning by
+    # 25-100% (tools/bench_resolution.py). Turn it on if real gate footage reads more with it.
+    focus_detect: bool = False
     # Several comma-separated OCR models are combined character by character.
     ocr_model: str = "cct-xs-v1-global-model,cct-xs-v2-global-model"
     # How sure the neural detector must be that something is a plate. 0.35 let shelves,

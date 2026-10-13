@@ -822,7 +822,7 @@ def main(argv: list[str] | None = None) -> int:
             "default (classical proposals on, database decoding off)":
                 ({"classical_proposals": True, "decode_with_database": False}, False, None, None),
             "classical proposals off": ({"classical_proposals": False, "decode_with_database": False}, False, ablate, None),
-            "close-up detection off": ({"focus_detect": False, "decode_with_database": False}, False, None, None),
+            "close-up detection on": ({"focus_detect": True, "decode_with_database": False}, False, None, None),
             "database decoding on (scene plates + 30 decoys registered)":
                 ({"classical_proposals": True, "decode_with_database": True}, True, ablate, None),
             "neural detector at 640 input (classical proposals off)":
