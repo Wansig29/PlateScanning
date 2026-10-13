@@ -195,6 +195,7 @@ class MainWindow(QMainWindow):
         self.cfg = cfg
         self.session = session              # signed in online (has the API token)
         self.offline_user = offline_user    # signed in offline (password checked locally, no token)
+        self._paused_session: dict | None = None   # online session set aside by "Work offline"
         self.conn = db.connect(cfg.db_path)
         self.setWindowTitle("PSAU Gate Plate Scanner")
         self._density = DENSITY_FULL
@@ -407,6 +408,8 @@ class MainWindow(QMainWindow):
         menu.addSeparator()
         self.account_action = menu.addAction("Sign out")
         self.account_action.triggered.connect(self._account_clicked)
+        self.offline_action = menu.addAction("Work offline")
+        self.offline_action.triggered.connect(self._toggle_offline)
         menu.addSeparator()
         # Listed again each time the menu opens, so a webcam plugged in later shows up.
         self._camera_menu = menu.addMenu("Camera")
@@ -809,7 +812,8 @@ class MainWindow(QMainWindow):
 
     def _sync(self, full: bool) -> None:
         if not self.session:
-            self.sync_label.setText("Offline mode: sign in to sync")
+            self.sync_label.setText("Offline mode: go back online to sync" if self._paused_session
+                                    else "Offline mode: sign in to sync")
             return
         self.sync_btn.setEnabled(False)
         self.sync_btn.setText("Syncing…")
@@ -842,7 +846,7 @@ class MainWindow(QMainWindow):
     def _auth_expired(self, msg: str) -> None:
         self._sync_finished_ui()
         clear_session(self.cfg.session_path)
-        self.session = None
+        self.session = self._paused_session = None
         self.token_changed.emit("")
         self._update_account_btn()
         self._refresh_sync_label(error=msg)
@@ -944,10 +948,30 @@ class MainWindow(QMainWindow):
             self.account_btn.setText(f" {short}  ▾" if self._density < DENSITY_COMPACT else " ▾")
             self.account_btn.setToolTip(theme.plain_tip(f"Signed in as {name}{how}. Account and update settings"))
             self.account_action.setText("Sign out")
+            self.offline_action.setVisible(bool(self.session or self._paused_session))
+            self.offline_action.setText("Work offline (pause syncing)" if self.session else "Go back online")
         else:
+            self.offline_action.setVisible(False)
             self.account_btn.setIcon(_avatar_icon("?"))
             self.account_btn.setText(" Not signed in  ▾" if self._density < DENSITY_COMPACT else " ▾")
             self.account_action.setText("Sign in")
+
+    def _toggle_offline(self) -> None:
+        """Pause syncing while staying signed in, and resume it later without typing the password again."""
+        if self.session:
+            self._paused_session = self.session
+            self.offline_user = self.session.get("user") or {}
+            self.session = None
+            self.token_changed.emit("")
+            self.retry_timer.stop()
+            self.statusBar().showMessage("Working offline: scanning continues with the last synced data", 8000)
+        elif self._paused_session:
+            self.session, self._paused_session = self._paused_session, None
+            self.offline_user = None
+            self.token_changed.emit(self.session["token"])
+            self._sync(False)
+        self._update_account_btn()
+        self._refresh_sync_label()
 
     def _account_clicked(self) -> None:
         if self._signed_in():
@@ -956,10 +980,12 @@ class MainWindow(QMainWindow):
                     != QMessageBox.StandardButton.Yes:
                 return
             # Revoke the token online too, on a thread: an offline gate must not wait for the timeout.
-            threading.Thread(target=ApiClient(self.cfg.api, self.session.get("token")).logout,
-                             daemon=True, name="sign-out").start()
+            token = (self.session or self._paused_session or {}).get("token")
+            if token:
+                threading.Thread(target=ApiClient(self.cfg.api, token).logout,
+                                 daemon=True, name="sign-out").start()
             clear_session(self.cfg.session_path)
-            self.session = None
+            self.session = self._paused_session = None
             self.offline_user = None
             self.token_changed.emit("")
             for w in (self.db_window, self.reports_window):
@@ -977,7 +1003,7 @@ class MainWindow(QMainWindow):
         if dlg.token:
             save_session(self.cfg.session_path, dlg.token, dlg.user)
             self.session = {"token": dlg.token, "user": dlg.user}
-            self.offline_user = None
+            self.offline_user = self._paused_session = None
             self.token_changed.emit(dlg.token)
             self._update_account_btn()
             self._sync(False)
