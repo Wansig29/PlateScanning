@@ -207,9 +207,11 @@ class VideoView(QWidget):
     MIN_ROI = 0.05
     # A press on the lane that moves less than this (widget px) is a click (aims the zoom), not a drag.
     CLICK_SLOP = 4.0
-    HANDLE = 8.0  # half the size of a lane's corner handle, and how near a press must be to grab it (px)
-    _CORNER_CURSORS = {"tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
-                       "tr": Qt.CursorShape.SizeBDiagCursor, "bl": Qt.CursorShape.SizeBDiagCursor}
+    HANDLE = 8.0  # how near a press must be to a lane's corner or edge to grab it (px)
+    _RESIZE_CURSORS = {"tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
+                       "tr": Qt.CursorShape.SizeBDiagCursor, "bl": Qt.CursorShape.SizeBDiagCursor,
+                       "t": Qt.CursorShape.SizeVerCursor, "b": Qt.CursorShape.SizeVerCursor,
+                       "l": Qt.CursorShape.SizeHorCursor, "r": Qt.CursorShape.SizeHorCursor}
 
     def __init__(self):
         super().__init__()
@@ -224,7 +226,8 @@ class VideoView(QWidget):
         self._drag: tuple[QPointF, QPointF] | None = None  # widget coordinates, while dragging
         self._roi: tuple[float, float, float, float] | None = None  # the lane (camera.roi), whole-picture fractions
         self._move: tuple[QPointF, QPointF] | None = None  # press and current point, while moving/resizing
-        self._grab = "move"  # what the press took hold of: "move", or a corner "tl", "tr", "bl", "br"
+        # What the press took hold of: "move", a corner ("tl", "tr", "bl", "br") or an edge ("t", "b", "l", "r").
+        self._grab = "move"
         self.setMouseTracking(True)  # the cursor over the lane shows it can be moved or resized
 
     def set_zoom(self, zoom: float) -> None:
@@ -236,8 +239,8 @@ class VideoView(QWidget):
     def _update_cursor(self, pos: QPointF | None = None) -> None:
         grab = self._grab if self._move is not None else (
             self._lane_part(pos) if not self._drawing and pos is not None else None)
-        if grab in self._CORNER_CURSORS:
-            self.setCursor(self._CORNER_CURSORS[grab])
+        if grab in self._RESIZE_CURSORS:
+            self.setCursor(self._RESIZE_CURSORS[grab])
         elif grab == "move":
             self.setCursor(Qt.CursorShape.ClosedHandCursor if self._move else Qt.CursorShape.OpenHandCursor)
         else:
@@ -259,7 +262,7 @@ class VideoView(QWidget):
 
     def _moved_roi(self, target: QRectF) -> tuple[float, float, float, float] | None:
         """The lane as the current drag leaves it, inside the picture. Moving keeps its size; a corner
-        handle moves that corner only (the opposite one stays put), down to MIN_ROI a side."""
+        moves its two sides and an edge just its own (the opposite sides stay put), down to MIN_ROI a side."""
         if self._roi is None:
             return None
         x, y, w, h = self._roi
@@ -274,11 +277,11 @@ class VideoView(QWidget):
         x0, y0, x1, y1 = x, y, x + w, y + h
         if "l" in self._grab:
             x0 = min(max(0.0, x0 + dx), x1 - self.MIN_ROI)
-        else:
+        elif "r" in self._grab:
             x1 = max(min(1.0, x1 + dx), x0 + self.MIN_ROI)
         if "t" in self._grab:
             y0 = min(max(0.0, y0 + dy), y1 - self.MIN_ROI)
-        else:
+        elif "b" in self._grab:
             y1 = max(min(1.0, y1 + dy), y0 + self.MIN_ROI)
         return x0, y0, x1 - x0, y1 - y0
 
@@ -292,8 +295,14 @@ class VideoView(QWidget):
     def _corners(self, rect: QRectF) -> dict[str, QPointF]:
         return {"tl": rect.topLeft(), "tr": rect.topRight(), "bl": rect.bottomLeft(), "br": rect.bottomRight()}
 
+    def _edge_middles(self, rect: QRectF) -> dict[str, QPointF]:
+        c = rect.center()
+        return {"t": QPointF(c.x(), rect.top()), "b": QPointF(c.x(), rect.bottom()),
+                "l": QPointF(rect.left(), c.y()), "r": QPointF(rect.right(), c.y())}
+
     def _lane_part(self, pos: QPointF) -> str | None:
-        """Which part of the lane is under `pos`: a corner handle ("tl"...), "move" inside it, or None."""
+        """Which part of the lane is under `pos`: a corner ("tl"...), an edge ("t"... anywhere along it,
+        its handle marks the middle), "move" inside it, or None. Corners win where they overlap edges."""
         target = self._target()
         if target is None or self._roi is None:
             return None
@@ -301,6 +310,17 @@ class VideoView(QWidget):
         for name, corner in self._corners(rect).items():
             if abs(pos.x() - corner.x()) <= self.HANDLE and abs(pos.y() - corner.y()) <= self.HANDLE:
                 return name
+        near = self.HANDLE
+        if rect.left() <= pos.x() <= rect.right():
+            if abs(pos.y() - rect.top()) <= near:
+                return "t"
+            if abs(pos.y() - rect.bottom()) <= near:
+                return "b"
+        if rect.top() <= pos.y() <= rect.bottom():
+            if abs(pos.x() - rect.left()) <= near:
+                return "l"
+            if abs(pos.x() - rect.right()) <= near:
+                return "r"
         return "move" if target.contains(pos) and rect.contains(pos) else None
 
     @property
@@ -467,11 +487,11 @@ class VideoView(QWidget):
                 fill.setAlpha(40)
                 p.setBrush(fill)
                 p.drawRect(lane.intersected(target))
-            # Corner handles: drag one to resize the lane.
+            # Corner and edge handles: drag one to resize the lane.
             p.setPen(QPen(QColor(0, 0, 0, 160), 1))
             p.setBrush(QColor(theme.AMBER) if self._move is not None else QColor("white"))
             half = self.HANDLE / 2 + 1
-            for corner in self._corners(lane).values():
+            for corner in [*self._corners(lane).values(), *self._edge_middles(lane).values()]:
                 if target.contains(corner):
                     p.drawRect(QRectF(corner.x() - half, corner.y() - half, 2 * half, 2 * half))
         if self._drawing:
