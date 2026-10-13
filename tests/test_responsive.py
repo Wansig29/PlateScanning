@@ -94,3 +94,15 @@ def test_draw_lane_button_sets_and_clears_camera_roi(window):
     assert not w.video.drawing and w.cfg.camera.roi == [0.1235, 0.4, 0.5, 0.6]
     w.lane_clear.click()
     assert w.cfg.camera.roi is None and reload().camera.roi is None and not w.lane_clear.isEnabled()
+
+
+def test_moved_lane_is_saved_and_the_view_knows_the_lane(window):
+    from platescanner.config import load_config as reload
+
+    w, _ = window
+    w.video.roi_drawn.emit(0.1, 0.2, 0.3, 0.4)
+    assert w.video._roi == (0.1, 0.2, 0.3, 0.4) and reload().camera.roi == [0.1, 0.2, 0.3, 0.4]
+    w.video.roi_drawn.emit(0.3, 0.2, 0.3, 0.4)          # dragged right
+    assert reload().camera.roi == [0.3, 0.2, 0.3, 0.4]
+    w.lane_clear.click()
+    assert w.video._roi is None

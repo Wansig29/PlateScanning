@@ -73,3 +73,39 @@ def test_escape_cancels_and_a_click_aims_the_zoom_again(view):
     assert not view.drawing and ended == [1]
     _mouse(view, QEvent.Type.MouseButtonPress, 320, 180)
     assert drawn == [] and clicks == [pytest.approx((0.5, 0.5))]
+
+
+def test_dragging_the_lane_moves_it_and_keeps_its_size(view):
+    drawn, clicks = [], []
+    view.roi_drawn.connect(lambda *r: drawn.append(r))
+    view.clicked_at.connect(lambda *c: clicks.append(c))
+    view.set_roi([0.25, 0.25, 0.5, 0.5])                # widget box (160, 90)-(480, 270)
+    _drag(view, 320, 180, 384, 144)                     # 64 px right, 36 px up
+    assert drawn == [pytest.approx((0.35, 0.15, 0.5, 0.5))] and clicks == []
+    _drag(view, 400, 100, 900, 900)                     # far past the corner: stops at the edge
+    assert drawn[-1] == pytest.approx((0.5, 0.5, 0.5, 0.5))
+
+
+def test_lane_is_moved_through_the_zoom(view):
+    img = QImage(640, 360, QImage.Format.Format_RGB888)
+    img.setText("zoom_window", "0.5,0.5,0.5,0.5")      # showing the bottom-right quarter, 2x
+    view.set_frame(img)
+    drawn = []
+    view.roi_drawn.connect(lambda *r: drawn.append(r))
+    view.set_roi([0.6, 0.6, 0.2, 0.2])                  # widget box (128, 72)-(384, 288)
+    _drag(view, 200, 150, 264, 150)                     # 64 px = 0.1 of the shown width = 0.05 of the picture
+    assert drawn == [pytest.approx((0.65, 0.6, 0.2, 0.2))]
+
+
+def test_a_click_on_the_lane_still_aims_the_zoom_and_outside_it_nothing_moves(view):
+    drawn, clicks = [], []
+    view.roi_drawn.connect(lambda *r: drawn.append(r))
+    view.clicked_at.connect(lambda *c: clicks.append(c))
+    view.set_roi([0.25, 0.25, 0.5, 0.5])
+    _drag(view, 320, 180, 321, 181)                     # a click, not a drag
+    assert drawn == [] and clicks == [pytest.approx((0.5, 0.5))]
+    _drag(view, 20, 20, 300, 300)                       # starts outside the lane
+    assert drawn == [] and len(clicks) == 2
+    view.set_roi(None)
+    _drag(view, 320, 180, 400, 200)                     # no lane: nothing to move
+    assert drawn == []

@@ -198,12 +198,15 @@ class AlertFrame(QWidget):
 class VideoView(QWidget):
     """Live camera frame, aspect-fit, with a LIVE / motion badge and a CCTV-style clock."""
     clicked_at = Signal(float, float)  # where was clicked, as x, y fractions of the whole camera picture
-    # The lane the operator drew (see start_drawing): x, y, w, h as fractions of the whole camera picture.
+    # The lane the operator drew (see start_drawing) or dragged to a new place: x, y, w, h as
+    # fractions of the whole camera picture.
     roi_drawn = Signal(float, float, float, float)
     drawing_ended = Signal()  # drawn or cancelled
 
     # A drawn box smaller than this (fraction of the picture, each side) is taken as a slip, not a lane.
     MIN_ROI = 0.05
+    # A press on the lane that moves less than this (widget px) is a click (aims the zoom), not a drag.
+    CLICK_SLOP = 4.0
 
     def __init__(self):
         super().__init__()
@@ -216,6 +219,9 @@ class VideoView(QWidget):
         self._zoom = 1.0
         self._drawing = False
         self._drag: tuple[QPointF, QPointF] | None = None  # widget coordinates, while dragging
+        self._roi: tuple[float, float, float, float] | None = None  # the lane (camera.roi), whole-picture fractions
+        self._move: tuple[QPointF, QPointF] | None = None  # press and current point, while moving the lane
+        self.setMouseTracking(True)  # an open hand over the lane shows it can be dragged
 
     def set_zoom(self, zoom: float) -> None:
         """Shown as a badge; above 1x a click on the picture aims the zoom."""
@@ -223,9 +229,52 @@ class VideoView(QWidget):
         self._update_cursor()
         self.update()
 
-    def _update_cursor(self) -> None:
-        cross = self._drawing or self._zoom > 1.0
-        self.setCursor(Qt.CursorShape.CrossCursor if cross else Qt.CursorShape.ArrowCursor)
+    def _update_cursor(self, pos: QPointF | None = None) -> None:
+        if self._move is not None:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        elif not self._drawing and pos is not None and self._over_lane(pos):
+            self.setCursor(Qt.CursorShape.OpenHandCursor)
+        else:
+            cross = self._drawing or self._zoom > 1.0
+            self.setCursor(Qt.CursorShape.CrossCursor if cross else Qt.CursorShape.ArrowCursor)
+
+    def set_roi(self, roi: list[float] | tuple[float, ...] | None) -> None:
+        """The lane now in use (camera.roi), so it can be dragged to a new place."""
+        self._roi = tuple(float(v) for v in roi) if roi and len(roi) == 4 else None
+        self._move = None
+        self.update()
+
+    def _zoom_window(self) -> tuple[float, float, float, float]:
+        try:
+            zx, zy, zw, zh = (float(v) for v in self._image.text("zoom_window").split(","))
+            return zx, zy, zw, zh
+        except (AttributeError, ValueError):
+            return 0.0, 0.0, 1.0, 1.0
+
+    def _moved_roi(self, target: QRectF) -> tuple[float, float, float, float] | None:
+        """The lane shifted by the current drag, kept inside the picture (same size)."""
+        if self._roi is None:
+            return None
+        x, y, w, h = self._roi
+        if self._move is not None:
+            _, _, zw, zh = self._zoom_window()
+            start, now = self._move
+            x += (now.x() - start.x()) / target.width() * zw
+            y += (now.y() - start.y()) / target.height() * zh
+            x, y = min(max(0.0, x), 1.0 - w), min(max(0.0, y), 1.0 - h)
+        return x, y, w, h
+
+    def _lane_rect(self, target: QRectF, roi: tuple[float, float, float, float]) -> QRectF:
+        """Where a lane (whole-picture fractions) is on the widget, through the zoom window."""
+        zx, zy, zw, zh = self._zoom_window()
+        x, y, w, h = roi
+        return QRectF(target.left() + (x - zx) / zw * target.width(), target.top() + (y - zy) / zh * target.height(),
+                      w / zw * target.width(), h / zh * target.height())
+
+    def _over_lane(self, pos: QPointF) -> bool:
+        target = self._target()
+        return (target is not None and self._roi is not None and target.contains(pos)
+                and self._lane_rect(target, self._roi).contains(pos))
 
     @property
     def drawing(self) -> bool:
@@ -248,10 +297,7 @@ class VideoView(QWidget):
     def _to_picture(self, pos: QPointF, target: QRectF) -> tuple[float, float]:
         """A point on the widget as x, y fractions of the whole camera picture. The picture shows
         only the zoom window it was drawn with, so the point is mapped through it."""
-        try:
-            zx, zy, zw, zh = (float(v) for v in self._image.text("zoom_window").split(","))
-        except ValueError:
-            zx, zy, zw, zh = 0.0, 0.0, 1.0, 1.0
+        zx, zy, zw, zh = self._zoom_window()
         fx = min(1.0, max(0.0, (pos.x() - target.left()) / target.width()))
         fy = min(1.0, max(0.0, (pos.y() - target.top()) / target.height()))
         return zx + fx * zw, zy + fy * zh
@@ -272,6 +318,9 @@ class VideoView(QWidget):
             if self._drawing:
                 self._drag = (pos, pos)
                 self.update()
+            elif self._over_lane(pos):
+                self._move = (pos, pos)  # a drag moves the lane; a plain click still aims the zoom
+                self._update_cursor(pos)
             else:
                 self.clicked_at.emit(*self._to_picture(pos, target))
         elif e.button() == Qt.MouseButton.RightButton:
@@ -282,6 +331,11 @@ class VideoView(QWidget):
         if self._drawing and self._drag is not None:
             self._drag = (self._drag[0], e.position())
             self.update()
+        elif self._move is not None:
+            self._move = (self._move[0], e.position())
+            self.update()
+        else:
+            self._update_cursor(e.position())
         super().mouseMoveEvent(e)
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
@@ -297,6 +351,18 @@ class VideoView(QWidget):
                 self.roi_drawn.emit(x, y, w, h)
                 self.drawing_ended.emit()
             self.update()  # too small: a slip of the mouse, keep drawing
+        elif self._move is not None and target is not None and e.button() == Qt.MouseButton.LeftButton:
+            start = self._move[0]
+            self._move = (start, e.position())
+            moved = self._moved_roi(target)
+            self._move = None
+            if (e.position() - start).manhattanLength() < self.CLICK_SLOP:
+                self.clicked_at.emit(*self._to_picture(start, target))  # a click on the lane, not a drag
+            elif moved != self._roi:
+                self._roi = moved
+                self.roi_drawn.emit(*moved)
+            self._update_cursor(e.position())
+            self.update()
         super().mouseReleaseEvent(e)
 
     def keyPressEvent(self, e) -> None:  # noqa: N802
@@ -365,6 +431,12 @@ class VideoView(QWidget):
             zoom = f"ZOOM {self._zoom:.1f}×"
             self._pill(p, QRectF(target.left() + 12 + width + 8, target.top() + 12,
                                  p.fontMetrics().horizontalAdvance(zoom) + 24, 26), None, zoom)
+        if self._move is not None:  # the lane being dragged (the camera picture still shows the old place)
+            p.setPen(QPen(QColor(theme.AMBER), 2, Qt.PenStyle.DashLine))
+            fill = QColor(theme.AMBER)
+            fill.setAlpha(40)
+            p.setBrush(fill)
+            p.drawRect(self._lane_rect(target, self._moved_roi(target)).intersected(target))
         if self._drawing:
             if self._drag is not None:
                 box = QRectF(self._drag[0], self._drag[1]).normalized().intersected(target)
