@@ -121,6 +121,10 @@ class OcrConfig:
     # Neural plate detector (open-image-models) and plate OCR (fast-plate-ocr).
     # Bigger detector input = finds smaller / farther plates, but slower.
     detector_model: str = "yolo-v9-t-384-license-plate-end2end"
+    # Small, far plates: besides the whole picture, also run the detector on a close-up of
+    # the moving vehicle and of plates being followed, where they look 2-4x bigger to it
+    # (vision/focus.py). Costs up to two extra detector passes per frame while vehicles are in view.
+    focus_detect: bool = True
     # Several comma-separated OCR models are combined character by character.
     ocr_model: str = "cct-xs-v1-global-model,cct-xs-v2-global-model"
     # How sure the neural detector must be that something is a plate. 0.35 let shelves,

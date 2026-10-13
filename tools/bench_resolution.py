@@ -440,13 +440,15 @@ def scan_video(app, engine, base_cfg, path: Path, fps: float, overrides: dict, r
         conn.close()
 
     calls = [0]
+    full = [None]  # the frame size: close-up passes (ocr.focus_detect) on parts of it don't count
     orig = engine.detect
 
     def counted(frame):
-        calls[0] += 1
+        full[0] = full[0] or frame.shape[:2]
+        calls[0] += frame.shape[:2] == full[0]
         return orig(frame)
 
-    engine.detect = counted  # one detect() per frame, in order: a clock for "when was this read issued"
+    engine.detect = counted  # one full-frame detect() per frame, in order: a clock for "when was this read issued"
     reports: list[WReport] = []
     name = path.name
 
@@ -820,6 +822,7 @@ def main(argv: list[str] | None = None) -> int:
             "default (classical proposals on, database decoding off)":
                 ({"classical_proposals": True, "decode_with_database": False}, False, None, None),
             "classical proposals off": ({"classical_proposals": False, "decode_with_database": False}, False, ablate, None),
+            "close-up detection off": ({"focus_detect": False, "decode_with_database": False}, False, None, None),
             "database decoding on (scene plates + 30 decoys registered)":
                 ({"classical_proposals": True, "decode_with_database": True}, True, ablate, None),
             "neural detector at 640 input (classical proposals off)":
