@@ -75,6 +75,7 @@ class PlateEngine:
         self.ocr_name = ocr
         self.det_conf = det_conf
         self._det = None
+        self.input_size = 384
         self._ocrs: list = []
         self.device = "CPU"
         self.alphabet = ""
@@ -95,6 +96,7 @@ class PlateEngine:
             det_path = download_model(self.detector_name)
         self._det = YoloV9Detector(det_path, ["License Plate"], conf_thresh=self.det_conf,
                                    providers=providers, sess_options=_session_options())
+        self.input_size = int(max(self._det.img_size))  # the square the whole picture is shrunk to
 
         # Several OCR models can be listed ("a,b"): each crop is read by all of
         # them and the results are merged character by character, since small

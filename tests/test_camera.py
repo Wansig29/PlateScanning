@@ -134,6 +134,59 @@ def test_video_without_frames_is_not_rewound_in_a_tight_loop(tmp_path, monkeypat
     assert "rewind" not in reads and len(reads) <= 2
 
 
+class Webcam:
+    """A DirectShow camera that is plugged in (gives pictures) or not."""
+
+    def __init__(self, plugged):
+        self.plugged, self.released = plugged, False
+
+    def isOpened(self): return self.plugged
+    def set(self, *_): return True
+    def get(self, *_): return 0
+    def read(self):
+        import numpy as np
+        return (True, np.zeros((4, 4, 3), np.uint8)) if self.plugged else (False, None)
+    def release(self): self.released = True
+
+
+def _capture_with(monkeypatch, plugged, source="0", use_any=True):
+    from platescanner import pipeline
+    from platescanner.config import Config
+    caps = {}
+
+    def open_cap(index, *_):
+        caps[index] = Webcam(index in plugged)
+        return caps[index]
+
+    monkeypatch.setattr(camera.cv2, "VideoCapture", open_cap)
+    monkeypatch.setattr(camera, "list_names", lambda: ["Integrated Webcam", "USB Camera", "OBS Virtual"])
+    cfg = Config()
+    cfg.camera.source, cfg.camera.use_any_webcam = source, use_any
+    return pipeline.CaptureWorker(cfg, pipeline.FrameSlot()), caps
+
+
+def test_configured_webcam_is_used_when_it_gives_a_picture(monkeypatch):
+    w, caps = _capture_with(monkeypatch, plugged={0, 1})
+    cap, is_file = w._open()
+    assert cap is caps[0] and not is_file
+    assert (w.in_use, w.note) == ("0", "") and list(caps) == [0]
+
+
+def test_missing_webcam_falls_back_to_the_first_connected_one(monkeypatch):
+    w, caps = _capture_with(monkeypatch, plugged={2}, source="1")
+    cap, _ = w._open()
+    assert cap is caps[2] and caps[1].released and caps[0].released
+    assert w.in_use == "2" and w.note == "camera 1 not found, using camera 2 (OBS Virtual)"
+    assert w.cfg.camera.source == "1"          # not saved: the gate camera is tried first next time
+
+
+def test_no_fallback_when_turned_off_or_no_webcam_at_all(monkeypatch):
+    w, caps = _capture_with(monkeypatch, plugged={1}, use_any=False)
+    assert w._open() == (None, False) and list(caps) == [0]
+    w, caps = _capture_with(monkeypatch, plugged=set())
+    assert w._open() == (None, False) and all(c.released for c in caps.values())
+
+
 def test_zoom_window_centred_and_clamped():
     assert camera.zoom_window(1.0, None) == (0.0, 0.0, 1.0, 1.0)
     assert camera.zoom_window(2.0, None) == (0.25, 0.25, 0.5, 0.5)

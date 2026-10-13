@@ -57,6 +57,10 @@ class ApiConfig:
 class CameraConfig:
     # Camera index ("0"), RTSP/HTTP stream URL, or a video file path for testing.
     source: str = "0"
+    # When the camera number above can't be opened (unplugged, or Windows numbered
+    # the cameras differently), scan with the first other connected webcam that
+    # gives a picture. Not saved: at the next start the camera above is tried first.
+    use_any_webcam: bool = True
     width: int = 1920
     height: int = 1080
     preview_fps: int = 20
@@ -124,6 +128,10 @@ class OcrConfig:
     # Neural plate detector (open-image-models) and plate OCR (fast-plate-ocr).
     # Bigger detector input = finds smaller / farther plates, but slower.
     detector_model: str = "yolo-v9-t-384-license-plate-end2end"
+    # Small, far plates: besides the whole picture, also run the detector on a close-up of
+    # the moving vehicle and of plates being followed, where they look 2-4x bigger to it
+    # (vision/focus.py). Costs up to two extra detector passes per frame while vehicles are in view.
+    focus_detect: bool = True
     # Several comma-separated OCR models are combined character by character.
     ocr_model: str = "cct-xs-v1-global-model,cct-xs-v2-global-model"
     # How sure the neural detector must be that something is a plate. 0.35 let shelves,

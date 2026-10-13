@@ -33,8 +33,8 @@ from . import camera, captures, db, plates
 from .decode import Decoding, PlateLexicon
 from .health import HealthConfig, HealthMonitor, scene_stats
 from .config import Config
-from .vision import identify
-from .vision.alpr import PlateEngine, merge_proposals, pad_box
+from .vision import focus, identify
+from .vision.alpr import PlateBox, PlateEngine, merge_proposals, overlap_of_smaller, pad_box
 from .vision.motion import MotionDetector, sharpness
 from .vision.plate import PlateRead, find_plate_regions
 from .vision.tracker import PlateTracker, Track
@@ -129,6 +129,7 @@ class _Frame:
     roi: tuple[int, int, int, int]
     motion: bool
     ts: float
+    motion_box: tuple[int, int, int, int] | None = None  # the moving vehicle, in ROI coordinates
 
 
 class FrameSlot:
@@ -139,10 +140,11 @@ class FrameSlot:
         self._frame: _Frame | None = None
         self._seq = 0
 
-    def put(self, image: np.ndarray, roi: tuple[int, int, int, int], motion: bool, ts: float) -> None:
+    def put(self, image: np.ndarray, roi: tuple[int, int, int, int], motion: bool, ts: float,
+            motion_box: tuple[int, int, int, int] | None = None) -> None:
         with self._cond:
             self._seq += 1
-            self._frame = _Frame(self._seq, image, roi, motion, ts)
+            self._frame = _Frame(self._seq, image, roi, motion, ts, motion_box)
             self._cond.notify_all()
 
     def get_newer(self, seq: int, timeout: float) -> _Frame | None:
@@ -177,6 +179,8 @@ class CaptureWorker(QThread):
         self._reopen = threading.Event()  # set when the operator picks another camera
         self._overlays: list[Overlay] = []
         self._lock = threading.Lock()
+        # The camera actually scanned, and why it isn't the configured one (when it isn't).
+        self.in_use, self.note = cfg.camera.source.strip(), ""
 
     def stop(self) -> None:
         self._stop.set()
@@ -193,14 +197,24 @@ class CaptureWorker(QThread):
 
     def _open(self) -> tuple[cv2.VideoCapture | None, bool]:
         src = self.cfg.camera.source.strip()
+        self.in_use, self.note = src, ""
         if src.isdigit():
-            cap = cv2.VideoCapture(int(src), cv2.CAP_DSHOW)
-            if cap.isOpened():
-                log.info("Camera opened: %s", camera.describe(camera.apply_settings(cap, self.cfg.camera)))
-            is_file = False
-        else:
-            cap = cv2.VideoCapture(src)
-            is_file = Path(src).is_file()
+            opened = camera.open_index(int(src), self.cfg.camera)
+            if opened is None and self.cfg.camera.use_any_webcam:
+                names = camera.list_names()
+                found = camera.find_webcam(int(src), self.cfg.camera, names)
+                if found is not None:
+                    cap, got, n = found
+                    opened = cap, got
+                    name = f" ({names[n]})" if n < len(names) else ""
+                    self.in_use, self.note = str(n), f"camera {src} not found, using camera {n}{name}"
+                    log.warning("Camera %s could not be opened; scanning with camera %d%s instead", src, n, name)
+            if opened is None:
+                return None, False
+            log.info("Camera opened: %s", camera.describe(opened[1]))
+            return opened[0], False
+        cap = cv2.VideoCapture(src)
+        is_file = Path(src).is_file()
         if not cap.isOpened():
             cap.release()
             return None, is_file
@@ -312,7 +326,7 @@ class CaptureWorker(QThread):
                 self.status.emit(f"Camera '{camera.safe_source(self.cfg.camera.source)}' unavailable, retrying…")
                 self._stop.wait(3.0)
                 continue
-            self.status.emit("Camera running")
+            self.status.emit(f"Camera running: {self.note}" if self.note else "Camera running")
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             started, index = time.monotonic(), 0
             got_frame = False  # a video that never yields a frame must not be rewound in a tight loop
@@ -351,7 +365,7 @@ class CaptureWorker(QThread):
                     # instead of taking the jump for a moving vehicle.
                     detector, watched = MotionDetector(self.cfg.motion), read_area
                 rx, ry, rw, rh = read_area
-                moving, _ = detector.apply(frame[ry:ry + rh, rx:rx + rw])
+                moving, moving_box = detector.apply(frame[ry:ry + rh, rx:rx + rw])
                 if moving:
                     last_motion = t0
                 # Stay "active" a little after motion stops: a vehicle that
@@ -360,7 +374,7 @@ class CaptureWorker(QThread):
                 if active != motion_on:
                     motion_on = active
                     self.motion_changed.emit(active)
-                self.slot.put(frame, read_area, active, t0)
+                self.slot.put(frame, read_area, active, t0, moving_box)
 
                 if t0 - last_preview >= preview_interval:
                     last_preview = t0
@@ -526,7 +540,7 @@ class RecognizerWorker(QThread):
                     drain()
                     continue
                 last_detect = f.ts
-                nxt = (f, self._detector.submit(self._detect, f))
+                nxt = (f, self._detector.submit(self._detect, f, self._focus_hints(f)))
                 drain()
                 pending = nxt
             drain()
@@ -556,12 +570,29 @@ class RecognizerWorker(QThread):
             self._push_overlays(None)
             self._report_in_view()
 
-    def _detect(self, f: _Frame) -> list:
+    def _focus_hints(self, f: _Frame) -> list[tuple[int, int, int, int]]:
+        """Where small plates are likely, for a close-up detector pass (see vision/focus.py): the
+        moving vehicle first, then around every plate being followed. Taken here, in the
+        recognizer's thread, because the tracker is only ever touched from it."""
+        if not self.cfg.ocr.focus_detect:
+            return []
+        hints = [f.motion_box] if f.motion_box else []
+        hints += [focus.around_plate(t.box) for t in self.tracker.tracks.values()]
+        return hints
+
+    def _detect(self, f: _Frame, hints: list[tuple[int, int, int, int]] = ()) -> list:
         rx, ry, rw, rh = f.roi
         work = f.image[ry:ry + rh, rx:rx + rw]
         # The classical finder runs alongside the neural detector (both release the GIL).
         classical = self._pool.submit(find_plate_regions, work, 8) if self.cfg.ocr.classical_proposals else None
         dets = self.engine.detect(work)
+        # The whole ROI is shrunk to the detector's input size, which loses small, far plates:
+        # look again, closer, where they are likely. A plate found again here is kept once.
+        for wx, wy, ww, wh in focus.windows(list(hints), work.shape, self.engine.input_size):
+            for d in self.engine.detect(work[wy:wy + wh, wx:wx + ww]):
+                box = (d.box[0] + wx, d.box[1] + wy, d.box[2], d.box[3])
+                if all(overlap_of_smaller(box, o.box) < 0.5 for o in dets):
+                    dets.append(PlateBox(box, d.confidence))
         if classical is not None:
             dets = merge_proposals(dets, classical.result())
         return dets
@@ -603,8 +634,12 @@ class RecognizerWorker(QThread):
                 continue  # a classical guess that never read as a plate: only recheck now and then
             if not track.emitted_key and track.reads_tried >= SLOW_READ_AFTER and track.hits % SLOW_READ_EVERY:
                 continue  # read many times and still not clear (parked?): only now and then
-            if (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2) and track.hits < EDGE_PATIENCE_HITS:
-                continue  # plate cut off by the edge of the picture: wait until it's fully in
+            # A plate cut off by the edge of the picture: wait until it's fully in. Also the bottom
+            # edge, where a vehicle driving away from the camera (rear plate) first appears.
+            cut = (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2
+                   or box[1] <= 2 or box[1] + box[3] >= work.shape[0] - 2)
+            if cut and track.hits < EDGE_PATIENCE_HITS:
+                continue
             px, py, pw, ph = pad_box(box, 0.06, 0.10, work.shape)
             todo.append((track, i, px, py, pw, ph, work[py:py + ph, px:px + pw]))
 
@@ -844,7 +879,7 @@ class VideoScanWorker(RecognizerWorker):
                     break
                 h, w = image.shape[:2]  # the whole picture: the gate camera's ROI doesn't apply here
                 f = _Frame(index, image, (0, 0, w, h), True, index / fps)
-                nxt = (f, self._detector.submit(self._detect, f))
+                nxt = (f, self._detector.submit(self._detect, f, self._focus_hints(f)))
                 if pending is not None:
                     self._apply_detected(conn, *pending)
                 pending = nxt

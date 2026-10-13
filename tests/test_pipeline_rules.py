@@ -1,5 +1,6 @@
 """Pipeline rules that need no camera or models: repeat suppression and edge-of-picture plates."""
 import numpy as np
+import pytest
 
 from platescanner import db
 from platescanner.config import Config
@@ -37,13 +38,15 @@ def test_cooldown_expires():
     assert not w._in_cooldown("ABC1234", w.cfg.scan.plate_cooldown_seconds + 1, db.RESULT_CLEAR)
 
 
-def test_plate_at_the_edge_is_read_only_once_it_stays():
+# Touching the left edge (driving across), or the bottom (driving away from the camera, rear plate).
+@pytest.mark.parametrize("box", [(0, 80, 60, 20), (170, 180, 60, 20)])
+def test_plate_at_the_edge_is_read_only_once_it_stays(box):
     engine = FakeEngine()
     w = worker(engine)
     conn = db.connect(w.cfg.db_path)
     db.init_schema(conn)
     image = np.full((200, 400, 3), 128, np.uint8)
-    edge = PlateBox((0, 80, 60, 20), 0.9)  # touching the left edge
+    edge = PlateBox(box, 0.9)
     for i in range(EDGE_PATIENCE_HITS + 2):
         before = engine.reads
         w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [edge])
