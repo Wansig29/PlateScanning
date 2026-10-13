@@ -339,6 +339,7 @@ class MainWindow(QMainWindow):
         self.video.clicked_at.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
         self._build_zoom_controls(feed_header)
+        self._build_lane_controls(feed_header)
         left.addWidget(feed_frame)
         self.logs = LogsPanel()
         self.logs.show_ack = self.cfg.scan.require_acknowledge
@@ -776,6 +777,49 @@ class MainWindow(QMainWindow):
             return
         self.cfg.camera.zoom_center = [round(fx, 4), round(fy, 4)]
         self._zoom_save.start()
+
+    # --- lane (camera.roi) -------------------------------------------------------
+
+    def _build_lane_controls(self, header: QHBoxLayout) -> None:
+        """'Draw lane' / 'Whole picture' buttons in the Live Feed header: the guard drags a box over
+        the lane on the picture, and only that part is watched for motion and read for plates."""
+        self.lane_button = QToolButton()
+        self.lane_button.setText("Draw lane")
+        self.lane_button.setCheckable(True)
+        self.lane_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lane_button.setToolTip("Drag a box over the lane on the Live Feed. Only that part is watched\n"
+                                    "and read, so trees, people and the far side of the road are ignored.")
+        self.lane_button.toggled.connect(self._lane_button_toggled)
+        self.lane_clear = QToolButton()
+        self.lane_clear.setText("Whole picture")
+        self.lane_clear.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lane_clear.setToolTip("Forget the drawn lane and watch the whole picture again")
+        self.lane_clear.clicked.connect(self._clear_lane)
+        self.lane_clear.setEnabled(bool(self.cfg.camera.roi))
+        self.video.roi_drawn.connect(self._set_lane)
+        self.video.drawing_ended.connect(lambda: self.lane_button.setChecked(False))
+        header.addWidget(self.lane_button)
+        header.addWidget(self.lane_clear)
+
+    def _lane_button_toggled(self, on: bool) -> None:
+        self.lane_button.setText("Cancel drawing" if on else "Draw lane")
+        if on and not self.video.drawing:
+            self.video.start_drawing()
+        elif not on:
+            self.video.cancel_drawing()
+
+    @Slot(float, float, float, float)
+    def _set_lane(self, x: float, y: float, w: float, h: float) -> None:
+        """Use the drawn box from the next frame on, and remember it (camera.roi)."""
+        self.cfg.camera.roi = [round(v, 4) for v in (x, y, w, h)]  # the capture thread reads it per frame
+        save_config(self.cfg)
+        self.lane_clear.setEnabled(True)
+
+    def _clear_lane(self) -> None:
+        self.video.cancel_drawing()
+        self.cfg.camera.roi = None
+        save_config(self.cfg)
+        self.lane_clear.setEnabled(False)
 
     def _set_update_mode(self, mode: str) -> None:
         self.cfg.update.mode = mode

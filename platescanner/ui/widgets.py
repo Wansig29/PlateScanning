@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QEvent, QObject, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractScrollArea, QDialog, QPushButton, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
@@ -198,21 +198,63 @@ class AlertFrame(QWidget):
 class VideoView(QWidget):
     """Live camera frame, aspect-fit, with a LIVE / motion badge and a CCTV-style clock."""
     clicked_at = Signal(float, float)  # where was clicked, as x, y fractions of the whole camera picture
+    # The lane the operator drew (see start_drawing): x, y, w, h as fractions of the whole camera picture.
+    roi_drawn = Signal(float, float, float, float)
+    drawing_ended = Signal()  # drawn or cancelled
+
+    # A drawn box smaller than this (fraction of the picture, each side) is taken as a slip, not a lane.
+    MIN_ROI = 0.05
 
     def __init__(self):
         super().__init__()
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.setMinimumSize(320, 200)
+        self.setFocusPolicy(Qt.FocusPolicy.ClickFocus)  # Esc cancels drawing
         self._image: QImage | None = None
         self._motion = False
         self._message = "Starting camera…"
         self._zoom = 1.0
+        self._drawing = False
+        self._drag: tuple[QPointF, QPointF] | None = None  # widget coordinates, while dragging
 
     def set_zoom(self, zoom: float) -> None:
         """Shown as a badge; above 1x a click on the picture aims the zoom."""
         self._zoom = zoom
-        self.setCursor(Qt.CursorShape.CrossCursor if zoom > 1.0 else Qt.CursorShape.ArrowCursor)
+        self._update_cursor()
         self.update()
+
+    def _update_cursor(self) -> None:
+        cross = self._drawing or self._zoom > 1.0
+        self.setCursor(Qt.CursorShape.CrossCursor if cross else Qt.CursorShape.ArrowCursor)
+
+    @property
+    def drawing(self) -> bool:
+        return self._drawing
+
+    def start_drawing(self) -> None:
+        """Next drag on the picture draws the lane (camera.roi) instead of aiming the zoom."""
+        self._drawing, self._drag = True, None
+        self._update_cursor()
+        self.setFocus()
+        self.update()
+
+    def cancel_drawing(self) -> None:
+        if self._drawing:
+            self._drawing, self._drag = False, None
+            self._update_cursor()
+            self.update()
+            self.drawing_ended.emit()
+
+    def _to_picture(self, pos: QPointF, target: QRectF) -> tuple[float, float]:
+        """A point on the widget as x, y fractions of the whole camera picture. The picture shows
+        only the zoom window it was drawn with, so the point is mapped through it."""
+        try:
+            zx, zy, zw, zh = (float(v) for v in self._image.text("zoom_window").split(","))
+        except ValueError:
+            zx, zy, zw, zh = 0.0, 0.0, 1.0, 1.0
+        fx = min(1.0, max(0.0, (pos.x() - target.left()) / target.width()))
+        fy = min(1.0, max(0.0, (pos.y() - target.top()) / target.height()))
+        return zx + fx * zw, zy + fy * zh
 
     def _target(self) -> QRectF | None:
         """Where the picture is drawn (aspect-fit, centred)."""
@@ -227,14 +269,41 @@ class VideoView(QWidget):
         target = self._target()
         pos = e.position()
         if e.button() == Qt.MouseButton.LeftButton and target is not None and target.contains(pos):
-            # The picture shows only the zoom window it was drawn with: map the click through it.
-            try:
-                zx, zy, zw, zh = (float(v) for v in self._image.text("zoom_window").split(","))
-            except ValueError:
-                zx, zy, zw, zh = 0.0, 0.0, 1.0, 1.0
-            self.clicked_at.emit(zx + (pos.x() - target.left()) / target.width() * zw,
-                                 zy + (pos.y() - target.top()) / target.height() * zh)
+            if self._drawing:
+                self._drag = (pos, pos)
+                self.update()
+            else:
+                self.clicked_at.emit(*self._to_picture(pos, target))
+        elif e.button() == Qt.MouseButton.RightButton:
+            self.cancel_drawing()
         super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e) -> None:  # noqa: N802
+        if self._drawing and self._drag is not None:
+            self._drag = (self._drag[0], e.position())
+            self.update()
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e) -> None:  # noqa: N802
+        target = self._target()
+        if (self._drawing and self._drag is not None and target is not None
+                and e.button() == Qt.MouseButton.LeftButton):
+            (x0, y0), (x1, y1) = (self._to_picture(p, target) for p in (self._drag[0], e.position()))
+            self._drag = None
+            x, y, w, h = min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0)
+            if w >= self.MIN_ROI and h >= self.MIN_ROI:
+                self._drawing = False
+                self._update_cursor()
+                self.roi_drawn.emit(x, y, w, h)
+                self.drawing_ended.emit()
+            self.update()  # too small: a slip of the mouse, keep drawing
+        super().mouseReleaseEvent(e)
+
+    def keyPressEvent(self, e) -> None:  # noqa: N802
+        if e.key() == Qt.Key.Key_Escape and self._drawing:
+            self.cancel_drawing()
+            return
+        super().keyPressEvent(e)
 
     def set_frame(self, img: QImage) -> None:
         self._image = img
@@ -296,6 +365,18 @@ class VideoView(QWidget):
             zoom = f"ZOOM {self._zoom:.1f}×"
             self._pill(p, QRectF(target.left() + 12 + width + 8, target.top() + 12,
                                  p.fontMetrics().horizontalAdvance(zoom) + 24, 26), None, zoom)
+        if self._drawing:
+            if self._drag is not None:
+                box = QRectF(self._drag[0], self._drag[1]).normalized().intersected(target)
+                p.setPen(QPen(QColor(theme.AMBER), 2, Qt.PenStyle.DashLine))
+                fill = QColor(theme.AMBER)
+                fill.setAlpha(40)
+                p.setBrush(fill)
+                p.drawRect(box)
+            hint = "Drag a box over the lane  ·  Esc to cancel"
+            p.setFont(f)
+            hw = p.fontMetrics().horizontalAdvance(hint) + 40  # room for the dot
+            self._pill(p, QRectF(target.center().x() - hw / 2, target.top() + 46, hw, 26), theme.AMBER, hint)
         now = datetime.now()
         stamp = f"{now:%Y-%m-%d}  {timefmt.clock(now)}"
         f.setFamily("Consolas")

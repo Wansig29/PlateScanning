@@ -203,6 +203,8 @@ QToolButton, QFrame#Panel QToolButton {{
 }}
 QToolButton:hover, QFrame#Panel QToolButton:hover, QFrame#TopBar QToolButton:hover {{ background: {PANEL_HOVER}; border-color: {BORDER_STRONG}; }}
 QToolButton:pressed, QFrame#Panel QToolButton:pressed, QFrame#TopBar QToolButton:pressed {{ background: {BORDER}; }}
+QToolButton:checked, QFrame#Panel QToolButton:checked {{ border-color: {AMBER}; color: {AMBER}; }}
+QToolButton:disabled, QFrame#Panel QToolButton:disabled {{ color: {MUTED}; }}
 QFrame#TopBar QToolButton {{ background: {TB_BTN}; border: 1px solid {TB_BTN_BORDER}; border-radius: 6px; padding: 4px 10px; color: {TB_TEXT}; }}
 QFrame#TopBar QToolButton:hover {{ background: {TB_BTN_HOVER}; }}
 QToolButton::menu-indicator {{ image: none; width: 0; }}
