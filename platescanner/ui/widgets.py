@@ -260,6 +260,31 @@ class VideoView(QWidget):
         except (AttributeError, ValueError):
             return 0.0, 0.0, 1.0, 1.0
 
+    def _frame_size(self) -> tuple[int, int] | None:
+        """The camera's real picture size (width, height), as the capture thread tagged the preview."""
+        try:
+            w, h = (int(v) for v in self._image.text("frame_size").split(","))
+            return (w, h) if w > 0 and h > 0 else None
+        except (AttributeError, ValueError):
+            return None
+
+    def _size_label(self, roi: tuple[float, float, float, float]) -> str | None:
+        """'640 × 360 px' for a lane (whole-picture fractions), in the camera's own pixels."""
+        size = self._frame_size()
+        if size is None:
+            return None
+        return f"{round(roi[2] * size[0])} × {round(roi[3] * size[1])} px"
+
+    def _draw_size(self, p: QPainter, box: QRectF, target: QRectF, roi: tuple[float, float, float, float]) -> None:
+        """The lane's size in camera pixels, in a pill just above the box (below it if there is no room)."""
+        text = self._size_label(roi)
+        if text is None:
+            return
+        tw = p.fontMetrics().horizontalAdvance(text) + 24
+        x = min(max(target.left() + 4, box.center().x() - tw / 2), target.right() - tw - 4)
+        y = box.top() - 32 if box.top() - 32 >= target.top() + 4 else min(box.bottom() + 6, target.bottom() - 30)
+        self._pill(p, QRectF(x, y, tw, 26), None, text)
+
     def _moved_roi(self, target: QRectF) -> tuple[float, float, float, float] | None:
         """The lane as the current drag leaves it, inside the picture. Moving keeps its size; a corner
         moves its two sides and an edge just its own (the opposite sides stay put), down to MIN_ROI a side."""
@@ -487,6 +512,8 @@ class VideoView(QWidget):
                 fill.setAlpha(40)
                 p.setBrush(fill)
                 p.drawRect(lane.intersected(target))
+                p.setFont(f)
+                self._draw_size(p, lane.intersected(target), target, self._moved_roi(target))
             # Corner and edge handles: drag one to resize the lane.
             p.setPen(QPen(QColor(0, 0, 0, 160), 1))
             p.setBrush(QColor(theme.AMBER) if self._move is not None else QColor("white"))
@@ -502,6 +529,9 @@ class VideoView(QWidget):
                 fill.setAlpha(40)
                 p.setBrush(fill)
                 p.drawRect(box)
+                (x0, y0), (x1, y1) = (self._to_picture(q, target) for q in self._drag)
+                p.setFont(f)
+                self._draw_size(p, box, target, (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0)))
             hint = "Drag a box over the lane  ·  Esc to cancel"
             p.setFont(f)
             hw = p.fontMetrics().horizontalAdvance(hint) + 40  # room for the dot

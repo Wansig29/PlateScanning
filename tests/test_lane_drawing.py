@@ -175,3 +175,39 @@ def test_corner_wins_over_the_edges_it_joins(view):
     assert view._lane_part(QPointF(477, 180)) == "r"
     assert view._lane_part(QPointF(320, 180)) == "move"
     assert view._lane_part(QPointF(20, 20)) is None
+
+
+def _camera_picture(view, width=1920, height=1080, zoom="0,0,1,1"):
+    img = QImage(640, 360, QImage.Format.Format_RGB888)   # the preview is smaller than the camera picture
+    img.setText("zoom_window", zoom)
+    img.setText("frame_size", f"{width},{height}")
+    view.set_frame(img)
+
+
+def test_lane_size_is_given_in_camera_pixels(view):
+    _camera_picture(view)
+    assert view._size_label((0.25, 0.4, 0.5, 0.6)) == "960 × 648 px"
+    _camera_picture(view, zoom="0.5,0.5,0.5,0.5")          # zooming doesn't change the camera's pixels
+    assert view._size_label((0.25, 0.4, 0.5, 0.6)) == "960 × 648 px"
+    view.set_frame(QImage(640, 360, QImage.Format.Format_RGB888))   # size unknown: no label
+    assert view._size_label((0.25, 0.4, 0.5, 0.6)) is None
+
+
+def test_size_is_painted_while_dragging_and_drawing(view, monkeypatch):
+    _camera_picture(view)
+    shown = []
+    monkeypatch.setattr(view, "_pill", lambda p, rect, dot, text: shown.append(text))
+    view.set_roi([0.25, 0.25, 0.5, 0.5])
+    view.grab()                                              # just sitting there: no size
+    assert "960 × 540 px" not in shown
+    _mouse(view, QEvent.Type.MouseButtonPress, 480, 270)   # bottom-right corner...
+    _mouse(view, QEvent.Type.MouseMove, 544, 306)          # ...dragged out
+    view.grab()
+    assert "1152 × 648 px" in shown
+    _mouse(view, QEvent.Type.MouseButtonRelease, 544, 306)
+    shown.clear()
+    view.start_drawing()
+    _mouse(view, QEvent.Type.MouseButtonPress, 0, 0)
+    _mouse(view, QEvent.Type.MouseMove, 320, 180)
+    view.grab()
+    assert "960 × 540 px" in shown

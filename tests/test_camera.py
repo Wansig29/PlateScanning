@@ -257,6 +257,7 @@ def test_zoom_narrows_reading_but_keeps_the_whole_frame(monkeypatch):
     # ...and the preview shows that part, labelled with the window it shows
     assert shown and (shown[-1].width(), shown[-1].height()) == (640, 360)
     assert [float(v) for v in shown[-1].text("zoom_window").split(",")] == [0.25, 0.25, 0.5, 0.5]
+    assert shown[-1].text("frame_size") == "1280,720"     # the camera's real size, for the lane's pixel size
 
 
 def test_roi_stays_on_the_whole_picture_when_zoomed(monkeypatch):
