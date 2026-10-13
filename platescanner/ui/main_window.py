@@ -788,7 +788,8 @@ class MainWindow(QMainWindow):
         self.lane_button.setCheckable(True)
         self.lane_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lane_button.setToolTip("Drag a box over the lane on the Live Feed. Only that part is watched\n"
-                                    "and read, so trees, people and the far side of the road are ignored.")
+                                    "and read, so trees, people and the far side of the road are ignored.\n"
+                                    "Afterwards, drag the box to move it.")
         self.lane_button.toggled.connect(self._lane_button_toggled)
         self.lane_clear = QToolButton()
         self.lane_clear.setText("Whole picture")
@@ -796,6 +797,7 @@ class MainWindow(QMainWindow):
         self.lane_clear.setToolTip("Forget the drawn lane and watch the whole picture again")
         self.lane_clear.clicked.connect(self._clear_lane)
         self.lane_clear.setEnabled(bool(self.cfg.camera.roi))
+        self.video.set_roi(self.cfg.camera.roi)
         self.video.roi_drawn.connect(self._set_lane)
         self.video.drawing_ended.connect(lambda: self.lane_button.setChecked(False))
         header.addWidget(self.lane_button)
@@ -812,12 +814,14 @@ class MainWindow(QMainWindow):
     def _set_lane(self, x: float, y: float, w: float, h: float) -> None:
         """Use the drawn box from the next frame on, and remember it (camera.roi)."""
         self.cfg.camera.roi = [round(v, 4) for v in (x, y, w, h)]  # the capture thread reads it per frame
+        self.video.set_roi(self.cfg.camera.roi)
         save_config(self.cfg)
         self.lane_clear.setEnabled(True)
 
     def _clear_lane(self) -> None:
         self.video.cancel_drawing()
         self.cfg.camera.roi = None
+        self.video.set_roi(None)
         save_config(self.cfg)
         self.lane_clear.setEnabled(False)
 
