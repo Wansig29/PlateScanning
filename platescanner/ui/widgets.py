@@ -197,7 +197,7 @@ class AlertFrame(QWidget):
 
 class VideoView(QWidget):
     """Live camera frame, aspect-fit, with a LIVE / motion badge and a CCTV-style clock."""
-    clicked_at = Signal(float, float)  # where the picture was clicked, as x, y fractions of it
+    clicked_at = Signal(float, float)  # where was clicked, as x, y fractions of the whole camera picture
 
     def __init__(self):
         super().__init__()
@@ -227,8 +227,13 @@ class VideoView(QWidget):
         target = self._target()
         pos = e.position()
         if e.button() == Qt.MouseButton.LeftButton and target is not None and target.contains(pos):
-            self.clicked_at.emit((pos.x() - target.left()) / target.width(),
-                                 (pos.y() - target.top()) / target.height())
+            # The picture shows only the zoom window it was drawn with: map the click through it.
+            try:
+                zx, zy, zw, zh = (float(v) for v in self._image.text("zoom_window").split(","))
+            except ValueError:
+                zx, zy, zw, zh = 0.0, 0.0, 1.0, 1.0
+            self.clicked_at.emit(zx + (pos.x() - target.left()) / target.width() * zw,
+                                 zy + (pos.y() - target.top()) / target.height() * zh)
         super().mousePressEvent(e)
 
     def set_frame(self, img: QImage) -> None:

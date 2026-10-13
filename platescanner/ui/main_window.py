@@ -750,8 +750,7 @@ class MainWindow(QMainWindow):
         self._zoom_save.setSingleShot(True)
         self._zoom_save.setInterval(800)
         self._zoom_save.timeout.connect(lambda: save_config(self.cfg))
-        zoom = camera.zoom_window(self.cfg.camera.zoom, None)
-        self.zoom_slider.setValue(round(10 / zoom[2]))
+        self.zoom_slider.setValue(round(camera.clamp_zoom(self.cfg.camera.zoom) * 10))
         self.zoom_slider.valueChanged.connect(self._zoom_changed)
         self._show_zoom()
         for w in (label, self.zoom_slider, self.zoom_value, reset):
@@ -774,11 +773,10 @@ class MainWindow(QMainWindow):
 
     @Slot(float, float)
     def _aim_zoom(self, fx: float, fy: float) -> None:
-        """Centre the zoom on the clicked spot (fx, fy: fractions of the zoomed picture shown)."""
-        x, y, w, h = camera.zoom_window(self.cfg.camera.zoom, self.cfg.camera.zoom_center)
-        if w >= 1.0:
+        """Centre the zoom on the clicked spot (fx, fy: fractions of the whole camera picture)."""
+        if camera.clamp_zoom(self.cfg.camera.zoom) <= 1.0:
             return
-        self.cfg.camera.zoom_center = [round(x + fx * w, 4), round(y + fy * h, 4)]
+        self.cfg.camera.zoom_center = [round(fx, 4), round(fy, 4)]
         self._zoom_save.start()
 
     def _set_update_mode(self, mode: str) -> None:
@@ -1282,6 +1280,9 @@ class MainWindow(QMainWindow):
         self._archive_stop.set()          # let a picture move in progress finish its log update
         if self._archive_thread is not None:
             self._archive_thread.join(timeout=5)
+        if self._zoom_save.isActive():  # a zoom change still waiting to be saved
+            self._zoom_save.stop()
+            save_config(self.cfg)
         self.reminder.stop()
         self.sound.cancel()
         self.capture.stop()

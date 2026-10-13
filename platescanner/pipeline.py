@@ -210,8 +210,16 @@ class CaptureWorker(QThread):
         h, w = frame.shape[:2]
         if not self.cfg.camera.roi:
             return 0, 0, w, h
-        fx, fy, fw, fh = self.cfg.camera.roi
-        return int(fx * w), int(fy * h), max(1, int(fw * w)), max(1, int(fh * h))
+        return camera.pixel_rect(self.cfg.camera.roi, w, h)
+
+    @staticmethod
+    def _read_area(roi: tuple[int, int, int, int], zoom: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+        """Where plates are looked for: the part of camera.roi inside the zoom window.
+
+        Both are in the coordinates of the whole camera picture, so zooming never moves
+        camera.roi. If they don't overlap at all, the zoom window wins: the guard aimed there.
+        """
+        return camera.intersect(roi, zoom) or zoom
 
     @staticmethod
     def _label(view: np.ndarray, text: str, x: int, y: int, color: tuple[int, int, int],
@@ -224,7 +232,9 @@ class CaptureWorker(QThread):
         cv2.putText(view, text, (lx + 4, ty - base), cv2.FONT_HERSHEY_SIMPLEX, scale,
                     (255, 255, 255), thick, cv2.LINE_AA)
 
-    def _publish(self, frame: np.ndarray, roi: tuple[int, int, int, int]) -> None:
+    def _publish(self, frame: np.ndarray, roi: tuple[int, int, int, int],
+                 window: tuple[float, float, float, float]) -> None:
+        """Draw the vehicles on the whole picture, then show only the zoom window of it."""
         view = frame.copy()
         rx, ry, rw, rh = roi
         if self.cfg.camera.roi:
@@ -275,13 +285,21 @@ class CaptureWorker(QThread):
             cv2.rectangle(view, (vx, vy), (vx + vw, vy + vh), o.color, thick * (2 + pulse))
             cv2.rectangle(view, (x, y), (x + w, y + h), o.color, thick)
             self._label(view, "! " + o.label, vx, vy, o.color, scale * 1.15, thick)
+        if window[2] < 1.0:
+            zx, zy, zw, zh = camera.pixel_rect(window, view.shape[1], view.shape[0])
+            view = view[zy:zy + zh, zx:zx + zw]
         if view.shape[1] > PREVIEW_MAX_WIDTH:
             f = PREVIEW_MAX_WIDTH / view.shape[1]
             view = cv2.resize(view, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
-        self.frame_ready.emit(to_qimage(view))
+        img = to_qimage(view)
+        # The picture carries the window it shows, so a click on it is aimed through that
+        # window and not through one the slider has moved since.
+        img.setText("zoom_window", ",".join(f"{v:.6f}" for v in window))
+        self.frame_ready.emit(img)
 
     def run(self) -> None:
-        detector = MotionDetector(self.cfg.motion)
+        detector: MotionDetector | None = None
+        watched: tuple[int, int, int, int] | None = None  # the area the detector's background model is of
         preview_interval = 1.0 / max(1, self.cfg.camera.preview_fps)
         last_preview = 0.0
         motion_on = False
@@ -321,9 +339,18 @@ class CaptureWorker(QThread):
                     break
 
                 got_frame = True
-                frame = camera.apply_zoom(frame, self.cfg.camera.zoom, self.cfg.camera.zoom_center)
+                # The frame stays whole, so saved pictures and camera.roi keep the camera's
+                # full view. The zoom narrows where motion is watched and plates are read
+                # (inside camera.roi) and what the preview shows.
+                window = camera.zoom_window(self.cfg.camera.zoom, self.cfg.camera.zoom_center)
                 roi = self._roi(frame)
-                rx, ry, rw, rh = roi
+                read_area = self._read_area(roi, camera.pixel_rect(window, frame.shape[1], frame.shape[0]))
+                if read_area != watched:
+                    # Motion is watched where plates are read. A new area is a new scene for
+                    # the background model and the travel history, so start them fresh
+                    # instead of taking the jump for a moving vehicle.
+                    detector, watched = MotionDetector(self.cfg.motion), read_area
+                rx, ry, rw, rh = read_area
                 moving, _ = detector.apply(frame[ry:ry + rh, rx:rx + rw])
                 if moving:
                     last_motion = t0
@@ -333,11 +360,11 @@ class CaptureWorker(QThread):
                 if active != motion_on:
                     motion_on = active
                     self.motion_changed.emit(active)
-                self.slot.put(frame, roi, active, t0)
+                self.slot.put(frame, read_area, active, t0)
 
                 if t0 - last_preview >= preview_interval:
                     last_preview = t0
-                    self._publish(frame, roi)
+                    self._publish(frame, roi, window)
 
                 if is_file:
                     self._stop.wait(max(0.0, started + index / fps - time.monotonic()))
@@ -364,6 +391,7 @@ class RecognizerWorker(QThread):
         self._stop = threading.Event()
         self._last_seen: dict[str, tuple[float, str]] = {}  # plate key -> (last time, its result)
         self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
+        self._area_origin: tuple[int, int] | None = None  # where the reading area's (0, 0) is in the frame
         self._in_view: set[int] = set()
         self.frames_processed = 0
         # Plate reads and the classical finder run here, in parallel with the detector.
@@ -544,6 +572,10 @@ class RecognizerWorker(QThread):
         work = f.image[ry:ry + rh, rx:rx + rw]
         ocr = self.cfg.ocr
         self.frames_processed += 1
+        if self._area_origin is not None and self._area_origin != (rx, ry):
+            # The zoom moved the reading area: keep each vehicle's track where the vehicle is.
+            self.tracker.shift(self._area_origin[0] - rx, self._area_origin[1] - ry)
+        self._area_origin = (rx, ry)
         matched, ended = self.tracker.update([d.box for d in dets], f.ts)
         for t in ended:
             self._finish(conn, t)
