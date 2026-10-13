@@ -321,6 +321,7 @@ class CaptureWorker(QThread):
                     break
 
                 got_frame = True
+                frame = camera.apply_zoom(frame, self.cfg.camera.zoom, self.cfg.camera.zoom_center)
                 roi = self._roi(frame)
                 rx, ry, rw, rh = roi
                 moving, _ = detector.apply(frame[ry:ry + rh, rx:rx + rw])

@@ -41,6 +41,45 @@ def safe_source(source: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
+MAX_ZOOM = 4.0
+
+
+def zoom_window(zoom: float, center: list[float] | None) -> tuple[float, float, float, float]:
+    """The part of the picture a digital zoom keeps, as [x, y, w, h] fractions.
+
+    The window is 1/zoom of the picture each way, centred on `center` but slid
+    back inside the picture near the edges. A bad zoom or centre (hand-edited
+    config.json) gives the whole picture or the middle, never an error.
+    """
+    try:
+        z = min(MAX_ZOOM, max(1.0, float(zoom)))
+    except (TypeError, ValueError):
+        z = 1.0
+    try:
+        cx, cy = (float(center[0]), float(center[1])) if center else (0.5, 0.5)
+    except (TypeError, ValueError, IndexError):
+        cx, cy = 0.5, 0.5
+    size = 1.0 / z
+    x = min(1.0 - size, max(0.0, cx - size / 2))
+    y = min(1.0 - size, max(0.0, cy - size / 2))
+    return x, y, size, size
+
+
+def apply_zoom(frame: Any, zoom: float, center: list[float] | None) -> Any:
+    """The zoomed part of a camera frame (the frame itself at 1x).
+
+    No upscaling: enlarging adds no detail for the plate reader, only work. The
+    detector, though, shrinks every picture to a fixed size, so a cropped
+    picture shows it plates larger and it finds smaller ones.
+    """
+    fx, fy, fw, fh = zoom_window(zoom, center)
+    if fw >= 1.0:
+        return frame
+    h, w = frame.shape[:2]
+    x, y = int(fx * w), int(fy * h)
+    return frame[y:y + max(1, int(fh * h)), x:x + max(1, int(fw * w))]
+
+
 def list_names() -> list[str]:
     """Names of the connected cameras, in the order OpenCV's DirectShow camera numbers use
     (so entry 0 is camera 0). Empty when they can't be listed (not Windows, or pygrabber is

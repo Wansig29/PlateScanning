@@ -79,6 +79,13 @@ class CameraConfig:
     # Optional [x, y, w, h] as fractions of the frame: only this region is
     # watched for motion and read for plates. None = whole frame.
     roi: list[float] | None = None
+    # Digital zoom, set with the slider on the Live Feed: 1.0 = the whole picture,
+    # 2.0 = the middle half of it, up to MAX_ZOOM. Everything after the camera (the
+    # preview, plate reading, saved pictures, roi) sees only the zoomed picture.
+    zoom: float = 1.0
+    # Optional [x, y] fractions of the picture the zoom is aimed at (click the
+    # Live Feed to move it). None = the middle.
+    zoom_center: list[float] | None = None
 
 
 @dataclass

@@ -132,3 +132,57 @@ def test_video_without_frames_is_not_rewound_in_a_tight_loop(tmp_path, monkeypat
     w.stop()
     t.join(5)
     assert "rewind" not in reads and len(reads) <= 2
+
+
+def test_zoom_window_centred_and_clamped():
+    assert camera.zoom_window(1.0, None) == (0.0, 0.0, 1.0, 1.0)
+    assert camera.zoom_window(2.0, None) == (0.25, 0.25, 0.5, 0.5)
+    # aimed at a corner: the window slides back inside the picture
+    assert camera.zoom_window(2.0, [0.0, 1.0]) == (0.0, 0.5, 0.5, 0.5)
+    # out of range or hand-edited nonsense: never an error
+    assert camera.zoom_window(99, None)[2] == pytest.approx(1 / camera.MAX_ZOOM)
+    assert camera.zoom_window(0.2, None) == (0.0, 0.0, 1.0, 1.0)
+    assert camera.zoom_window("x", ["a"]) == (0.0, 0.0, 1.0, 1.0)
+    assert camera.zoom_window(2.0, [0.5]) == (0.25, 0.25, 0.5, 0.5)
+
+
+def test_apply_zoom_crops_without_upscaling():
+    import numpy as np
+    frame = np.zeros((1080, 1920, 3), np.uint8)
+    frame[540, 960] = 255  # the middle pixel
+    assert camera.apply_zoom(frame, 1.0, None) is frame
+    z = camera.apply_zoom(frame, 2.0, None)
+    assert z.shape == (540, 960, 3)
+    assert z[270, 480].max() == 255  # still in the middle
+    assert camera.apply_zoom(frame, 4.0, [1.0, 0.0]).shape == (270, 480, 3)
+
+
+def test_capture_worker_applies_zoom(monkeypatch, tmp_path):
+    import threading
+    import time
+
+    import numpy as np
+
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    class Cap:
+        def isOpened(self): return True
+        def get(self, _): return 30.0
+        def grab(self): return True
+        def read(self): return True, np.zeros((720, 1280, 3), np.uint8)
+        def set(self, *_): pass
+        def release(self): pass
+
+    monkeypatch.setattr(pipeline.cv2, "VideoCapture", lambda *_: Cap())
+    cfg = Config()
+    cfg.camera.source = "rtsp://cam/live"
+    cfg.camera.zoom = 2.0
+    slot = pipeline.FrameSlot()
+    w = pipeline.CaptureWorker(cfg, slot)
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.3)
+    w.stop()
+    t.join(5)
+    assert slot._frame is not None and slot._frame.image.shape == (360, 640, 3)
