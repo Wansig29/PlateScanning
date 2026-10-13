@@ -310,6 +310,8 @@ class CaptureWorker(QThread):
         # The picture carries the window it shows, so a click on it is aimed through that
         # window and not through one the slider has moved since.
         img.setText("zoom_window", ",".join(f"{v:.6f}" for v in window))
+        # ...and the camera's real picture size (the preview is shrunk), to give the lane's size in pixels.
+        img.setText("frame_size", f"{frame.shape[1]},{frame.shape[0]}")
         self.frame_ready.emit(img)
 
     def run(self) -> None:
