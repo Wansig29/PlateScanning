@@ -789,7 +789,7 @@ class MainWindow(QMainWindow):
         self.lane_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.lane_button.setToolTip("Drag a box over the lane on the Live Feed. Only that part is watched\n"
                                     "and read, so trees, people and the far side of the road are ignored.\n"
-                                    "Afterwards, drag the box to move it, or a corner to resize it.")
+                                    "Afterwards, drag the box to move it, or a corner or edge to resize it.")
         self.lane_button.toggled.connect(self._lane_button_toggled)
         self.lane_clear = QToolButton()
         self.lane_clear.setText("Whole picture")

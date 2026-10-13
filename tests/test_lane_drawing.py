@@ -143,3 +143,35 @@ def test_corner_resize_goes_through_the_zoom(view):
     view.set_roi([0.6, 0.6, 0.2, 0.2])                  # bottom-right corner at widget (384, 216)
     _drag(view, 384, 216, 448, 252)                     # 64 px, 36 px = 0.05 of the picture each way
     assert drawn == [pytest.approx((0.6, 0.6, 0.25, 0.25))]
+
+
+def test_edge_handle_moves_only_that_side(view):
+    drawn = []
+    view.roi_drawn.connect(lambda *r: drawn.append(r))
+    view.set_roi([0.25, 0.25, 0.5, 0.5])                # widget box (160, 90)-(480, 270)
+    _drag(view, 320, 270, 400, 306)                     # bottom edge handle: sideways part ignored
+    assert drawn == [pytest.approx((0.25, 0.25, 0.5, 0.6))]
+    view.set_roi([0.25, 0.25, 0.5, 0.5])
+    _drag(view, 160, 200, 96, 100)                      # left edge, away from its handle: up/down ignored
+    assert drawn[-1] == pytest.approx((0.15, 0.25, 0.6, 0.5))
+
+
+def test_edge_resize_stops_at_the_picture_and_at_the_smallest_lane(view):
+    drawn = []
+    view.roi_drawn.connect(lambda *r: drawn.append(r))
+    view.set_roi([0.25, 0.25, 0.5, 0.5])
+    _drag(view, 320, 90, 320, -500)                     # top edge far above the picture
+    assert drawn[-1] == pytest.approx((0.25, 0.0, 0.5, 0.75))
+    view.set_roi([0.25, 0.25, 0.5, 0.5])
+    _drag(view, 480, 180, -500, 180)                    # right edge past the left one
+    x, y, w, h = drawn[-1]
+    assert (x, y, w, h) == pytest.approx((0.25, 0.25, VideoView.MIN_ROI, 0.5))
+
+
+def test_corner_wins_over_the_edges_it_joins(view):
+    view.set_roi([0.25, 0.25, 0.5, 0.5])
+    assert view._lane_part(QPointF(162, 92)) == "tl"
+    assert view._lane_part(QPointF(320, 93)) == "t"
+    assert view._lane_part(QPointF(477, 180)) == "r"
+    assert view._lane_part(QPointF(320, 180)) == "move"
+    assert view._lane_part(QPointF(20, 20)) is None
