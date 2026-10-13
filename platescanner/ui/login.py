@@ -170,3 +170,5 @@ class LoginDialog(QDialog):
     def _show_error(self, msg: str) -> None:
         self.error.setText(msg)
         self.error.show()
+        self.layout().activate()
+        self.adjustSize()  # the width is fixed: grow the height so a long message is not cut off
