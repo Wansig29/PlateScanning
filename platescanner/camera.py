@@ -41,6 +41,47 @@ def safe_source(source: str) -> str:
     return urlunsplit((parts.scheme, netloc, parts.path, query, ""))
 
 
+MAX_ZOOM = 4.0
+
+
+def clamp_zoom(zoom: Any) -> float:
+    """The zoom as a number from 1 to MAX_ZOOM; nonsense (hand-edited config.json) gives 1."""
+    try:
+        return min(MAX_ZOOM, max(1.0, float(zoom)))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def zoom_window(zoom: float, center: list[float] | None) -> tuple[float, float, float, float]:
+    """The part of the picture a digital zoom keeps, as [x, y, w, h] fractions.
+
+    The window is 1/zoom of the picture each way, centred on `center` but slid
+    back inside the picture near the edges. A bad zoom or centre (hand-edited
+    config.json) gives the whole picture or the middle, never an error.
+    """
+    try:
+        cx, cy = (float(center[0]), float(center[1])) if center else (0.5, 0.5)
+    except (TypeError, ValueError, IndexError):
+        cx, cy = 0.5, 0.5
+    size = 1.0 / clamp_zoom(zoom)
+    x = min(1.0 - size, max(0.0, cx - size / 2))
+    y = min(1.0 - size, max(0.0, cy - size / 2))
+    return x, y, size, size
+
+
+def pixel_rect(frac: tuple[float, float, float, float] | list[float], w: int, h: int) -> tuple[int, int, int, int]:
+    """[x, y, w, h] fractions of a w x h picture as pixels (at least 1 x 1)."""
+    fx, fy, fw, fh = frac
+    return int(fx * w), int(fy * h), max(1, int(fw * w)), max(1, int(fh * h))
+
+
+def intersect(a: tuple[int, int, int, int], b: tuple[int, int, int, int]) -> tuple[int, int, int, int] | None:
+    """The overlap of two [x, y, w, h] pixel rectangles, or None if they don't overlap."""
+    x, y = max(a[0], b[0]), max(a[1], b[1])
+    x2, y2 = min(a[0] + a[2], b[0] + b[2]), min(a[1] + a[3], b[1] + b[3])
+    return (x, y, x2 - x, y2 - y) if x2 > x and y2 > y else None
+
+
 def list_names() -> list[str]:
     """Names of the connected cameras, in the order OpenCV's DirectShow camera numbers use
     (so entry 0 is camera 0). Empty when they can't be listed (not Windows, or pygrabber is

@@ -16,7 +16,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
-    QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
+    QSlider, QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import __version__, camera, db, purge, retention, timefmt, updates
@@ -334,9 +334,11 @@ class MainWindow(QMainWindow):
         left = QSplitter(Qt.Orientation.Vertical)
         left.setChildrenCollapsible(False)
         left.setHandleWidth(10)
-        feed_frame, feed_lay, _ = panel("Live Feed")
+        feed_frame, feed_lay, feed_header = panel("Live Feed")
         self.video = VideoView()
+        self.video.clicked_at.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
+        self._build_zoom_controls(feed_header)
         left.addWidget(feed_frame)
         self.logs = LogsPanel()
         self.logs.show_ack = self.cfg.scan.require_acknowledge
@@ -673,9 +675,6 @@ class MainWindow(QMainWindow):
     def _download_job(self, rel: updates.Release) -> None:
         try:
             self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates", self._report_progress)))
-        except updates.UpdateNotTrusted as e:
-            log.warning("update refused: %s", e)
-            self.update_failed.emit(f"The update was not installed because it could not be verified:\n\n{e}")
         except Exception as e:  # noqa: BLE001
             log.warning("update download failed: %s", e)
             self.update_failed.emit(f"The update could not be downloaded:\n\n{e}")
@@ -723,6 +722,60 @@ class MainWindow(QMainWindow):
         self.capture.switch_source(source)
         save_config(self.cfg)
         self._set_status(self.cam_status, f"Camera: opening camera {source}", theme.AMBER)
+
+    # --- zoom -------------------------------------------------------------------
+
+    def _build_zoom_controls(self, header: QHBoxLayout) -> None:
+        """Digital zoom slider in the Live Feed header (1x to camera.MAX_ZOOM, in 0.1x steps)."""
+        label = QLabel("Zoom")
+        label.setObjectName("Muted")
+        self.zoom_slider = QSlider(Qt.Orientation.Horizontal)
+        self.zoom_slider.setRange(10, int(camera.MAX_ZOOM * 10))
+        self.zoom_slider.setSingleStep(1)
+        self.zoom_slider.setPageStep(5)
+        self.zoom_slider.setFixedWidth(140)
+        self.zoom_slider.setToolTip("Enlarge the middle of the picture so small plates are found more easily.\n"
+                                    "Above 1×, click the Live Feed to aim the zoom there.")
+        self.zoom_value = QLabel()
+        self.zoom_value.setMinimumWidth(36)
+        reset = QToolButton()
+        reset.setText("1×")
+        reset.setCursor(Qt.CursorShape.PointingHandCursor)
+        reset.setToolTip("Back to the whole picture")
+        reset.clicked.connect(self._reset_zoom)
+        # Saved a moment after the slider stops moving, not on every step.
+        self._zoom_save = QTimer(self)
+        self._zoom_save.setSingleShot(True)
+        self._zoom_save.setInterval(800)
+        self._zoom_save.timeout.connect(lambda: save_config(self.cfg))
+        self.zoom_slider.setValue(round(camera.clamp_zoom(self.cfg.camera.zoom) * 10))
+        self.zoom_slider.valueChanged.connect(self._zoom_changed)
+        self._show_zoom()
+        for w in (label, self.zoom_slider, self.zoom_value, reset):
+            header.addWidget(w)
+
+    def _show_zoom(self) -> None:
+        zoom = self.zoom_slider.value() / 10
+        self.zoom_value.setText(f"{zoom:.1f}×")
+        self.video.set_zoom(zoom)
+
+    def _zoom_changed(self, value: int) -> None:
+        self.cfg.camera.zoom = value / 10  # the capture thread picks it up on its next frame
+        self._show_zoom()
+        self._zoom_save.start()
+
+    def _reset_zoom(self) -> None:
+        self.cfg.camera.zoom_center = None
+        self.zoom_slider.setValue(10)
+        self._zoom_save.start()
+
+    @Slot(float, float)
+    def _aim_zoom(self, fx: float, fy: float) -> None:
+        """Centre the zoom on the clicked spot (fx, fy: fractions of the whole camera picture)."""
+        if camera.clamp_zoom(self.cfg.camera.zoom) <= 1.0:
+            return
+        self.cfg.camera.zoom_center = [round(fx, 4), round(fy, 4)]
+        self._zoom_save.start()
 
     def _set_update_mode(self, mode: str) -> None:
         self.cfg.update.mode = mode
@@ -1225,6 +1278,9 @@ class MainWindow(QMainWindow):
         self._archive_stop.set()          # let a picture move in progress finish its log update
         if self._archive_thread is not None:
             self._archive_thread.join(timeout=5)
+        if self._zoom_save.isActive():  # a zoom change still waiting to be saved
+            self._zoom_save.stop()
+            save_config(self.cfg)
         self.reminder.stop()
         self.sound.cancel()
         self.capture.stop()

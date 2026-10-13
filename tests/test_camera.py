@@ -185,3 +185,158 @@ def test_no_fallback_when_turned_off_or_no_webcam_at_all(monkeypatch):
     assert w._open() == (None, False) and list(caps) == [0]
     w, caps = _capture_with(monkeypatch, plugged=set())
     assert w._open() == (None, False) and all(c.released for c in caps.values())
+
+
+def test_zoom_window_centred_and_clamped():
+    assert camera.zoom_window(1.0, None) == (0.0, 0.0, 1.0, 1.0)
+    assert camera.zoom_window(2.0, None) == (0.25, 0.25, 0.5, 0.5)
+    # aimed at a corner: the window slides back inside the picture
+    assert camera.zoom_window(2.0, [0.0, 1.0]) == (0.0, 0.5, 0.5, 0.5)
+    # out of range or hand-edited nonsense: never an error
+    assert camera.zoom_window(99, None)[2] == pytest.approx(1 / camera.MAX_ZOOM)
+    assert camera.zoom_window(0.2, None) == (0.0, 0.0, 1.0, 1.0)
+    assert camera.zoom_window("x", ["a"]) == (0.0, 0.0, 1.0, 1.0)
+    assert camera.zoom_window(2.0, [0.5]) == (0.25, 0.25, 0.5, 0.5)
+
+
+def test_pixel_rect_and_intersect():
+    assert camera.pixel_rect((0.25, 0.25, 0.5, 0.5), 1920, 1080) == (480, 270, 960, 540)
+    assert camera.pixel_rect((0.0, 0.0, 0.0, 0.0), 100, 100) == (0, 0, 1, 1)
+    assert camera.intersect((0, 0, 100, 100), (50, 60, 100, 100)) == (50, 60, 50, 40)
+    assert camera.intersect((0, 0, 10, 10), (20, 20, 5, 5)) is None
+
+
+def test_clamp_zoom():
+    assert camera.clamp_zoom(2.5) == 2.5
+    assert camera.clamp_zoom(99) == camera.MAX_ZOOM
+    assert camera.clamp_zoom(0.1) == 1.0
+    assert camera.clamp_zoom("x") == 1.0
+
+
+def _run_capture(monkeypatch, cfg, seconds=0.3):
+    import threading
+    import time
+
+    import numpy as np
+
+    from platescanner import pipeline
+
+    class Cap:
+        def isOpened(self): return True
+        def get(self, _): return 30.0
+        def grab(self): return True
+        def read(self): return True, np.zeros((720, 1280, 3), np.uint8)
+        def set(self, *_): pass
+        def release(self): pass
+
+    monkeypatch.setattr(pipeline.cv2, "VideoCapture", lambda *_: Cap())
+    cfg.camera.source = "rtsp://cam/live"
+    slot = pipeline.FrameSlot()
+    w = pipeline.CaptureWorker(cfg, slot)
+    shown = []
+    from PySide6.QtCore import Qt
+    w.frame_ready.connect(shown.append, Qt.ConnectionType.DirectConnection)
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(seconds)
+    w.stop()
+    t.join(5)
+    return slot._frame, shown
+
+
+def test_zoom_narrows_reading_but_keeps_the_whole_frame(monkeypatch):
+    from platescanner.config import Config
+
+    cfg = Config()
+    cfg.camera.zoom = 2.0
+    frame, shown = _run_capture(monkeypatch, cfg)
+    # motion, tracking and the evidence pictures still get the whole picture...
+    assert frame is not None and frame.image.shape == (720, 1280, 3)
+    # ...plates are read only in the middle half...
+    assert frame.roi == (320, 180, 640, 360)
+    # ...and the preview shows that part, labelled with the window it shows
+    assert shown and (shown[-1].width(), shown[-1].height()) == (640, 360)
+    assert [float(v) for v in shown[-1].text("zoom_window").split(",")] == [0.25, 0.25, 0.5, 0.5]
+
+
+def test_roi_stays_on_the_whole_picture_when_zoomed(monkeypatch):
+    from platescanner.config import Config
+
+    cfg = Config()
+    cfg.camera.roi = [0.0, 0.5, 1.0, 0.5]   # the bottom half (the lane)
+    cfg.camera.zoom = 2.0                    # the middle half
+    frame, _ = _run_capture(monkeypatch, cfg)
+    assert frame.roi == (320, 360, 640, 180)  # only where both overlap
+
+    cfg = Config()
+    cfg.camera.roi = [0.0, 0.0, 0.2, 0.2]    # no overlap with the zoom: the zoom window wins
+    cfg.camera.zoom = 4.0
+    cfg.camera.zoom_center = [1.0, 1.0]
+    frame, _ = _run_capture(monkeypatch, cfg)
+    assert frame.roi == (960, 540, 320, 180)
+
+
+def test_click_on_zoomed_preview_aims_through_its_own_window():
+    import os
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QImage, QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    from platescanner.ui.widgets import VideoView
+
+    QApplication.instance() or QApplication([])
+    view = VideoView()
+    view.resize(640, 360)
+    img = QImage(640, 360, QImage.Format.Format_RGB888)
+    img.setText("zoom_window", "0.5,0.5,0.5,0.5")  # the bottom-right quarter
+    view.set_frame(img)
+    got = []
+    view.clicked_at.connect(lambda x, y: got.append((x, y)))
+    pos = QPointF(320, 180)  # the middle of what is shown
+    view.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, pos, pos,
+                                     Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                                     Qt.KeyboardModifier.NoModifier))
+    assert got == [(0.75, 0.75)]
+
+
+def test_tracker_shift_keeps_vehicles_where_they_are():
+    from platescanner.vision.tracker import PlateTracker
+
+    tr = PlateTracker()
+    tr.update([(100, 50, 60, 20)], 0.0)
+    tr.update([(110, 50, 60, 20)], 0.1)
+    # the reading area moved 40 px right and 30 px down: boxes in it move the other way
+    tr.shift(-40, -30)
+    (t,) = tr.tracks.values()
+    assert t.box == (70, 20, 60, 20)
+    assert t.trail[-1] == (100, 30)
+    matched, ended = tr.update([(80, 20, 60, 20)], 0.2)  # the same plate, still followed
+    assert [m[0].track_id for m in matched] == [t.track_id] and not ended
+
+
+def test_motion_detector_starts_fresh_when_the_zoom_changes(monkeypatch):
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    made = []
+    real = pipeline.MotionDetector
+
+    def counting(cfg):
+        made.append(1)
+        return real(cfg)
+
+    monkeypatch.setattr(pipeline, "MotionDetector", counting)
+
+    cfg = Config()
+    frames = [0]
+    orig_window = pipeline.camera.zoom_window
+
+    def window(zoom, center):
+        frames[0] += 1
+        return orig_window(2.0 if frames[0] > 3 else 1.0, center)  # zoomed in after 3 frames
+
+    monkeypatch.setattr(pipeline.camera, "zoom_window", window)
+    frame, _ = _run_capture(monkeypatch, cfg)
+    assert frame.roi == (320, 180, 640, 360)
+    assert len(made) == 2  # one per area watched: the whole picture, then the zoomed part

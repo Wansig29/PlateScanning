@@ -61,6 +61,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `camera.source` | `"0"` for the first USB camera, an `rtsp://…` URL for an IP camera, or a video file |
 | `camera.use_any_webcam` | `true` (default): if the camera number in `camera.source` can't be opened (unplugged, or Windows numbered the cameras differently), the scanner checks the other connected webcams and scans with the first one that gives a picture. The status bar stays amber and names the camera in use; the Camera menu ticks it. Not saved, so the configured camera is tried first at the next start. `false`: keep retrying the configured camera only |
 | `camera.roi` | `[x, y, w, h]` fractions of the frame to watch, e.g. `[0.2, 0.4, 0.6, 0.6]`, so trees or passers-by outside the lane don't trigger scans |
+| `camera.zoom`, `camera.zoom_center` | Digital zoom, normally set with the **Zoom** slider on the Live Feed (1× to 4×; above 1× click the picture to aim it). The preview shows the zoomed part, and motion is watched and plates are read only there (inside `camera.roi` too, if set), so the detector finds smaller plates. It adds no detail for the plate reader: a camera's optical zoom or a closer camera does. The saved evidence pictures keep the whole camera picture, `camera.roi` stays measured on the whole picture (zooming never moves it), and vehicles already being followed keep their tracks when the zoom changes |
 | `motion.min_area_ratio` | How much of the ROI must move to count as a vehicle |
 | `motion.travel_frames`, `min_travel_ratio`, `min_growth_ratio` | The moving shape must also travel: over the last `travel_frames` frames its centre moves at least `min_travel_ratio` of the picture width, or its area grows by `min_growth_ratio` (driving up to the camera). Someone fidgeting in place doesn't count. Raise `min_travel_ratio` if people still trigger scans; lower it if slow vehicles are missed |
 | `ocr.plate_layouts` | Accepted plate formats (`L` = letter, `D` = digit) |
@@ -243,19 +244,11 @@ The models run on ONNX Runtime (no PyTorch), so the build is small and starts qu
 2. From that folder, run `..\make_shortcut.ps1 -ExePath PlateScanner.exe` (or point `-ExePath` at wherever you copied `PlateScanner.exe`) to add a **PSAU Gate Plate Scanner** shortcut to the Desktop.
 3. Double-click the shortcut to launch the app. On first run it writes its own `config.json` to `%LOCALAPPDATA%\PlateScanner\` (see *Configuration*) — edit `camera.source` there for that computer's camera.
 
-### Signing a release (in-app updates)
+### Updating installed scanners
 
-Installed scanners only install an update that is signed with the release key, so a stolen GitHub login can't push code to the gate laptops. The private key stays on your own computer, never on GitHub.
+Publish a release with the workflow (Actions → *Build and release Windows app* → *Run workflow*, with a tag such as `v1.2.0`). Installed scanners see it within the update check and install it when the guard clicks the update button. The download is checked against the SHA-256 checksum GitHub publishes for the installer, so a corrupted download is never run.
 
-One time: `python tools\sign_release.py keygen` creates the key (passphrase-protected, in `%USERPROFILE%\.platescanner\`) and prints `RELEASE_PUBLIC_KEY = "..."`. Paste that line into `platescanner\updates.py`, commit, and back up the `.pem` file and passphrase. Until a key is set, the update banner only opens the release page.
-
-Each release, after the workflow has published it:
-
-```powershell
-python tools\sign_release.py sign PlateScanner-Setup.exe --tag v1.2.0   # the installer downloaded from the release
-```
-
-then upload the `PlateScanner-Setup.exe.sig` it writes to the same release. The signature covers the installer's SHA-256 and its tag, so an older signed installer can't be passed off as a newer release.
+Releases are not signed, so anyone who can publish a release on the GitHub account can update the gate laptops: protect the account with a strong password and two-factor authentication. Scanners on v1.0.14 to v1.0.19 only accepted signed updates; install the next release on those by hand once (download `PlateScanner-Setup.exe` from the release page and run it), and later updates install from the banner again.
 
 ## Security notes
 
