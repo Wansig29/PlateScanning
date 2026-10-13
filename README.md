@@ -58,6 +58,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `api.base_url` | psau-security address (default `https://psau-security-production.up.railway.app`) |
 | `api.login_path`, `vehicles_path`, `violations_path` | Endpoint paths (see *Connection to psau-security*) |
 | `camera.source` | `"0"` for the first USB camera, an `rtsp://…` URL for an IP camera, or a video file |
+| `camera.use_any_webcam` | `true` (default): if the camera number in `camera.source` can't be opened (unplugged, or Windows numbered the cameras differently), the scanner checks the other connected webcams and scans with the first one that gives a picture. The status bar stays amber and names the camera in use; the Camera menu ticks it. Not saved, so the configured camera is tried first at the next start. `false`: keep retrying the configured camera only |
 | `camera.roi` | `[x, y, w, h]` fractions of the frame to watch, e.g. `[0.2, 0.4, 0.6, 0.6]`, so trees or passers-by outside the lane don't trigger scans |
 | `motion.min_area_ratio` | How much of the ROI must move to count as a vehicle |
 | `motion.travel_frames`, `min_travel_ratio`, `min_growth_ratio` | The moving shape must also travel: over the last `travel_frames` frames its centre moves at least `min_travel_ratio` of the picture width, or its area grows by `min_growth_ratio` (driving up to the camera). Someone fidgeting in place doesn't count. Raise `min_travel_ratio` if people still trigger scans; lower it if slow vehicles are missed |

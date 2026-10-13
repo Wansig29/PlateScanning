@@ -504,10 +504,10 @@ class MainWindow(QMainWindow):
         self.recognizer.start()
 
     def _camera_status(self, msg: str) -> None:
-        ok = msg == "Camera running"
+        ok = msg == "Camera running"  # "Camera running: camera 0 not found, using camera 1" stays amber
         self._set_status(self.cam_status, msg if msg.startswith("Camera") else f"Camera: {msg}",
                          theme.GREEN if ok else theme.AMBER)
-        if not ok:
+        if not msg.startswith("Camera running"):
             self.video.set_message(msg)
 
     def _on_health(self, code: str, severity: str, msg: str) -> None:
@@ -706,7 +706,8 @@ class MainWindow(QMainWindow):
         self._camera_menu.clear()
         group = QActionGroup(self._camera_menu)
         names = camera.list_names()
-        current = self.cfg.camera.source.strip()
+        capture = getattr(self, "capture", None)  # the menu is first built before the camera starts
+        current = capture.in_use if capture else self.cfg.camera.source.strip()
         for n, name in enumerate(names or [f"Camera {n}" for n in range(5)]):
             act = self._camera_menu.addAction(f"{n}: {name}")
             act.setCheckable(True)

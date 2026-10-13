@@ -177,6 +177,8 @@ class CaptureWorker(QThread):
         self._reopen = threading.Event()  # set when the operator picks another camera
         self._overlays: list[Overlay] = []
         self._lock = threading.Lock()
+        # The camera actually scanned, and why it isn't the configured one (when it isn't).
+        self.in_use, self.note = cfg.camera.source.strip(), ""
 
     def stop(self) -> None:
         self._stop.set()
@@ -193,14 +195,24 @@ class CaptureWorker(QThread):
 
     def _open(self) -> tuple[cv2.VideoCapture | None, bool]:
         src = self.cfg.camera.source.strip()
+        self.in_use, self.note = src, ""
         if src.isdigit():
-            cap = cv2.VideoCapture(int(src), cv2.CAP_DSHOW)
-            if cap.isOpened():
-                log.info("Camera opened: %s", camera.describe(camera.apply_settings(cap, self.cfg.camera)))
-            is_file = False
-        else:
-            cap = cv2.VideoCapture(src)
-            is_file = Path(src).is_file()
+            opened = camera.open_index(int(src), self.cfg.camera)
+            if opened is None and self.cfg.camera.use_any_webcam:
+                names = camera.list_names()
+                found = camera.find_webcam(int(src), self.cfg.camera, names)
+                if found is not None:
+                    cap, got, n = found
+                    opened = cap, got
+                    name = f" ({names[n]})" if n < len(names) else ""
+                    self.in_use, self.note = str(n), f"camera {src} not found, using camera {n}{name}"
+                    log.warning("Camera %s could not be opened; scanning with camera %d%s instead", src, n, name)
+            if opened is None:
+                return None, False
+            log.info("Camera opened: %s", camera.describe(opened[1]))
+            return opened[0], False
+        cap = cv2.VideoCapture(src)
+        is_file = Path(src).is_file()
         if not cap.isOpened():
             cap.release()
             return None, is_file
@@ -294,7 +306,7 @@ class CaptureWorker(QThread):
                 self.status.emit(f"Camera '{camera.safe_source(self.cfg.camera.source)}' unavailable, retrying…")
                 self._stop.wait(3.0)
                 continue
-            self.status.emit("Camera running")
+            self.status.emit(f"Camera running: {self.note}" if self.note else "Camera running")
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             started, index = time.monotonic(), 0
             got_frame = False  # a video that never yields a frame must not be rewound in a tight loop

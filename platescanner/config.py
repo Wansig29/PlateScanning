@@ -57,6 +57,10 @@ class ApiConfig:
 class CameraConfig:
     # Camera index ("0"), RTSP/HTTP stream URL, or a video file path for testing.
     source: str = "0"
+    # When the camera number above can't be opened (unplugged, or Windows numbered
+    # the cameras differently), scan with the first other connected webcam that
+    # gives a picture. Not saved: at the next start the camera above is tried first.
+    use_any_webcam: bool = True
     width: int = 1920
     height: int = 1080
     preview_fps: int = 20

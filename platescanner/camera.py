@@ -53,6 +53,34 @@ def list_names() -> list[str]:
         return []
 
 
+def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | None:
+    """Open camera number `index` (DirectShow on Windows) with the configured settings; return it
+    and what the driver accepted, or None unless it gives a picture. The test read matters: Windows
+    "opens" some absent or busy cameras and then returns no frames. The settings go first, as some
+    drivers ignore a change of video format once the picture is flowing."""
+    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    if cap.isOpened():
+        got = apply_settings(cap, cfg)
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return cap, got
+    cap.release()
+    return None
+
+
+def find_webcam(skip: int, cfg: CameraConfig, names: list[str]) -> tuple[Any, dict[str, Any], int] | None:
+    """The first connected webcam other than camera `skip` that gives a picture, as (capture, what
+    the driver accepted, number). Tries every camera Windows lists by name (`names`, from
+    `list_names`), or numbers 0-3 when they can't be listed."""
+    for n in range(len(names) or 4):
+        if n == skip:
+            continue
+        opened = open_index(n, cfg)
+        if opened is not None:
+            return opened[0], opened[1], n
+    return None
+
+
 # DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).
 AUTO_EXPOSURE_MANUAL = 0.25
 
