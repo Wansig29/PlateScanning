@@ -240,19 +240,11 @@ The models run on ONNX Runtime (no PyTorch), so the build is small and starts qu
 2. From that folder, run `..\make_shortcut.ps1 -ExePath PlateScanner.exe` (or point `-ExePath` at wherever you copied `PlateScanner.exe`) to add a **PSAU Gate Plate Scanner** shortcut to the Desktop.
 3. Double-click the shortcut to launch the app. On first run it writes its own `config.json` to `%LOCALAPPDATA%\PlateScanner\` (see *Configuration*) — edit `camera.source` there for that computer's camera.
 
-### Signing a release (in-app updates)
+### Updating installed scanners
 
-Installed scanners only install an update that is signed with the release key, so a stolen GitHub login can't push code to the gate laptops. The private key stays on your own computer, never on GitHub.
+Publish a release with the workflow (Actions → *Build and release Windows app* → *Run workflow*, with a tag such as `v1.2.0`). Installed scanners see it within the update check and install it when the guard clicks the update button. The download is checked against the SHA-256 checksum GitHub publishes for the installer, so a corrupted download is never run.
 
-One time: `python tools\sign_release.py keygen` creates the key (passphrase-protected, in `%USERPROFILE%\.platescanner\`) and prints `RELEASE_PUBLIC_KEY = "..."`. Paste that line into `platescanner\updates.py`, commit, and back up the `.pem` file and passphrase. Until a key is set, the update banner only opens the release page.
-
-Each release, after the workflow has published it:
-
-```powershell
-python tools\sign_release.py sign PlateScanner-Setup.exe --tag v1.2.0   # the installer downloaded from the release
-```
-
-then upload the `PlateScanner-Setup.exe.sig` it writes to the same release. The signature covers the installer's SHA-256 and its tag, so an older signed installer can't be passed off as a newer release.
+Releases are not signed, so anyone who can publish a release on the GitHub account can update the gate laptops: protect the account with a strong password and two-factor authentication. Scanners on v1.0.14 to v1.0.19 only accepted signed updates; install the next release on those by hand once (download `PlateScanner-Setup.exe` from the release page and run it), and later updates install from the banner again.
 
 ## Security notes
 
