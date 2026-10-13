@@ -197,6 +197,7 @@ class AlertFrame(QWidget):
 
 class VideoView(QWidget):
     """Live camera frame, aspect-fit, with a LIVE / motion badge and a CCTV-style clock."""
+    clicked_at = Signal(float, float)  # where was clicked, as x, y fractions of the whole camera picture
 
     def __init__(self):
         super().__init__()
@@ -205,6 +206,35 @@ class VideoView(QWidget):
         self._image: QImage | None = None
         self._motion = False
         self._message = "Starting camera…"
+        self._zoom = 1.0
+
+    def set_zoom(self, zoom: float) -> None:
+        """Shown as a badge; above 1x a click on the picture aims the zoom."""
+        self._zoom = zoom
+        self.setCursor(Qt.CursorShape.CrossCursor if zoom > 1.0 else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def _target(self) -> QRectF | None:
+        """Where the picture is drawn (aspect-fit, centred)."""
+        img = self._image
+        if img is None or img.width() == 0 or img.height() == 0:
+            return None
+        scale = min(self.width() / img.width(), self.height() / img.height())
+        w, h = img.width() * scale, img.height() * scale
+        return QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
+
+    def mousePressEvent(self, e) -> None:  # noqa: N802
+        target = self._target()
+        pos = e.position()
+        if e.button() == Qt.MouseButton.LeftButton and target is not None and target.contains(pos):
+            # The picture shows only the zoom window it was drawn with: map the click through it.
+            try:
+                zx, zy, zw, zh = (float(v) for v in self._image.text("zoom_window").split(","))
+            except ValueError:
+                zx, zy, zw, zh = 0.0, 0.0, 1.0, 1.0
+            self.clicked_at.emit(zx + (pos.x() - target.left()) / target.width() * zw,
+                                 zy + (pos.y() - target.top()) / target.height() * zh)
+        super().mousePressEvent(e)
 
     def set_frame(self, img: QImage) -> None:
         self._image = img
@@ -249,11 +279,10 @@ class VideoView(QWidget):
             p.setPen(QColor(theme.MUTED))
             p.drawText(self.rect().adjusted(0, 50, 0, 0), Qt.AlignmentFlag.AlignCenter, self._message)
             return
-        img = self._image
-        scale = min(self.width() / img.width(), self.height() / img.height())
-        w, h = img.width() * scale, img.height() * scale
-        target = QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h)
-        p.drawImage(target, img)
+        target = self._target()
+        if target is None:
+            return
+        p.drawImage(target, self._image)
 
         f = QFont(self.font())
         f.setBold(True)
@@ -263,6 +292,10 @@ class VideoView(QWidget):
         width = p.fontMetrics().horizontalAdvance(label) + 38
         self._pill(p, QRectF(target.left() + 12, target.top() + 12, width, 26),
                    theme.AMBER if self._motion else theme.RED, label)
+        if self._zoom > 1.0:
+            zoom = f"ZOOM {self._zoom:.1f}×"
+            self._pill(p, QRectF(target.left() + 12 + width + 8, target.top() + 12,
+                                 p.fontMetrics().horizontalAdvance(zoom) + 24, 26), None, zoom)
         now = datetime.now()
         stamp = f"{now:%Y-%m-%d}  {timefmt.clock(now)}"
         f.setFamily("Consolas")

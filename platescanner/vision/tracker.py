@@ -156,6 +156,14 @@ class PlateTracker:
         self.tracks: dict[int, Track] = {}
         self._ids = itertools.count(1)
 
+    def shift(self, dx: int, dy: int) -> None:
+        """Move every track by (dx, dy) px: the area the boxes are measured in has moved
+        (the digital zoom was changed or aimed), the vehicles have not."""
+        for t in self.tracks.values():
+            x, y, w, h = t.box
+            t.box = (x + dx, y + dy, w, h)
+            t.trail = [(px + dx, py + dy) for px, py in t.trail]
+
     def update(self, boxes: list[Box], now: float) -> tuple[list[tuple[Track, int]], list[Track]]:
         """Match detections to tracks.
 
