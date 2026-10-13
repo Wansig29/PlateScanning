@@ -252,7 +252,8 @@ class CaptureWorker(QThread):
         view = frame.copy()
         rx, ry, rw, rh = roi
         if self.cfg.camera.roi:
-            cv2.rectangle(view, (rx, ry), (rx + rw, ry + rh), (200, 200, 200), 1)
+            # Thick enough to still show once the preview is scaled down.
+            cv2.rectangle(view, (rx, ry), (rx + rw, ry + rh), (200, 200, 200), max(1, frame.shape[1] // 800))
         with self._lock:
             overlays = list(self._overlays)
         thick = max(2, frame.shape[1] // 450)

@@ -76,3 +76,21 @@ def test_delete_scan_history_clears_the_log_and_the_screen(window, monkeypatch):
     window._delete_scan_history()
     assert window.conn.execute("SELECT COUNT(*) FROM scan_log").fetchone()[0] == 0
     assert window.logs.table.rowCount() == 0
+
+
+def test_draw_lane_button_sets_and_clears_camera_roi(window):
+    from platescanner.config import load_config as reload
+
+    w, app = window
+    assert w.cfg.camera.roi is None and not w.lane_clear.isEnabled()
+    w.lane_button.click()
+    assert w.video.drawing
+    w.video.roi_drawn.emit(0.123456, 0.4, 0.5, 0.6)
+    w.video.drawing_ended.emit()
+    assert w.cfg.camera.roi == [0.1235, 0.4, 0.5, 0.6] and reload().camera.roi == [0.1235, 0.4, 0.5, 0.6]
+    assert not w.lane_button.isChecked() and w.lane_clear.isEnabled()
+    w.lane_button.click()                                    # start drawing, then think better of it
+    w.lane_button.click()
+    assert not w.video.drawing and w.cfg.camera.roi == [0.1235, 0.4, 0.5, 0.6]
+    w.lane_clear.click()
+    assert w.cfg.camera.roi is None and reload().camera.roi is None and not w.lane_clear.isEnabled()
