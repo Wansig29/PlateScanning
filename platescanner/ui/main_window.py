@@ -1140,7 +1140,10 @@ class MainWindow(QMainWindow):
         crop_pm = QPixmap.fromImage(to_qimage(scan.read.crop))
         vehicle_pm = QPixmap.fromImage(to_qimage(scan.vehicle)) if scan.vehicle is not None else None
         ts = scan.ts.isoformat(timespec="seconds")
-        seen = VehicleView(vehicle_pm, load_pixmap(scan.snapshot_path), scan.color, scan.position,
+        # The scene comes from memory: the alert is shown before its file is written.
+        scene_pm = (QPixmap.fromImage(to_qimage(scan.snapshot)) if scan.snapshot is not None
+                    else load_pixmap(scan.snapshot_path))
+        seen = VehicleView(vehicle_pm, scene_pm, scan.color, scan.position,
                            scan.others_in_view, scan.track_id,
                            self._when(timefmt.clock(scan.ts), scan.source), scan.scan_id, scan.verify)
         is_violation = res.status == db.RESULT_VIOLATION
@@ -1151,13 +1154,13 @@ class MainWindow(QMainWindow):
         elif self.dash.on_clear():
             self._show(scan.read.text, res, seen)
         self._update_pending()
+        if is_violation:
+            self._alert()  # sound and flash now; the panels below can be updated after
         self.captured.add_capture(scan.scan_id, ts, vehicle_pm or crop_pm, shown_plate, scan.read.confidence,
                                   res.status, scan.snapshot_path, scan.color)
         self.logs.add_entry(scan.scan_id, ts, shown_plate, res.status, ("VERIFY PLATE · " if scan.verify else "") + self._detail(res), res.approximate,
                            scan.read.confidence, self._looks(scan.color, scan.position, scan.source), None)
         self._refresh_sync_label()
-        if res.status == db.RESULT_VIOLATION:
-            self._alert()
 
     def _acknowledged(self) -> None:
         """Acknowledge (or "Back to violations") was clicked."""

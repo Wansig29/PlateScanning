@@ -116,6 +116,10 @@ class MotionConfig:
     # Keep running plate detection this long after motion stops, so a
     # vehicle that halts in view is still read.
     hold_seconds: float = 2.0
+    # With no vehicle motion and no plate being followed, still look for plates this often.
+    # The motion gate takes a moment to be sure a shape is a vehicle travelling (up to ~1 s);
+    # this look catches a plate before that, so it bounds how late a violator can be noticed.
+    idle_check_seconds: float = 0.25
 
 
 @dataclass

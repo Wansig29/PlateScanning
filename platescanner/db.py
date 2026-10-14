@@ -508,6 +508,17 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
     return int(cur.lastrowid)
 
 
+PICTURE_COLUMNS = ("crop_path", "vehicle_path", "snapshot_path")
+
+
+def clear_picture(conn: sqlite3.Connection, scan_id: int, column: str) -> None:
+    """A scan's picture could not be written after all: take it off the row."""
+    if column not in PICTURE_COLUMNS:
+        raise ValueError(column)
+    conn.execute(f"UPDATE scan_log SET {column}=NULL WHERE id=?", (scan_id,))
+    conn.commit()
+
+
 def recent_scans(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
     """The newest scans of the current academic year (archived years live under Reports -> Archive)."""
     rows = conn.execute("SELECT * FROM scan_log WHERE archived_year IS NULL ORDER BY id DESC LIMIT ?",

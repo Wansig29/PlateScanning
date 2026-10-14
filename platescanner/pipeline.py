@@ -85,6 +85,8 @@ class ScanResult:
     others_in_view: int = 0
     source: str | None = None  # e.g. "video gate.mp4 at 0:23"; None for the live camera
     verify: bool = False       # a doubtful violation, or a look-alike "registered" match: the guard should check the plate
+    # The scene with this vehicle highlighted, in memory: the alert goes out before its file is written.
+    snapshot: np.ndarray | None = None
 
 
 @dataclass
@@ -282,7 +284,7 @@ class CaptureWorker(QThread):
         # so the guard sees at a glance which car it is.
         violators = [(o, box) for o, box, _ in placed if o.violation]
         if violators:
-            lit = (view * 0.45).astype(np.uint8)
+            lit = cv2.convertScaleAbs(view, alpha=0.45)  # (numpy float maths: ~10x slower at 1080p)
             for _, box in violators:
                 vx, vy, vw, vh = identify.vehicle_box(box, view.shape)
                 lit[vy:vy + vh, vx:vx + vw] = view[vy:vy + vh, vx:vx + vw]
@@ -480,6 +482,9 @@ class RecognizerWorker(QThread):
         path = captures.picture_path(self.cfg, ts, plate, kind, status)
         if path is None:
             return None
+        return str(path) if self._write_jpeg(path, img, max_width, quality) else None
+
+    def _write_jpeg(self, path: Path, img: np.ndarray, max_width: int = 0, quality: int = 92) -> bool:
         # A picture that can't be saved (disk full, folder not writable...) must never
         # cost the alert or the log row: the scan simply has no picture.
         try:
@@ -489,12 +494,12 @@ class RecognizerWorker(QThread):
                 img = cv2.resize(img, None, fx=f, fy=f, interpolation=cv2.INTER_AREA)
             ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, quality])
             if not ok:
-                return None
+                return False
             path.write_bytes(buf.tobytes())  # (cv2.imwrite can't handle non-ASCII paths on Windows)
         except (OSError, cv2.error) as e:
             log.warning("Could not save picture %s: %s", path, e)
-            return None
-        return str(path)
+            return False
+        return True
 
     # --- main loop --------------------------------------------------------------
 
@@ -545,7 +550,7 @@ class RecognizerWorker(QThread):
                 # Only real plates keep it busy, not the classical finder's static
                 # guesses (signs, lane marks, windows).
                 following = any(t.neural_hits or t.reads for t in self.tracker.tracks.values())
-                idle = not f.motion and not following and f.ts - last_detect < 1.0
+                idle = not f.motion and not following and f.ts - last_detect < self.cfg.motion.idle_check_seconds
                 self._feed_health(f, not idle)
                 if idle:
                     drain()
@@ -755,23 +760,37 @@ class RecognizerWorker(QThread):
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
         plate_box = track.best_frame_box or (0, 0, 1, 1)
-        crop_path = vehicle = color = pos = vehicle_path = snap = None
-        # The pictures are extras: whatever goes wrong with them, the scan is still
-        # logged and the guard still alerted below.
+        vehicle = color = pos = scene = None
+        # The pictures are only prepared here; they are written to disk after the alert has gone
+        # out (see _write_pictures), so saving them never makes the guard wait. Whatever goes wrong
+        # with them, the scan is still logged and the guard still alerted below.
+        pictures: dict[str, tuple[Path, np.ndarray, int, int]] = {}  # scan_log column: (file, picture, width, quality)
+
+        def plan(column: str, img: np.ndarray | None, kind: str, max_width: int = 0, quality: int = 92) -> None:
+            path = captures.picture_path(self.cfg, ts, text, kind, result.status) if img is not None else None
+            if path is not None:
+                pictures[column] = (path, img, max_width, quality)
+
         try:
             if self.cfg.scan.save_captures:
-                crop_path = self._save_jpeg(crop, ts, text, captures.CROP, result.status)
+                plan("crop_path", crop, captures.CROP)
             if track.best_frame is not None:
                 frame = track.best_frame
                 vehicle = identify.crop(frame, identify.vehicle_box(plate_box, frame.shape))
                 color = identify.vehicle_color(frame, plate_box)
                 pos = identify.position(plate_box, frame.shape)
                 if self.cfg.scan.save_captures:
-                    vehicle_path = self._save_jpeg(vehicle, ts, text, captures.VEHICLE, result.status, 640, 88)
-                snap = self._save_locator(track, ts, text, result.status, f"#{track.track_id} {plates.display(text)}",
-                                          RESULT_BGR.get(result.status, READING_BGR))
+                    plan("vehicle_path", vehicle, captures.VEHICLE, 640, 88)
+                if self.cfg.scan.save_snapshots and captures.wants_pictures(self.cfg, result.status):
+                    scene = identify.locator(frame, plate_box, track.best_frame_others,
+                                             RESULT_BGR.get(result.status, READING_BGR),
+                                             f"#{track.track_id} {plates.display(text)}")
+                    plan("snapshot_path", scene, captures.SCENE, self.cfg.scan.snapshot_max_width, 85)
         except Exception:  # noqa: BLE001
             log.exception("Track #%d: could not prepare its pictures; logging the scan without them", track.track_id)
+            pictures.clear()
+        crop_path, vehicle_path, snap = (str(pictures[c][0]) if c in pictures else None
+                                         for c in ("crop_path", "vehicle_path", "snapshot_path"))
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
         verify = needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
@@ -790,7 +809,19 @@ class RecognizerWorker(QThread):
                  f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
                  if decoded and plates.normalize(text) != plates.normalize(lead.text) else "")
         self.scanned.emit(ScanResult(scan_id, ts, read, result, crop_path, snap, track.track_id, vehicle,
-                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify))
+                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify, scene))
+        self._write_pictures(conn, scan_id, track, pictures)
+
+    def _write_pictures(self, conn, scan_id: int, track: Track, pictures: dict) -> None:
+        """Write a scan's pictures once its alert is out. A picture that can't be written is
+        taken off its scan log row, so the Logs never point at a file that isn't there."""
+        for column, (path, img, max_width, quality) in pictures.items():
+            if self._write_jpeg(path, img, max_width, quality):
+                continue
+            try:
+                db.clear_picture(conn, scan_id, column)
+            except sqlite3.Error:
+                log.exception("Track #%d: could not take the missing picture off its scan", track.track_id)
 
     def _save_locator(self, track: Track, ts: datetime, name: str, status: str, label: str,
                       color: tuple[int, int, int]) -> str | None:
