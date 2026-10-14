@@ -1,8 +1,6 @@
 """Multi-vehicle tracking and OCR vote merging (no models needed)."""
 from __future__ import annotations
 
-import pytest
-
 from platescanner.config import OcrConfig
 from platescanner.vision.alpr import PlateBox, merge_proposals, vote_chars
 from platescanner.vision.tracker import PlateTracker, Track
@@ -78,16 +76,3 @@ def test_a_long_stay_keeps_a_bounded_number_of_reads():
         t.note_unmatched("??")
     assert len(t.reads) == tr.MAX_READS and len(t.unmatched) == tr.MAX_UNMATCHED
     assert t.leader().text in ("ABC1234", "ABC1235")
-
-
-def test_track_keeps_recent_boxes_for_its_speed_and_shift_moves_them():
-    from platescanner.vision.tracker import MAX_SAMPLES, PlateTracker
-
-    tr = PlateTracker()
-    for i in range(MAX_SAMPLES + 5):
-        tr.update([(100 + 2 * i, 50, 60, 20)], i * 0.05)
-    (t,) = tr.tracks.values()
-    assert len(t.samples) == MAX_SAMPLES
-    assert t.samples[-1] == (pytest.approx((MAX_SAMPLES + 4) * 0.05), (100 + 2 * (MAX_SAMPLES + 4), 50, 60, 20))
-    tr.shift(-40, -30)
-    assert t.samples[-1][1] == (100 + 2 * (MAX_SAMPLES + 4) - 40, 20, 60, 20)

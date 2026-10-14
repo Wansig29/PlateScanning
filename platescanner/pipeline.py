@@ -59,11 +59,6 @@ RESULT_BGR = {
     db.RESULT_NOT_REGISTERED: (11, 158, 245),
 }
 READING_BGR = (235, 200, 60)  # tracked, plate not decided yet
-SPEEDING_BGR = (0, 140, 255)  # orange: faster than scan.speed_limit_kmh (a violation stays red)
-
-
-def over_speed_limit(speed_kmh: float | None, limit_kmh: float) -> bool:
-    return limit_kmh > 0 and speed_kmh is not None and speed_kmh > limit_kmh
 
 
 def to_qimage(bgr: np.ndarray) -> QImage:
@@ -160,19 +155,12 @@ class FrameSlot:
             return f if f is not None and f.seq > seq else None
 
 
-def plate_size_text(width_px: int, min_width_px: float, distance_m: float | None = None,
-                    speed_kmh: float | None = None) -> str:
+def plate_size_text(width_px: int, min_width_px: float) -> str:
     """The plate's width in camera pixels, for its label on the live feed: shows whether the camera
-    resolves plates well enough (below ocr.min_plate_width_px, reading gets unreliable), then its
-    rough distance from the camera and speed when known. Plain ASCII: the labels are drawn with
-    OpenCV's built-in font."""
+    resolves plates well enough (below ocr.min_plate_width_px, reading gets unreliable). Plain ASCII:
+    the labels are drawn with OpenCV's built-in font."""
     small = min_width_px > 0 and width_px < min_width_px
-    text = f" | {width_px}px"
-    if distance_m is not None:
-        text += f" ~{distance_m:.1f}m"
-    if speed_kmh is not None:
-        text += f" ~{speed_kmh:.0f}km/h"
-    return text + (" SMALL" if small else "")
+    return f" | {width_px}px" + (" SMALL" if small else "")
 
 
 @dataclass
@@ -429,7 +417,6 @@ class RecognizerWorker(QThread):
         self._last_seen: dict[str, tuple[float, str]] = {}  # plate key -> (last time, its result)
         self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
         self._area_origin: tuple[int, int] | None = None  # where the reading area's (0, 0) is in the frame
-        self._frame_size = (0, 0)  # of the whole camera picture, for plate distances and speeds (0 = not known yet)
         self._in_view: set[int] = set()
         self.frames_processed = 0
         # Plate reads and the classical finder run here, in parallel with the detector.
@@ -684,7 +671,6 @@ class RecognizerWorker(QThread):
                 track.best_frame, track.best_frame_box = f.image, (px + rx, py + ry, pw, ph)
                 track.best_frame_others = others(i)
             self._decide(conn, track, final=False)
-        self._frame_size = (f.image.shape[1], f.image.shape[0])  # the whole picture, for distances and speeds
         self._push_overlays(f.roi)
         self._report_in_view()
 
@@ -848,7 +834,7 @@ class RecognizerWorker(QThread):
     def _push_overlays(self, roi: tuple[int, int, int, int] | None) -> None:
         if self.capture is None:
             return
-        rx, ry = (roi[0], roi[1]) if roi else (self._area_origin or (0, 0))
+        rx, ry = (roi[0], roi[1]) if roi else (0, 0)
         out = []
         for t in self.tracker.tracks.values():
             if not t.neural_hits and not t.reads:
@@ -866,17 +852,7 @@ class RecognizerWorker(QThread):
             else:
                 label = f"#{t.track_id} reading..."
                 color = READING_BGR
-            cam = self.cfg.camera
-            distance = camera.plate_distance_m(w, self._frame_size[0], cam.hfov_deg, cam.plate_width_m)
-            # Track boxes are in reading-area pixels: shift them to the whole picture for the speed.
-            samples = [(ts, (bx + rx, by + ry, bw, bh)) for ts, (bx, by, bw, bh) in t.samples]
-            speed = camera.plate_speed_kmh(samples, self._frame_size, cam.hfov_deg, cam.plate_width_m)
-            label += plate_size_text(w, self.cfg.ocr.min_plate_width_px, distance, speed)
-            limit = self.cfg.scan.speed_limit_kmh
-            if over_speed_limit(speed, limit):
-                label += f" OVER {limit:g}km/h"
-                if t.status != db.RESULT_VIOLATION:  # a violation's red frame matters more
-                    color = SPEEDING_BGR
+            label += plate_size_text(w, self.cfg.ocr.min_plate_width_px)
             trail = [(px + rx, py + ry) for px, py in t.trail]
             out.append(Overlay((x + rx, y + ry, w, h), label, color, trail, t.velocity, t.last_seen,
                                t.status == db.RESULT_VIOLATION))

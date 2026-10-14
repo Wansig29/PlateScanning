@@ -10,7 +10,6 @@ since drivers often ignore a request without saying so.
 from __future__ import annotations
 
 import logging
-import math
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -177,84 +176,6 @@ def _warn_if_ignored(cfg: CameraConfig, got: dict[str, Any]) -> None:
                     got["format"], cfg.fourcc)
     if cfg.exposure is not None and got["exposure"] is not None and abs(got["exposure"] - cfg.exposure) > 0.5:
         log.warning("Camera did not accept exposure %s (it reports %s)", cfg.exposure, got["exposure"])
-
-
-def plate_distance_m(plate_px: float, image_width_px: int, hfov_deg: float, plate_width_m: float) -> float | None:
-    """Rough distance from the camera to a plate, from how wide it looks (pinhole camera):
-    distance = plate width * picture width / (2 * plate width in px * tan(hfov / 2)).
-    None when it can't be worked out (no field of view set, or no plate width)."""
-    if plate_px <= 0 or image_width_px <= 0 or not 0 < hfov_deg < 180 or plate_width_m <= 0:
-        return None
-    return plate_width_m * image_width_px / (2 * plate_px * math.tan(math.radians(hfov_deg) / 2))
-
-
-SPEED_WINDOW_S = 1.0  # speed is fitted over this much of the latest track
-SPEED_MIN_SPAN_S = 0.3
-SPEED_MIN_SAMPLES = 4
-SPEED_EDGE_PX = 3          # a box this close to the picture's edge is cut off: its width is not the plate's
-SPEED_OUTLIER_M = 0.3      # a position further than this (and 3x the typical miss) from the fitted line is dropped
-
-
-def _fit_velocity(times: list[float], points: list[tuple[float, float, float]]
-                  ) -> tuple[list[float], list[float]] | None:
-    """Least-squares straight line per coordinate: (velocity, distance of each point from its line)."""
-    mean_t = sum(times) / len(times)
-    var_t = sum((t - mean_t) ** 2 for t in times)
-    if var_t <= 0:
-        return None
-    velocity, lines = [], []
-    for axis in range(3):
-        values = [p[axis] for p in points]
-        mean_v = sum(values) / len(values)
-        slope = sum((t - mean_t) * (v - mean_v) for t, v in zip(times, values)) / var_t
-        velocity.append(slope)
-        lines.append((mean_v, slope))
-    misses = [math.sqrt(sum((p[a] - (lines[a][0] + lines[a][1] * (t - mean_t))) ** 2 for a in range(3)))
-              for t, p in zip(times, points)]
-    return velocity, misses
-
-
-def plate_speed_kmh(samples: list[tuple[float, tuple[int, int, int, int]]], image_size: tuple[int, int],
-                    hfov_deg: float, plate_width_m: float) -> float | None:
-    """Rough speed of a plate in km/h, from its boxes over the last second (pinhole camera).
-
-    Each box gives the plate's position in metres: its distance from how wide it looks, and its
-    sideways and up/down offset from where it is in the picture. A straight line is fitted to each
-    coordinate against time (least squares, so a jittery box width averages out), and the speed is
-    the length of that velocity. This covers vehicles crossing the picture and vehicles driving
-    toward or away from the camera alike. Boxes cut off by the picture's edge are left out (a plate
-    entering looks narrower, so much farther, than it is), and so is a one-off wrong box (the line
-    is fitted again without positions far off it). Boxes are in whole-picture pixels. None until
-    there is enough of the track (SPEED_MIN_SAMPLES over SPEED_MIN_SPAN_S), or without a field of
-    view or plate width.
-    """
-    width, height = image_size
-    if not 0 < hfov_deg < 180 or plate_width_m <= 0 or width <= 0 or height <= 0 or not samples:
-        return None
-    latest = samples[-1][0]
-    e = SPEED_EDGE_PX
-    recent = [(t, b) for t, b in samples
-              if latest - t <= SPEED_WINDOW_S and b[2] > 0
-              and b[0] > e and b[1] > e and b[0] + b[2] < width - e and b[1] + b[3] < height - e]
-    focal = width / (2 * math.tan(math.radians(hfov_deg) / 2))  # px
-    for _ in range(2):  # fit, drop the positions far off the line, fit again
-        if len(recent) < SPEED_MIN_SAMPLES or recent[-1][0] - recent[0][0] < SPEED_MIN_SPAN_S:
-            return None
-        times = [t for t, _ in recent]
-        points = []
-        for _, (x, y, w, h) in recent:
-            z = focal * plate_width_m / w
-            points.append(((x + w / 2 - width / 2) * z / focal, (y + h / 2 - height / 2) * z / focal, z))
-        fit = _fit_velocity(times, points)
-        if fit is None:
-            return None
-        velocity, misses = fit
-        limit = max(SPEED_OUTLIER_M, 3 * sorted(misses)[len(misses) // 2])
-        kept = [s for s, miss in zip(recent, misses) if miss <= limit]
-        if len(kept) == len(recent):
-            break
-        recent = kept
-    return math.sqrt(sum(v * v for v in velocity)) * 3.6
 
 
 def describe(got: dict[str, Any]) -> str:

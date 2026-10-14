@@ -20,7 +20,6 @@ Box = tuple[int, int, int, int]
 # parked in view whose plate never gets a clear read would otherwise add one per frame all day,
 # and every vote goes over all of them: the scanner would slow down the longer it stayed.
 MAX_READS = 60
-MAX_SAMPLES = 30  # (time, box) kept per track for its speed
 # OCR text that fit no plate layout, kept for the "plate not readable" log line (it shows 6).
 MAX_UNMATCHED = 20
 
@@ -71,8 +70,6 @@ class Track:
     emitted_key: str | None = None   # plate key already reported for this vehicle
     emitted_text: str | None = None  # the plate text reported (may be a registered plate decoded from the reads)
     trail: list[tuple[int, int]] = field(default_factory=list)
-    # (time, box) of the latest matches, for the vehicle's speed (camera.plate_speed_kmh).
-    samples: list[tuple[float, Box]] = field(default_factory=list)
     status: str | None = None        # lookup result of the reported plate (for the overlay)
     # Log-probabilities of every character at every position, summed over the reads.
     log_sum: np.ndarray | None = None
@@ -166,7 +163,6 @@ class PlateTracker:
             x, y, w, h = t.box
             t.box = (x + dx, y + dy, w, h)
             t.trail = [(px + dx, py + dy) for px, py in t.trail]
-            t.samples = [(ts, (bx + dx, by + dy, bw, bh)) for ts, (bx, by, bw, bh) in t.samples]
 
     def update(self, boxes: list[Box], now: float) -> tuple[list[tuple[Track, int]], list[Track]]:
         """Match detections to tracks.
@@ -213,8 +209,6 @@ class PlateTracker:
             cx, cy = center(boxes[i])
             t.trail.append((int(cx), int(cy)))
             del t.trail[:-30]
-            t.samples.append((now, boxes[i]))
-            del t.samples[:-MAX_SAMPLES]
 
         ended = [t for t in self.tracks.values() if now - t.last_seen > self.max_age]
         for t in ended:
