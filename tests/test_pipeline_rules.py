@@ -284,6 +284,23 @@ def test_plate_size_is_shown_on_the_live_feed_label():
     assert plate_size_text(62, 80.0) == " | 62px SMALL"     # below ocr.min_plate_width_px
     assert plate_size_text(30, 0.0) == " | 30px"            # warning turned off
     assert plate_size_text(120, 80.0).isascii()             # drawn with OpenCV's font
+    assert plate_size_text(120, 80.0, 3.456) == " | 120px ~3.5m"
+    assert plate_size_text(62, 80.0, 6.0) == " | 62px ~6.0m SMALL"
+
+
+def test_plate_distance_from_its_width():
+    import math
+
+    from platescanner.camera import plate_distance_m
+
+    # A 0.39 m plate 100 px wide on a 1920 px, 90 degree picture: 0.39 * 1920 / (2 * 100 * 1) = 3.744 m
+    assert plate_distance_m(100, 1920, 90.0, 0.39) == pytest.approx(3.744)
+    assert plate_distance_m(200, 1920, 90.0, 0.39) == pytest.approx(3.744 / 2)     # twice as wide: half as far
+    narrow = plate_distance_m(100, 1920, 60.0, 0.39)
+    assert narrow == pytest.approx(0.39 * 1920 / (200 * math.tan(math.radians(30))))  # zoomed lens: farther
+    for bad in [(0, 1920, 78, 0.39), (100, 0, 78, 0.39), (100, 1920, 0, 0.39), (100, 1920, 180, 0.39),
+                (100, 1920, 78, 0)]:
+        assert plate_distance_m(*bad) is None
 
 
 def test_live_feed_labels_carry_the_plate_width():
@@ -303,5 +320,9 @@ def test_live_feed_labels_carry_the_plate_width():
     w._apply(conn, _Frame(0, image, (10, 20, 380, 170), True, 0.0), [PlateBox((150, 80, 64, 20), 0.9)])
     (o,) = Capture.overlays
     assert isinstance(o, Overlay) and o.box == (160, 100, 64, 20)
-    assert o.label.endswith(" | 64px SMALL")
+    # 0.39 m plate, 64 of 400 px wide, 78 degree camera: 0.39 * 400 / (2 * 64 * tan 39) = 1.5 m
+    assert o.label.endswith(" | 64px ~1.5m SMALL")
+    w.cfg.camera.hfov_deg = 0                                 # field of view unknown: no distance
+    w._push_overlays((10, 20, 380, 170))
+    assert Capture.overlays[0].label.endswith(" | 64px SMALL")
     conn.close()

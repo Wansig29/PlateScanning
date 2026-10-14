@@ -10,6 +10,7 @@ since drivers often ignore a request without saying so.
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -176,6 +177,15 @@ def _warn_if_ignored(cfg: CameraConfig, got: dict[str, Any]) -> None:
                     got["format"], cfg.fourcc)
     if cfg.exposure is not None and got["exposure"] is not None and abs(got["exposure"] - cfg.exposure) > 0.5:
         log.warning("Camera did not accept exposure %s (it reports %s)", cfg.exposure, got["exposure"])
+
+
+def plate_distance_m(plate_px: float, image_width_px: int, hfov_deg: float, plate_width_m: float) -> float | None:
+    """Rough distance from the camera to a plate, from how wide it looks (pinhole camera):
+    distance = plate width * picture width / (2 * plate width in px * tan(hfov / 2)).
+    None when it can't be worked out (no field of view set, or no plate width)."""
+    if plate_px <= 0 or image_width_px <= 0 or not 0 < hfov_deg < 180 or plate_width_m <= 0:
+        return None
+    return plate_width_m * image_width_px / (2 * plate_px * math.tan(math.radians(hfov_deg) / 2))
 
 
 def describe(got: dict[str, Any]) -> str:
