@@ -277,10 +277,10 @@ def test_roi_stays_on_the_whole_picture_when_zoomed(monkeypatch):
     assert frame.roi == (960, 540, 320, 180)
 
 
-def test_click_on_zoomed_preview_aims_through_its_own_window():
+def test_dragging_the_zoomed_preview_moves_around_in_it():
     import os
     os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtCore import QEvent, QPointF, Qt
     from PySide6.QtGui import QImage, QMouseEvent
     from PySide6.QtWidgets import QApplication
 
@@ -290,15 +290,31 @@ def test_click_on_zoomed_preview_aims_through_its_own_window():
     view = VideoView()
     view.resize(640, 360)
     img = QImage(640, 360, QImage.Format.Format_RGB888)
-    img.setText("zoom_window", "0.5,0.5,0.5,0.5")  # the bottom-right quarter
+    img.setText("zoom_window", "0.25,0.25,0.5,0.5")  # 2x on the middle of the picture
     view.set_frame(img)
+    view.set_zoom(2.0)
     got = []
-    view.clicked_at.connect(lambda x, y: got.append((x, y)))
-    pos = QPointF(320, 180)  # the middle of what is shown
-    view.mousePressEvent(QMouseEvent(QMouseEvent.Type.MouseButtonPress, pos, pos,
-                                     Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
-                                     Qt.KeyboardModifier.NoModifier))
-    assert got == [(0.75, 0.75)]
+    view.pan_to.connect(lambda x, y: got.append((x, y)))
+
+    def drag(x0, y0, x1, y1):
+        for kind, x, y, fn in ((QEvent.Type.MouseButtonPress, x0, y0, view.mousePressEvent),
+                               (QEvent.Type.MouseMove, x1, y1, view.mouseMoveEvent),
+                               (QEvent.Type.MouseButtonRelease, x1, y1, view.mouseReleaseEvent)):
+            pos = QPointF(x, y)
+            fn(QMouseEvent(kind, pos, pos, Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                           Qt.KeyboardModifier.NoModifier))
+
+    drag(320, 180, 321, 181)          # a click: the zoom stays where it is
+    assert got == []
+    drag(320, 180, 192, 252)          # dragged left and down: the view moves right and up, like a map
+    # 128 px of a 640 px wide view showing half the picture = 0.1 of the picture; 72 of 360 = 0.1
+    assert got[-1] == (pytest.approx(0.6), pytest.approx(0.4))
+    drag(320, 180, -2000, 2000)       # far past the edge: the view stops at the picture's edge
+    assert got[-1] == (pytest.approx(0.75), pytest.approx(0.25))
+    got.clear()
+    view.set_zoom(1.0)                # not zoomed in: nothing to move around in
+    drag(320, 180, 192, 252)
+    assert got == []
 
 
 def test_tracker_shift_keeps_vehicles_where_they_are():

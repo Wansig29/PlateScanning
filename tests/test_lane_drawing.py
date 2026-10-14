@@ -36,7 +36,7 @@ def _drag(view, x0, y0, x1, y1):
 def test_drag_draws_the_lane_as_fractions_of_the_picture(view):
     drawn, clicks, ended = [], [], []
     view.roi_drawn.connect(lambda *r: drawn.append(r))
-    view.clicked_at.connect(lambda *c: clicks.append(c))
+    view.pan_to.connect(lambda *c: clicks.append(c))
     view.drawing_ended.connect(lambda: ended.append(1))
     view.start_drawing()
     _drag(view, 480, 360, 160, 144)                     # dragged up and left: still a box
@@ -63,22 +63,22 @@ def test_a_tiny_drag_is_a_slip_and_drawing_goes_on(view):
     assert drawn == [] and view.drawing
 
 
-def test_escape_cancels_and_a_click_aims_the_zoom_again(view):
+def test_escape_cancels_and_a_click_then_draws_nothing(view):
     drawn, clicks, ended = [], [], []
     view.roi_drawn.connect(lambda *r: drawn.append(r))
-    view.clicked_at.connect(lambda *c: clicks.append(c))
+    view.pan_to.connect(lambda *c: clicks.append(c))
     view.drawing_ended.connect(lambda: ended.append(1))
     view.start_drawing()
     view.keyPressEvent(QKeyEvent(QEvent.Type.KeyPress, Qt.Key.Key_Escape, Qt.KeyboardModifier.NoModifier))
     assert not view.drawing and ended == [1]
-    _mouse(view, QEvent.Type.MouseButtonPress, 320, 180)
-    assert drawn == [] and clicks == [pytest.approx((0.5, 0.5))]
+    _drag(view, 100, 100, 300, 300)
+    assert drawn == [] and clicks == []
 
 
 def test_dragging_the_lane_moves_it_and_keeps_its_size(view):
     drawn, clicks = [], []
     view.roi_drawn.connect(lambda *r: drawn.append(r))
-    view.clicked_at.connect(lambda *c: clicks.append(c))
+    view.pan_to.connect(lambda *c: clicks.append(c))
     view.set_roi([0.25, 0.25, 0.5, 0.5])                # widget box (160, 90)-(480, 270)
     _drag(view, 320, 180, 384, 144)                     # 64 px right, 36 px up
     assert drawn == [pytest.approx((0.35, 0.15, 0.5, 0.5))] and clicks == []
@@ -97,18 +97,26 @@ def test_lane_is_moved_through_the_zoom(view):
     assert drawn == [pytest.approx((0.65, 0.6, 0.2, 0.2))]
 
 
-def test_a_click_on_the_lane_still_aims_the_zoom_and_outside_it_nothing_moves(view):
-    drawn, clicks = [], []
+def test_a_click_on_the_lane_moves_nothing_and_zoomed_in_a_drag_beside_it_pans(view):
+    drawn, pans = [], []
     view.roi_drawn.connect(lambda *r: drawn.append(r))
-    view.clicked_at.connect(lambda *c: clicks.append(c))
+    view.pan_to.connect(lambda *c: pans.append(c))
     view.set_roi([0.25, 0.25, 0.5, 0.5])
     _drag(view, 320, 180, 321, 181)                     # a click, not a drag
-    assert drawn == [] and clicks == [pytest.approx((0.5, 0.5))]
-    _drag(view, 20, 20, 300, 300)                       # starts outside the lane
-    assert drawn == [] and len(clicks) == 2
+    assert drawn == [] and pans == []
+    _drag(view, 20, 20, 300, 300)                       # starts outside the lane, not zoomed in
+    assert drawn == [] and pans == []
+    _camera_picture(view, zoom="0.25,0.25,0.5,0.5")     # 2x on the middle of the picture
+    view.set_zoom(2.0)
+    view.set_roi([0.5, 0.5, 0.2, 0.2])                  # shown at widget (320, 180)-(576, 324)
+    _drag(view, 20, 20, 84, 20)                         # zoomed in: a drag beside the lane moves the view
+    panned = len(pans)
+    assert drawn == [] and panned and pans[-1][0] < 0.5   # dragged right: the view moved left
+    _drag(view, 448, 250, 480, 250)                     # ...and a drag on the lane still moves the lane
+    assert len(drawn) == 1 and len(pans) == panned
     view.set_roi(None)
-    _drag(view, 320, 180, 400, 200)                     # no lane: nothing to move
-    assert drawn == []
+    _drag(view, 448, 250, 480, 250)                     # no lane any more: the same drag moves the view
+    assert len(drawn) == 1 and len(pans) > panned
 
 
 def test_corner_handle_resizes_and_the_opposite_corner_stays(view):

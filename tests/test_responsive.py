@@ -127,3 +127,13 @@ def test_violation_alarm_starts_before_the_card_is_built(window, monkeypatch):
                           violations=[{"id": "9", "violation_type": "No permit"}])
     w._on_scan(ScanResult(1, datetime.now(), PlateRead("ABC1234", "ABC1234", 0.95, crop, (0, 0, 120, 40)), res, None))
     assert order[:3] == ["sound", "card", "flash"] and order.count("sound") == 1
+
+
+def test_dragging_the_zoomed_feed_moves_the_zoom(window):
+    w, _ = window
+    w.zoom_slider.setValue(20)                         # 2x
+    w.video.pan_to.emit(0.6123, 0.4)
+    assert w.cfg.camera.zoom_center == [0.6123, 0.4]
+    w.zoom_slider.setValue(10)                         # back at 1x: nothing to move around in
+    w.video.pan_to.emit(0.3, 0.3)
+    assert w.cfg.camera.zoom_center != [0.3, 0.3]
