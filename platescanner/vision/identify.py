@@ -77,7 +77,7 @@ def locator(frame: np.ndarray, target: Box, others: list[Box], color: tuple[int,
     Everything else is dimmed; other vehicles get thin grey outlines so the
     guard can count "the second car on the left".
     """
-    out = (frame * 0.45).astype(np.uint8)
+    out = cv2.convertScaleAbs(frame, alpha=0.45)  # dimmed; ~10x faster than numpy float maths on 1080p
     vx, vy, vw, vh = vehicle_box(target, frame.shape)
     out[vy:vy + vh, vx:vx + vw] = frame[vy:vy + vh, vx:vx + vw]
     thick = max(2, frame.shape[1] // 300)

@@ -114,8 +114,37 @@ def test_violation_still_alerts_when_pictures_cannot_be_saved(monkeypatch):
     for i in range(3):
         w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
     assert got and got[0].lookup.status == db.RESULT_VIOLATION
-    assert got[0].crop_path is None
-    assert db.get_scan(conn, got[0].scan_id)["result"] == db.RESULT_VIOLATION
+    row = db.get_scan(conn, got[0].scan_id)
+    assert row["result"] == db.RESULT_VIOLATION
+    # the pictures were planned before the alert, then couldn't be written: taken off the row
+    assert row["crop_path"] is None and row["vehicle_path"] is None and row["snapshot_path"] is None
+    conn.close()
+
+
+def test_violation_alert_goes_out_before_its_pictures_are_written(monkeypatch):
+    from pathlib import Path
+
+    w = worker(FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    db.upsert_vehicles(conn, [{"id": 1, "plate": "ABC 1234"}])
+    db.upsert_violations(conn, [{"id": 10, "vehicle_id": 1, "plate": "ABC 1234"}])
+    conn.commit()
+    events = []
+    real_write = Path.write_bytes
+    monkeypatch.setattr("pathlib.Path.write_bytes",
+                        lambda self, data: (events.append(("write", self.name)), real_write(self, data))[1])
+    w.scanned.connect(lambda scan: events.append(("alert", scan)))
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(3):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    kinds = [e[0] for e in events]
+    assert kinds[0] == "alert" and kinds.count("write") == 3        # crop, vehicle, scene: all after
+    scan = events[0][1]
+    assert scan.snapshot is not None                               # the dashboard's scene, from memory
+    row = db.get_scan(conn, scan.scan_id)
+    for column in ("crop_path", "vehicle_path", "snapshot_path"):
+        assert row[column] == getattr(scan, column) and Path(row[column]).is_file()
     conn.close()
 
 
