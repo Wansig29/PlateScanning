@@ -275,3 +275,33 @@ def test_unregistered_low_confidence_read_asks_for_a_manual_check():
     assert needs_manual_check(db.RESULT_NOT_REGISTERED, 3, low, False, ocr)
     assert not needs_manual_check(db.RESULT_NOT_REGISTERED, 3, high, False, ocr)
     assert not needs_manual_check(db.RESULT_CLEAR, 3, low, False, ocr)
+
+
+def test_plate_size_is_shown_on_the_live_feed_label():
+    from platescanner.pipeline import plate_size_text
+
+    assert plate_size_text(120, 80.0) == " | 120px"
+    assert plate_size_text(62, 80.0) == " | 62px SMALL"     # below ocr.min_plate_width_px
+    assert plate_size_text(30, 0.0) == " | 30px"            # warning turned off
+    assert plate_size_text(120, 80.0).isascii()             # drawn with OpenCV's font
+
+
+def test_live_feed_labels_carry_the_plate_width():
+    from platescanner.pipeline import Overlay
+
+    class Capture:
+        overlays: list = []
+
+        def set_overlays(self, out):
+            Capture.overlays = out
+
+    engine = FakeEngine()
+    w = RecognizerWorker(Config(), FrameSlot(), Capture(), engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    w._apply(conn, _Frame(0, image, (10, 20, 380, 170), True, 0.0), [PlateBox((150, 80, 64, 20), 0.9)])
+    (o,) = Capture.overlays
+    assert isinstance(o, Overlay) and o.box == (160, 100, 64, 20)
+    assert o.label.endswith(" | 64px SMALL")
+    conn.close()
