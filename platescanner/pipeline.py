@@ -59,6 +59,11 @@ RESULT_BGR = {
     db.RESULT_NOT_REGISTERED: (11, 158, 245),
 }
 READING_BGR = (235, 200, 60)  # tracked, plate not decided yet
+SPEEDING_BGR = (0, 140, 255)  # orange: faster than scan.speed_limit_kmh (a violation stays red)
+
+
+def over_speed_limit(speed_kmh: float | None, limit_kmh: float) -> bool:
+    return limit_kmh > 0 and speed_kmh is not None and speed_kmh > limit_kmh
 
 
 def to_qimage(bgr: np.ndarray) -> QImage:
@@ -867,6 +872,11 @@ class RecognizerWorker(QThread):
             samples = [(ts, (bx + rx, by + ry, bw, bh)) for ts, (bx, by, bw, bh) in t.samples]
             speed = camera.plate_speed_kmh(samples, self._frame_size, cam.hfov_deg, cam.plate_width_m)
             label += plate_size_text(w, self.cfg.ocr.min_plate_width_px, distance, speed)
+            limit = self.cfg.scan.speed_limit_kmh
+            if over_speed_limit(speed, limit):
+                label += f" OVER {limit:g}km/h"
+                if t.status != db.RESULT_VIOLATION:  # a violation's red frame matters more
+                    color = SPEEDING_BGR
             trail = [(px + rx, py + ry) for px, py in t.trail]
             out.append(Overlay((x + rx, y + ry, w, h), label, color, trail, t.velocity, t.last_seen,
                                t.status == db.RESULT_VIOLATION))

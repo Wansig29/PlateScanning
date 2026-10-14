@@ -224,6 +224,10 @@ class OcrConfig:
 
 @dataclass
 class ScanConfig:
+    # Campus speed limit for the live feed: a plate whose rough speed (camera.plate_speed_kmh)
+    # is above it gets an orange box and "OVER 20km/h" on its label. Only a warning on screen:
+    # nothing is logged, because the speed is an estimate. 0 = no warning.
+    speed_limit_kmh: float = 20.0
     # Ignore repeat reads of the same plate within this window.
     plate_cooldown_seconds: float = 45.0
     # Violations get a much shorter window, counted from the alert itself (never extended
