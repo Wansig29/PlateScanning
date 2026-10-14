@@ -397,3 +397,47 @@ def test_plate_speed_ignores_boxes_cut_off_by_the_edge_and_one_off_wrong_boxes()
     glitch[5] = (t, (x - 100, y - 150, w * 3, h * 5))      # one frame the detector boxed half the car
     for track in (entering + boxes, glitch):
         assert plate_speed_kmh(track, (1920, 1080), 78.0, 0.39) == pytest.approx(15, rel=0.15)
+
+
+def _overlays_for_moving_plate(kmh, limit=20.0, violation=False):
+    """Feed a plate crossing a 1920x1080 picture at `kmh` through the recognizer; return its last overlay."""
+    class Capture:
+        overlays: list = []
+
+        def set_overlays(self, out):
+            Capture.overlays = out
+
+    cfg = Config()
+    cfg.scan.speed_limit_kmh = limit
+    w = RecognizerWorker(cfg, FrameSlot(), Capture(), FakeEngine())
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.zeros((1080, 1920, 3), np.uint8)
+    px_per_s = kmh / 3.6 * 120 / 0.39          # a 120 px wide plate is 0.39 m
+    for i in range(12):
+        x = 400 + round(px_per_s * i * 0.05)
+        w._apply(conn, _Frame(i, image, (0, 0, 1920, 1080), True, i * 0.05), [PlateBox((x, 600, 120, 40), 0.9)])
+        if violation:
+            for t in w.tracker.tracks.values():
+                t.status = db.RESULT_VIOLATION
+    w._push_overlays((0, 0, 1920, 1080))
+    conn.close()
+    return Capture.overlays[0]
+
+
+def test_speeding_plate_gets_a_warning_and_an_orange_box():
+    from platescanner.pipeline import SPEEDING_BGR
+
+    fast = _overlays_for_moving_plate(35)
+    assert "~35km/h OVER 20km/h" in fast.label and fast.color == SPEEDING_BGR
+    slow = _overlays_for_moving_plate(10)
+    assert "~10km/h" in slow.label and "OVER" not in slow.label and slow.color != SPEEDING_BGR
+
+
+def test_speed_warning_off_at_zero_and_a_violator_keeps_its_violation_colours():
+    from platescanner.pipeline import SPEEDING_BGR, over_speed_limit
+
+    assert "OVER" not in _overlays_for_moving_plate(35, limit=0).label
+    violator = _overlays_for_moving_plate(35, violation=True)
+    assert "OVER 20km/h" in violator.label and violator.violation and violator.color != SPEEDING_BGR
+    assert not over_speed_limit(None, 20) and not over_speed_limit(20, 20) and over_speed_limit(21, 20)
