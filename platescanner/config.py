@@ -80,6 +80,12 @@ class CameraConfig:
     # camera is mounted (tools/camera_probe.py shows which value is sharpest).
     autofocus: bool = True
     focus: float | None = None
+    # For the plate distance on the live feed (camera.plate_distance_m): the camera's
+    # horizontal field of view in degrees, from its spec sheet (most 1080p USB webcams:
+    # 70-90; 78 is typical) or measured (see README, "Plate distance"). 0 = don't show it.
+    hfov_deg: float = 78.0
+    # Width of a car plate in metres (Philippine LTO plates: 390 x 140 mm).
+    plate_width_m: float = 0.39
     # Optional [x, y, w, h] as fractions of the frame: only this region is
     # watched for motion and read for plates. None = whole frame.
     roi: list[float] | None = None

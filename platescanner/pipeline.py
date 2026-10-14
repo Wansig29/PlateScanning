@@ -155,12 +155,16 @@ class FrameSlot:
             return f if f is not None and f.seq > seq else None
 
 
-def plate_size_text(width_px: int, min_width_px: float) -> str:
+def plate_size_text(width_px: int, min_width_px: float, distance_m: float | None = None) -> str:
     """The plate's width in camera pixels, for its label on the live feed: shows whether the camera
-    resolves plates well enough (below ocr.min_plate_width_px, reading gets unreliable). Plain ASCII:
-    the labels are drawn with OpenCV's built-in font."""
+    resolves plates well enough (below ocr.min_plate_width_px, reading gets unreliable), then its
+    rough distance from the camera when known. Plain ASCII: the labels are drawn with OpenCV's
+    built-in font."""
     small = min_width_px > 0 and width_px < min_width_px
-    return f" | {width_px}px" + (" SMALL" if small else "")
+    text = f" | {width_px}px"
+    if distance_m is not None:
+        text += f" ~{distance_m:.1f}m"
+    return text + (" SMALL" if small else "")
 
 
 @dataclass
@@ -417,6 +421,7 @@ class RecognizerWorker(QThread):
         self._last_seen: dict[str, tuple[float, str]] = {}  # plate key -> (last time, its result)
         self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
         self._area_origin: tuple[int, int] | None = None  # where the reading area's (0, 0) is in the frame
+        self._frame_width = 0  # of the whole camera picture, for plate distances (0 = not known yet)
         self._in_view: set[int] = set()
         self.frames_processed = 0
         # Plate reads and the classical finder run here, in parallel with the detector.
@@ -671,6 +676,7 @@ class RecognizerWorker(QThread):
                 track.best_frame, track.best_frame_box = f.image, (px + rx, py + ry, pw, ph)
                 track.best_frame_others = others(i)
             self._decide(conn, track, final=False)
+        self._frame_width = f.image.shape[1]  # the whole camera picture, for plate distances
         self._push_overlays(f.roi)
         self._report_in_view()
 
@@ -852,7 +858,9 @@ class RecognizerWorker(QThread):
             else:
                 label = f"#{t.track_id} reading..."
                 color = READING_BGR
-            label += plate_size_text(w, self.cfg.ocr.min_plate_width_px)
+            cam = self.cfg.camera
+            distance = camera.plate_distance_m(w, self._frame_width, cam.hfov_deg, cam.plate_width_m)
+            label += plate_size_text(w, self.cfg.ocr.min_plate_width_px, distance)
             trail = [(px + rx, py + ry) for px, py in t.trail]
             out.append(Overlay((x + rx, y + ry, w, h), label, color, trail, t.velocity, t.last_seen,
                                t.status == db.RESULT_VIOLATION))
