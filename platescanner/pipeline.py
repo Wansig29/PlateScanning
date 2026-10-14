@@ -510,7 +510,7 @@ class RecognizerWorker(QThread):
                 engine = PlateEngine(self.cfg.resolved_model_dir(), self.cfg.ocr.detector_model,
                                      self.cfg.ocr.ocr_model, self.cfg.ocr.detector_confidence,
                                      self.cfg.ocr.plate_layouts, self.cfg.ocr.deblur,
-                                     self.cfg.ocr.deskew, self.cfg.ocr.enhance)
+                                     self.cfg.ocr.deskew, self.cfg.ocr.enhance, self.cfg.ocr.upscale_small)
                 engine.load()
                 self.engine = engine
             except Exception as e:  # noqa: BLE001

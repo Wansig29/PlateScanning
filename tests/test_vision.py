@@ -114,3 +114,35 @@ def test_find_plate_regions_locates_plate_on_car():
     x, y, w, h = regions[0]
     cx, cy = x + w / 2, y + h / 2
     assert 310 <= cx <= 490 and 300 <= cy <= 360
+
+
+def test_far_plates_are_enlarged_and_sharpened_but_tiny_and_near_ones_are_left_alone():
+    from platescanner.vision.alpr import UPSCALE_MIN_WIDTH, UPSCALE_WIDTH, upscale_small_plate
+
+    rng = np.random.default_rng(0)
+    far = rng.integers(0, 255, (26, 72, 3), np.uint8)
+    up = upscale_small_plate(far)
+    assert up.shape == (round(26 * UPSCALE_WIDTH / 72), UPSCALE_WIDTH, 3) and up.dtype == np.uint8
+    tiny = rng.integers(0, 255, (16, UPSCALE_MIN_WIDTH - 1, 3), np.uint8)
+    near = rng.integers(0, 255, (50, UPSCALE_WIDTH, 3), np.uint8)
+    assert upscale_small_plate(tiny) is tiny and upscale_small_plate(near) is near
+    assert upscale_small_plate(np.zeros((0, 0, 3), np.uint8)).size == 0
+
+
+def test_plate_reader_enlarges_only_when_asked(monkeypatch):
+    from platescanner.vision import alpr
+
+    seen = []
+    eng = alpr.PlateEngine(None, "d", "o", 0.5, deblur=False, upscale=True)
+    eng._ocrs = [(object(), "bgr")]
+    monkeypatch.setattr(eng, "_read_one", lambda rec, mode, crop: (seen.append(crop.shape[1]), ("", [], None))[1])
+    eng.read(np.zeros((26, 72, 3), np.uint8))
+    eng.upscale = False
+    eng.read(np.zeros((26, 72, 3), np.uint8))
+    assert seen == [alpr.UPSCALE_WIDTH, 72]
+
+
+def test_upscaling_is_on_by_default():
+    from platescanner.config import OcrConfig
+
+    assert OcrConfig().upscale_small is True

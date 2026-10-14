@@ -411,9 +411,9 @@ def build_engine(cfg):
     kw = {}
     import inspect
     params = inspect.signature(PlateEngine.__init__).parameters
-    for k in ("deskew", "enhance"):
+    for k, setting in (("deskew", "deskew"), ("enhance", "enhance"), ("upscale", "upscale_small")):
         if k in params:
-            kw[k] = getattr(cfg.ocr, k, False)
+            kw[k] = getattr(cfg.ocr, setting, False)
     engine = PlateEngine(cfg.resolved_model_dir(), cfg.ocr.detector_model, cfg.ocr.ocr_model,
                          cfg.ocr.detector_confidence, cfg.ocr.plate_layouts, cfg.ocr.deblur, **kw)
     engine.load()
@@ -546,6 +546,14 @@ def crop_experiment(engine, n_per_width: int, seed: int, widths: tuple[int, ...]
     """{variant: {width: exact-read rate}} on n synthetic plates per width."""
     rng, np_rng = random.Random(seed), np.random.default_rng(seed)
     rates: dict[str, dict[int, float]] = {k: {} for k in PREPROCESS}
+    upscale, engine.upscale = getattr(engine, "upscale", False), False  # the variants below do their own
+    try:
+        return _crop_rates(engine, n_per_width, rng, np_rng, rates, widths)
+    finally:
+        engine.upscale = upscale
+
+
+def _crop_rates(engine, n_per_width: int, rng, np_rng, rates: dict, widths: tuple[int, ...]) -> dict:
     for w in widths:
         ok = {k: 0 for k in PREPROCESS}
         for _ in range(n_per_width):
