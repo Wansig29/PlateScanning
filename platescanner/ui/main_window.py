@@ -336,7 +336,7 @@ class MainWindow(QMainWindow):
         left.setHandleWidth(10)
         feed_frame, feed_lay, feed_header = panel("Live Feed")
         self.video = VideoView()
-        self.video.clicked_at.connect(self._aim_zoom)
+        self.video.pan_to.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
@@ -736,7 +736,7 @@ class MainWindow(QMainWindow):
         self.zoom_slider.setPageStep(5)
         self.zoom_slider.setFixedWidth(140)
         self.zoom_slider.setToolTip("Enlarge the middle of the picture so small plates are found more easily.\n"
-                                    "Above 1×, click the Live Feed to aim the zoom there.")
+                                    "Above 1×, drag the Live Feed to move around in it.")
         self.zoom_value = QLabel()
         self.zoom_value.setMinimumWidth(36)
         reset = QToolButton()
@@ -772,7 +772,8 @@ class MainWindow(QMainWindow):
 
     @Slot(float, float)
     def _aim_zoom(self, fx: float, fy: float) -> None:
-        """Centre the zoom on the clicked spot (fx, fy: fractions of the whole camera picture)."""
+        """Centre the zoom on (fx, fy), fractions of the whole camera picture: the picture was dragged.
+        The capture thread uses it from its next frame, so the picture follows the mouse."""
         if camera.clamp_zoom(self.cfg.camera.zoom) <= 1.0:
             return
         self.cfg.camera.zoom_center = [round(fx, 4), round(fy, 4)]

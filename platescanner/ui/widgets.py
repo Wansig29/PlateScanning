@@ -208,7 +208,8 @@ class AlertFrame(QWidget):
 
 class VideoView(QWidget):
     """Live camera frame, aspect-fit, with a LIVE / motion badge and a CCTV-style clock."""
-    clicked_at = Signal(float, float)  # where was clicked, as x, y fractions of the whole camera picture
+    # Zoomed in, the picture was dragged: the new centre of the zoom, as x, y fractions of the whole camera picture.
+    pan_to = Signal(float, float)
     # The lane the operator drew (see start_drawing) or dragged to a new place: x, y, w, h as
     # fractions of the whole camera picture.
     roi_drawn = Signal(float, float, float, float)
@@ -216,7 +217,7 @@ class VideoView(QWidget):
 
     # A drawn box smaller than this (fraction of the picture, each side) is taken as a slip, not a lane.
     MIN_ROI = 0.05
-    # A press on the lane that moves less than this (widget px) is a click (aims the zoom), not a drag.
+    # A press on the lane that moves less than this (widget px) is a click, not a drag: nothing moves.
     CLICK_SLOP = 4.0
     HANDLE = 8.0  # how near a press must be to a lane's corner or edge to grab it (px)
     _RESIZE_CURSORS = {"tl": Qt.CursorShape.SizeFDiagCursor, "br": Qt.CursorShape.SizeFDiagCursor,
@@ -239,10 +240,12 @@ class VideoView(QWidget):
         self._move: tuple[QPointF, QPointF] | None = None  # press and current point, while moving/resizing
         # What the press took hold of: "move", a corner ("tl", "tr", "bl", "br") or an edge ("t", "b", "l", "r").
         self._grab = "move"
+        # Zoomed in and dragging the picture: the press point and the zoom window then (x, y, w, h).
+        self._pan: tuple[QPointF, tuple[float, float, float, float]] | None = None
         self.setMouseTracking(True)  # the cursor over the lane shows it can be moved or resized
 
     def set_zoom(self, zoom: float) -> None:
-        """Shown as a badge; above 1x a click on the picture aims the zoom."""
+        """Shown as a badge; above 1x the picture can be dragged to move around in it."""
         self._zoom = zoom
         self._update_cursor()
         self.update()
@@ -252,11 +255,12 @@ class VideoView(QWidget):
             self._lane_part(pos) if not self._drawing and pos is not None else None)
         if grab in self._RESIZE_CURSORS:
             self.setCursor(self._RESIZE_CURSORS[grab])
-        elif grab == "move":
-            self.setCursor(Qt.CursorShape.ClosedHandCursor if self._move else Qt.CursorShape.OpenHandCursor)
-        else:
-            cross = self._drawing or self._zoom > 1.0
-            self.setCursor(Qt.CursorShape.CrossCursor if cross else Qt.CursorShape.ArrowCursor)
+        elif grab == "move" or self._pan is not None:
+            self.setCursor(Qt.CursorShape.ClosedHandCursor if self._move or self._pan else Qt.CursorShape.OpenHandCursor)
+        elif self._drawing:
+            self.setCursor(Qt.CursorShape.CrossCursor)
+        else:  # zoomed in: the picture itself can be dragged
+            self.setCursor(Qt.CursorShape.OpenHandCursor if self._zoom > 1.0 else Qt.CursorShape.ArrowCursor)
 
     def set_roi(self, roi: list[float] | tuple[float, ...] | None) -> None:
         """The lane now in use (camera.roi), so it can be dragged to a new place."""
@@ -402,11 +406,13 @@ class VideoView(QWidget):
                 self._drag = (pos, pos)
                 self.update()
             elif (part := self._lane_part(pos)) is not None:
-                # A drag moves the lane (or resizes it from a corner); a plain click still aims the zoom.
+                # A drag moves the lane (or resizes it from a corner or an edge).
                 self._grab, self._move = part, (pos, pos)
                 self._update_cursor(pos)
-            else:
-                self.clicked_at.emit(*self._to_picture(pos, target))
+            elif self._zoom > 1.0:
+                # Zoomed in: a drag moves around in the picture, like a map.
+                self._pan = (pos, self._zoom_window())
+                self._update_cursor(pos)
         elif e.button() == Qt.MouseButton.RightButton:
             self.cancel_drawing()
         super().mousePressEvent(e)
@@ -418,9 +424,24 @@ class VideoView(QWidget):
         elif self._move is not None:
             self._move = (self._move[0], e.position())
             self.update()
+        elif self._pan is not None:
+            self._pan_by(e.position())
         else:
             self._update_cursor(e.position())
         super().mouseMoveEvent(e)
+
+    def _pan_by(self, pos: QPointF) -> None:
+        """Move the zoom so the spot under the press follows the mouse (the picture moves with it).
+        Measured from the zoom window at the press, so frames arriving meanwhile don't add up."""
+        target = self._target()
+        if target is None or self._pan is None:
+            return
+        start, (zx, zy, zw, zh) = self._pan
+        if (pos - start).manhattanLength() < self.CLICK_SLOP:
+            return
+        cx = zx + zw / 2 - (pos.x() - start.x()) / target.width() * zw
+        cy = zy + zh / 2 - (pos.y() - start.y()) / target.height() * zh
+        self.pan_to.emit(min(max(cx, zw / 2), 1 - zw / 2), min(max(cy, zh / 2), 1 - zh / 2))
 
     def mouseReleaseEvent(self, e) -> None:  # noqa: N802
         target = self._target()
@@ -441,12 +462,16 @@ class VideoView(QWidget):
             moved = self._moved_roi(target)
             self._move = None
             if (e.position() - start).manhattanLength() < self.CLICK_SLOP:
-                self.clicked_at.emit(*self._to_picture(start, target))  # a click on the lane, not a drag
+                pass  # a click on the lane, not a drag: nothing moves
             elif moved != self._roi:
                 self._roi = moved
                 self.roi_drawn.emit(*moved)
             self._update_cursor(e.position())
             self.update()
+        elif self._pan is not None and e.button() == Qt.MouseButton.LeftButton:
+            self._pan_by(e.position())
+            self._pan = None
+            self._update_cursor(e.position())
         super().mouseReleaseEvent(e)
 
     def keyPressEvent(self, e) -> None:  # noqa: N802
