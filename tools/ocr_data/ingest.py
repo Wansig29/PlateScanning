@@ -482,7 +482,7 @@ def make_ocr_reader() -> Reader:
     cfg = load_config()
     engine = PlateEngine(cfg.resolved_model_dir(), cfg.ocr.detector_model, cfg.ocr.ocr_model,
                          cfg.ocr.detector_confidence, cfg.ocr.plate_layouts, cfg.ocr.deblur,
-                         cfg.ocr.deskew, cfg.ocr.enhance)
+                         cfg.ocr.deskew, cfg.ocr.enhance, cfg.ocr.upscale_small)
     engine.load()
 
     def read(crop: np.ndarray):

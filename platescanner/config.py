@@ -152,6 +152,9 @@ class OcrConfig:
     deskew: bool = False
     # Fix dark, low-contrast or blown-out plate crops before reading.
     enhance: bool = False
+    # Enlarge and lightly sharpen plate crops 60-127 px wide before reading (far plates):
+    # more exact reads and fewer confidently wrong ones there (vision/alpr.upscale_small_plate).
+    upscale_small: bool = True
     # Warn when plates are typically narrower than this many pixels at their widest
     # (camera too far, too wide a view or too low a resolution). 0 = no warning.
     # 80 is where single synthetic crops first read about 80-90% (tools/bench_resolution.py);

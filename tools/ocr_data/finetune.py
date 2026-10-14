@@ -564,7 +564,7 @@ def build_engine(models_dir: Path, ocr: str):
     from platescanner.vision.alpr import PlateEngine
     cfg = load_config().ocr
     eng = PlateEngine(models_dir, DETECTOR, ocr, cfg.detector_confidence, cfg.plate_layouts, cfg.deblur,
-                      cfg.deskew, cfg.enhance)
+                      cfg.deskew, cfg.enhance, cfg.upscale_small)
     eng.load()
     return eng
 
