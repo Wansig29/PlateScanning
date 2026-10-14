@@ -6,6 +6,8 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 QtWidgets = pytest.importorskip("PySide6.QtWidgets")
 
+from pathlib import Path  # noqa: E402
+
 from platescanner import db  # noqa: E402
 from platescanner.ui.widgets import LogsPanel, VehicleView  # noqa: E402
 
@@ -129,3 +131,30 @@ def test_synced_text_is_shown_as_written_never_as_html(app):
 def test_plain_tooltips_escape_markup():
     from platescanner.ui import theme
     assert theme.plain_tip("<b>x</b> & y\nz") == "<p>&lt;b&gt;x&lt;/b&gt; &amp; y<br>z</p>"
+
+
+def test_owner_photo_is_decoded_small_and_evidence_only_when_opened(tmp_path, monkeypatch):
+    import cv2
+    import numpy as np
+    from platescanner.ui import widgets
+
+    QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    photo = tmp_path / "owner.jpg"
+    cv2.imwrite(str(photo), np.full((3000, 4000, 3), 120, np.uint8))
+    small = widgets.load_pixmap(str(photo), 300)
+    assert max(small.width(), small.height()) == 300
+    assert widgets.load_pixmap(str(photo)).width() == 4000           # full size when asked for
+    assert widgets.load_pixmap(str(tmp_path / "missing.jpg"), 300) is None
+
+    loaded = []
+    real = widgets.load_pixmap
+    monkeypatch.setattr(widgets, "load_pixmap", lambda p, max_side=0: (loaded.append((Path(p).name, max_side)),
+                                                                         real(p, max_side))[1])
+    card = widgets.IdentityCard()
+    v = {"id": "1", "plate": "ABC1234", "owner_name": "Juan Dela Cruz", "owner_photo_path": str(photo)}
+    ev = [str(photo), str(tmp_path / "gone.jpg")]
+    result = db.LookupResult(db.RESULT_VIOLATION, matched_plate="ABC1234", vehicle=v,
+                             violations=[{"id": "9", "violation_type": "No permit", "evidence_paths": ev}])
+    card.show_result("ABC1234", result)
+    assert loaded == [("owner.jpg", 2 * card.avatar.d)]            # the owner photo only, small
+    assert card.evidence_btn.text().startswith("View evidence photo ") and "(1)" in card.evidence_btn.text()
