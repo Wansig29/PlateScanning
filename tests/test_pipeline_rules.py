@@ -326,3 +326,74 @@ def test_live_feed_labels_carry_the_plate_width():
     w._push_overlays((10, 20, 380, 170))
     assert Capture.overlays[0].label.endswith(" | 64px SMALL")
     conn.close()
+
+
+def _plate_boxes(start, velocity_mps, seconds=1.0, fps=10, hfov=78.0, size=(1920, 1080), plate=0.39, jitter=0):
+    """Boxes of a plate moving in metres (x right, y down, z away from the camera), as a camera sees it."""
+    import math
+    import random
+
+    rng = random.Random(1)
+    focal = size[0] / (2 * math.tan(math.radians(hfov) / 2))
+    out = []
+    for i in range(int(seconds * fps) + 1):
+        t = i / fps
+        x, y, z = (s + v * t for s, v in zip(start, velocity_mps))
+        w = focal * plate / z + rng.uniform(-jitter, jitter)
+        cx, cy = size[0] / 2 + x * focal / z, size[1] / 2 + y * focal / z
+        out.append((t, (round(cx - w / 2), round(cy - w / 6), round(w), round(w / 3))))
+    return out
+
+
+@pytest.mark.parametrize("start,velocity,kmh", [
+    ((0.0, 0.5, 3.0), (0.0, 0.0, 20 / 3.6), 20),     # driving away from the camera (rear plate) at 20 km/h
+    ((0.0, 0.5, 8.0), (0.0, 0.0, -10 / 3.6), 10),    # driving up to the camera at 10 km/h
+    ((-3.0, 0.5, 6.0), (15 / 3.6, 0.0, 0.0), 15),    # crossing the picture at 15 km/h
+])
+def test_plate_speed_from_its_boxes(start, velocity, kmh):
+    from platescanner.camera import plate_speed_kmh
+
+    got = plate_speed_kmh(_plate_boxes(start, velocity), (1920, 1080), 78.0, 0.39)
+    assert got == pytest.approx(kmh, rel=0.15)
+
+
+def test_plate_speed_of_a_parked_car_is_about_zero_despite_a_jittery_box():
+    from platescanner.camera import plate_speed_kmh
+
+    got = plate_speed_kmh(_plate_boxes((0.0, 0.5, 5.0), (0, 0, 0), jitter=1), (1920, 1080), 78.0, 0.39)
+    assert got < 3
+
+
+def test_no_speed_until_enough_of_the_track_or_without_a_field_of_view():
+    from platescanner.camera import plate_speed_kmh
+
+    boxes = _plate_boxes((0.0, 0.5, 3.0), (0, 0, 5.0))
+    assert plate_speed_kmh(boxes[:3], (1920, 1080), 78.0, 0.39) is None          # too few
+    assert plate_speed_kmh(boxes[:3] * 2, (1920, 1080), 78.0, 0.39) is None      # too short a time
+    assert plate_speed_kmh(boxes, (1920, 1080), 0.0, 0.39) is None               # hfov unknown
+    assert plate_speed_kmh(boxes, (0, 0), 78.0, 0.39) is None                    # picture size unknown
+    assert plate_speed_kmh([], (1920, 1080), 78.0, 0.39) is None
+    # only the last second counts: an old, fast part of the track is forgotten
+    old = [(t - 5.0, b) for t, b in _plate_boxes((-3.0, 0.5, 6.0), (30, 0, 0))]
+    parked = _plate_boxes((0.0, 0.5, 5.0), (0, 0, 0))
+    assert plate_speed_kmh(old + parked, (1920, 1080), 78.0, 0.39) < 3
+
+
+def test_speed_is_on_the_live_feed_label():
+    from platescanner.pipeline import plate_size_text
+
+    assert plate_size_text(120, 80.0, 3.85, 18.4) == " | 120px ~3.9m ~18km/h"
+    assert plate_size_text(62, 80.0, None, 7.0) == " | 62px ~7km/h SMALL"
+
+
+def test_plate_speed_ignores_boxes_cut_off_by_the_edge_and_one_off_wrong_boxes():
+    from platescanner.camera import plate_speed_kmh
+
+    boxes = _plate_boxes((-3.0, 0.5, 6.0), (15 / 3.6, 0.0, 0.0))
+    # the plate was still coming in at the left edge: cut off, so narrower than it is
+    entering = [(t - 0.3, (0, y, w // 3, h)) for t, (x, y, w, h) in boxes[:3]]
+    glitch = list(boxes)
+    t, (x, y, w, h) = glitch[5]
+    glitch[5] = (t, (x - 100, y - 150, w * 3, h * 5))      # one frame the detector boxed half the car
+    for track in (entering + boxes, glitch):
+        assert plate_speed_kmh(track, (1920, 1080), 78.0, 0.39) == pytest.approx(15, rel=0.15)
