@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QImageReader, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import (
     QAbstractItemView, QAbstractScrollArea, QDialog, QPushButton, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QScrollArea, QSizePolicy, QTableWidget, QTableWidgetItem, QToolButton, QVBoxLayout, QWidget,
@@ -35,11 +35,22 @@ def panel(title: str | None = None) -> tuple[QFrame, QVBoxLayout, QHBoxLayout | 
     return frame, lay, header
 
 
-def load_pixmap(path: str | None) -> QPixmap | None:
+def load_pixmap(path: str | None, max_side: int = 0) -> QPixmap | None:
+    """The picture at `path`, or None. max_side: decode it no bigger than that (longest side), for
+    a picture shown small: the JPEG decoder then skips most of the work, so a phone-sized owner
+    photo loads in a few milliseconds instead of half a second (it delayed the violation alarm)."""
     if not path or not Path(path).exists():
         return None
-    pm = QPixmap(path)
-    return None if pm.isNull() else pm
+    if not max_side:
+        pm = QPixmap(path)
+        return None if pm.isNull() else pm
+    reader = QImageReader(path)
+    reader.setAutoTransform(True)
+    size = reader.size()
+    if size.isValid() and max(size.width(), size.height()) > max_side:
+        reader.setScaledSize(size.scaled(max_side, max_side, Qt.AspectRatioMode.KeepAspectRatio))
+    img = reader.read()
+    return None if img.isNull() else QPixmap.fromImage(img)
 
 
 class ImageViewer(QDialog):
@@ -763,7 +774,7 @@ class IdentityCard(QFrame):
         self.evidence_btn.clicked.connect(self._open_evidence)
         self.evidence_btn.hide()
         cl.addWidget(self.evidence_btn, 0, Qt.AlignmentFlag.AlignLeft)
-        self._evidence: list[QPixmap] = []
+        self._evidence: list[str] = []  # paths of the shown violation's evidence photos
         body.addWidget(card, 0)
 
         self._violations: list[dict] = []
@@ -820,7 +831,7 @@ class IdentityCard(QFrame):
         lay = QHBoxLayout(dlg)
         size = self.screen().availableGeometry().size() * 0.8
         per = QSize(size.width() // max(1, len(self._evidence)), size.height())
-        for pm in self._evidence:
+        for pm in (pm for pm in (load_pixmap(p) for p in self._evidence) if pm):
             lbl = QLabel()
             lbl.setPixmap(pm.scaled(per, Qt.AspectRatioMode.KeepAspectRatio,
                                     Qt.TransformationMode.SmoothTransformation)
@@ -878,7 +889,8 @@ class IdentityCard(QFrame):
         self.set_live(seen.when, False)
 
         v = result.vehicle or {}
-        self.avatar.set_owner(load_pixmap(v.get("owner_photo_path")), v.get("owner_name"), color)
+        # Decoded at about the size shown (the circle is cropped from its middle): fast enough not to hold up the alarm.
+        self.avatar.set_owner(load_pixmap(v.get("owner_photo_path"), 2 * self.avatar.d), v.get("owner_name"), color)
         self.fields["name"].setText(v.get("owner_name") or ("Unknown vehicle" if not v else "—"))
         self.fields["plate"].setText(plate_txt)
         self.fields["plate"].show()
@@ -921,7 +933,8 @@ class IdentityCard(QFrame):
             (" (ended)" if v.get("is_active") else " (settled)") if past else ""))
         self.fields["type"].setStyleSheet(f"color: {theme.MUTED if past else theme.RED};")
         self.fields["suspension"].setText(suspension_text(v))
-        self._evidence = [pm for pm in (load_pixmap(p) for p in v.get("evidence_paths", []) if p) if pm]
+        # Only counted here; the photos are loaded when the guard opens them (see _open_evidence).
+        self._evidence = [p for p in v.get("evidence_paths", []) if p and Path(p).exists()]
         n = len(self._evidence)
         self.evidence_btn.setText(f"View evidence photo{'s' if n != 1 else ''} ({n})  →")
         self.evidence_btn.setVisible(n > 0)

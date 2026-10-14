@@ -106,3 +106,24 @@ def test_moved_lane_is_saved_and_the_view_knows_the_lane(window):
     assert reload().camera.roi == [0.3, 0.2, 0.3, 0.4]
     w.lane_clear.click()
     assert w.video._roi is None
+
+
+def test_violation_alarm_starts_before_the_card_is_built(window, monkeypatch):
+    from datetime import datetime
+
+    import numpy as np
+    from platescanner.pipeline import ScanResult
+    from platescanner.vision.plate import PlateRead
+
+    w, _ = window
+    order = []
+    w.cfg.scan.alert_sound = True
+    monkeypatch.setattr(w.sound, "play", lambda: order.append("sound"))
+    show = w.identity.show_result
+    monkeypatch.setattr(w.identity, "show_result", lambda *a, **k: (order.append("card"), show(*a, **k))[1])
+    monkeypatch.setattr(w.identity, "flash", lambda *a: order.append("flash"))
+    crop = np.zeros((40, 120, 3), np.uint8)
+    res = db.LookupResult(db.RESULT_VIOLATION, matched_plate="ABC1234",
+                          violations=[{"id": "9", "violation_type": "No permit"}])
+    w._on_scan(ScanResult(1, datetime.now(), PlateRead("ABC1234", "ABC1234", 0.95, crop, (0, 0, 120, 40)), res, None))
+    assert order[:3] == ["sound", "card", "flash"] and order.count("sound") == 1

@@ -1136,6 +1136,8 @@ class MainWindow(QMainWindow):
     def _display(self, scan: ScanResult) -> None:
         """Update the dashboard, the captured plates and the logs for one scan."""
         res = scan.lookup
+        if res.status == db.RESULT_VIOLATION and self.cfg.scan.alert_sound:
+            self.sound.play()  # first of all: the card below takes a moment to build
         shown_plate = res.matched_plate or scan.read.text
         crop_pm = QPixmap.fromImage(to_qimage(scan.read.crop))
         vehicle_pm = QPixmap.fromImage(to_qimage(scan.vehicle)) if scan.vehicle is not None else None
@@ -1155,7 +1157,7 @@ class MainWindow(QMainWindow):
             self._show(scan.read.text, res, seen)
         self._update_pending()
         if is_violation:
-            self._alert()  # sound and flash now; the panels below can be updated after
+            self._alert(sound=False)  # flash now (the alarm is already playing); the panels below can wait
         self.captured.add_capture(scan.scan_id, ts, vehicle_pm or crop_pm, shown_plate, scan.read.confidence,
                                   res.status, scan.snapshot_path, scan.color)
         self.logs.add_entry(scan.scan_id, ts, shown_plate, res.status, ("VERIFY PLATE · " if scan.verify else "") + self._detail(res), res.approximate,
@@ -1266,11 +1268,12 @@ class MainWindow(QMainWindow):
     def _update_live(self) -> None:
         self.identity.refresh_live(self._in_view, self._left_at)
 
-    def _alert(self) -> None:
+    def _alert(self, sound: bool = True) -> None:
+        """sound: False when the alarm was already started (see _display)."""
         self.identity.set_collapsed(False)
         self.identity.flash()
         QApplication.alert(self, 0)
-        if self.cfg.scan.alert_sound:
+        if sound and self.cfg.scan.alert_sound:
             self.sound.play()
         if self.dash.require_ack and self.cfg.scan.bring_to_front:
             if self.isMinimized():
