@@ -45,6 +45,7 @@ class Vote:
     best_conf: float = 0.0
     raw: str = ""
     agreement: float = 0.0  # how unanimous the reads are (0..1)
+    weakest: float = 0.0    # confidence of the least sure character (a plate is only as sure as that)
 
 
 @dataclass
@@ -60,6 +61,7 @@ class Track:
     velocity: tuple[float, float] = (0.0, 0.0)  # px/s of the box center
     reads: list[tuple[str, str, float, list[float]]] = field(default_factory=list)  # (text, raw, conf, char probs)
     layouts: list[str] = field(default_factory=list)
+    vote_reads: int = 0   # vote over this many most confident reads (0 = all)
     reads_tried: int = 0
     unmatched: list[str] = field(default_factory=list)  # OCR text that fit no plate layout
     best_crop: np.ndarray | None = None
@@ -71,6 +73,7 @@ class Track:
     emitted_text: str | None = None  # the plate text reported (may be a registered plate decoded from the reads)
     trail: list[tuple[int, int]] = field(default_factory=list)
     status: str | None = None        # lookup result of the reported plate (for the overlay)
+    scan_id: int | None = None       # scan log row of that report (replaced if the read is corrected)
     # Log-probabilities of every character at every position, summed over the reads.
     log_sum: np.ndarray | None = None
     dist_reads: int = 0
@@ -111,8 +114,12 @@ class Track:
         """
         if not self.reads:
             return None
+        # Only the most confident reads vote: a far, blurred plate's early reads are the worst and
+        # would otherwise keep outvoting the clear ones taken once the car is close (or, for a
+        # camera behind the cars, the late ones of a plate driving away).
+        reads = sorted(self.reads, key=lambda r: r[2])[-self.vote_reads:] if self.vote_reads else self.reads
         groups: dict[int, list] = {}
-        for r in self.reads:
+        for r in reads:
             groups.setdefault(len(r[0]), []).append(r)
         group = max(groups.values(), key=lambda g: sum(r[2] for r in g))
         n = len(group)
@@ -129,7 +136,7 @@ class Track:
         text = plates.best_layout_match(text, self.layouts) or text if self.layouts else text
         best = max(group, key=lambda r: r[2])
         conf = sum(wins) / len(wins)
-        return Vote(text, conf * n, n, best[2], best[1], min(shares) * (n / len(self.reads)))
+        return Vote(text, conf * n, n, best[2], best[1], min(shares) * (n / len(reads)), min(wins))
 
     def distribution(self, temperature: float = 1.0) -> np.ndarray | None:
         """Everything the OCR believed about this plate, over all reads (positions x alphabet)."""
@@ -148,8 +155,9 @@ class PlateTracker:
     """Associates plate detections across frames (greedy IoU + motion prediction)."""
 
     def __init__(self, max_age: float = 0.8, min_iou: float = 0.05, max_jump: float = 2.0,
-                 layouts: list[str] | None = None):
+                 layouts: list[str] | None = None, vote_reads: int = 0):
         self.layouts = layouts or []
+        self.vote_reads = vote_reads
         self.max_age = max_age      # seconds unseen before a track ends
         self.min_iou = min_iou
         self.max_jump = max_jump    # max center distance, in plate widths, for a match
@@ -202,7 +210,8 @@ class PlateTracker:
             matched.append((t, i))
         for i, b in enumerate(boxes):
             if i not in used_d:
-                t = Track(next(self._ids), b, now, now, max_width=b[2], layouts=self.layouts)
+                t = Track(next(self._ids), b, now, now, max_width=b[2], layouts=self.layouts,
+                          vote_reads=self.vote_reads)
                 self.tracks[t.track_id] = t
                 matched.append((t, i))
         for t, i in matched:

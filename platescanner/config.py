@@ -172,6 +172,13 @@ class OcrConfig:
     # read_confidence: missing a violator is worse than a doubtful alert).
     # Below it, the vehicle is logged as "plate not readable" with a snapshot.
     report_confidence: float = 0.65
+    # Every character of a reported plate must be at least this sure, over the reads that vote.
+    # The average hides one doubtful character among sure ones (CEX 907 at 74% can be five sure
+    # characters and one wrong one). Below it the vehicle is not shown as read; a violation still
+    # alerts, marked "verify plate". 0 = not checked.
+    min_char_confidence: float = 0.60
+    # Each vehicle's plate is decided by its this-many most confident reads (0 = all of them).
+    vote_best_reads: int = 4
     # A violation alerts on one read this confident; otherwise, and for
     # every other result, `confirm_reads` agreeing reads are required.
     alert_confidence: float = 0.75
@@ -267,6 +274,10 @@ class ScanConfig:
     unacknowledged_lookback_hours: float = 24.0
     # A tracked vehicle is considered gone after this long without its plate.
     track_max_age_seconds: float = 0.8
+    # A vehicle that stood still and is seen again in the same spot within this many seconds
+    # (its plate was missed for a moment) is the same vehicle: its scan is updated, not repeated.
+    # 0 = every new track is a new vehicle.
+    same_vehicle_seconds: float = 10.0
     # Log "plate not readable" only for plates seen in at least this many frames.
     min_hits_for_unread: int = 4
 

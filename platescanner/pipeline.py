@@ -20,7 +20,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +37,7 @@ from .vision import focus, identify
 from .vision.alpr import PlateBox, PlateEngine, merge_proposals, overlap_of_smaller, pad_box
 from .vision.motion import MotionDetector, sharpness
 from .vision.plate import PlateRead, find_plate_regions
-from .vision.tracker import PlateTracker, Track
+from .vision.tracker import PlateTracker, Track, center, iou
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +87,9 @@ class ScanResult:
     verify: bool = False       # a doubtful violation, or a look-alike "registered" match: the guard should check the plate
     # The scene with this vehicle highlighted, in memory: the alert goes out before its file is written.
     snapshot: np.ndarray | None = None
+    # The earlier scan of this same vehicle that this one corrects (a better read of a car still in
+    # view): the Captured Plates card and Logs row of that scan are replaced, not added to.
+    replaces: int | None = None
 
 
 @dataclass
@@ -132,20 +135,30 @@ class _Frame:
     motion: bool
     ts: float
     motion_box: tuple[int, int, int, int] | None = None  # the moving vehicle, in ROI coordinates
+    # Where a vehicle moved since the previous frame handed over, dropped frames included
+    # (whole-picture coordinates).
+    moved: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 class FrameSlot:
     """Holds only the newest camera frame (shared by both threads)."""
 
+    MAX_MOVED = 64  # vehicle movements kept between two handed-over frames
+
     def __init__(self):
         self._cond = threading.Condition()
         self._frame: _Frame | None = None
         self._seq = 0
+        self._moved: list[tuple[int, int, int, int]] = []
 
     def put(self, image: np.ndarray, roi: tuple[int, int, int, int], motion: bool, ts: float,
             motion_box: tuple[int, int, int, int] | None = None) -> None:
         with self._cond:
             self._seq += 1
+            if motion_box is not None:
+                # Kept even if this frame is dropped: a car driving off must not go unnoticed.
+                self._moved.append((motion_box[0] + roi[0], motion_box[1] + roi[1], motion_box[2], motion_box[3]))
+                del self._moved[:-self.MAX_MOVED]
             self._frame = _Frame(self._seq, image, roi, motion, ts, motion_box)
             self._cond.notify_all()
 
@@ -154,7 +167,10 @@ class FrameSlot:
             if self._frame is None or self._frame.seq <= seq:
                 self._cond.wait(timeout)
             f = self._frame
-            return f if f is not None and f.seq > seq else None
+            if f is None or f.seq <= seq:
+                return None
+            f.moved, self._moved = self._moved, []
+            return f
 
 
 def plate_size_text(width_px: int, min_width_px: float) -> str:
@@ -417,7 +433,8 @@ class RecognizerWorker(QThread):
         self.engine = engine
         self._stop = threading.Event()
         self._last_seen: dict[str, tuple[float, str]] = {}  # plate key -> (last time, its result)
-        self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
+        self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts,
+                                    vote_reads=cfg.ocr.vote_best_reads)
         self._area_origin: tuple[int, int] | None = None  # where the reading area's (0, 0) is in the frame
         self._in_view: set[int] = set()
         self.frames_processed = 0
@@ -431,6 +448,9 @@ class RecognizerWorker(QThread):
         # Ids for alerts whose scan could not be written to the database (-1, -2, ...):
         # the guard is still alerted, the row just isn't in the log.
         self._unsaved_ids = itertools.count(-1, -1)
+        # Reported vehicles that stood still until their track ended:
+        # (plate box, when, scan id, result, plate key reported, body colour).
+        self._parked: list[tuple[tuple[int, int, int, int], float, int, str, str, str | None]] = []
 
     def _source(self, track: Track) -> str | None:
         # In a video, frame timestamps are the time into the video.
@@ -545,6 +565,7 @@ class RecognizerWorker(QThread):
                     self._expire(conn, time.monotonic())
                     continue
                 seq = f.seq
+                self._forget_parked_where_moved(f)
                 # Idle scene: skip the detector, but still look about once a
                 # second in case a vehicle crept in without tripping the motion gate.
                 # Only real plates keep it busy, not the classical finder's static
@@ -621,7 +642,9 @@ class RecognizerWorker(QThread):
         self.frames_processed += 1
         if self._area_origin is not None and self._area_origin != (rx, ry):
             # The zoom moved the reading area: keep each vehicle's track where the vehicle is.
-            self.tracker.shift(self._area_origin[0] - rx, self._area_origin[1] - ry)
+            dx, dy = self._area_origin[0] - rx, self._area_origin[1] - ry
+            self.tracker.shift(dx, dy)
+            self._parked = [((x + dx, y + dy, w, h), *rest) for (x, y, w, h), *rest in self._parked]
         self._area_origin = (rx, ry)
         matched, ended = self.tracker.update([d.box for d in dets], f.ts)
         for t in ended:
@@ -678,6 +701,47 @@ class RecognizerWorker(QThread):
             self._decide(conn, track, final=False)
         self._push_overlays(f.roi)
         self._report_in_view()
+
+    def _remember_parked(self, track: Track) -> None:
+        """A reported vehicle's track ended. If it was standing still, its plate was most likely
+        just missed for a moment: remember where, so it is not reported again as a new vehicle."""
+        if self.cfg.scan.same_vehicle_seconds <= 0 or track.scan_id is None or not track.trail:
+            return
+        xs, ys = [p[0] for p in track.trail], [p[1] for p in track.trail]
+        if max(max(xs) - min(xs), max(ys) - min(ys)) > 0.5 * max(1, track.box[2]):
+            return  # it was driving: it left
+        color = None
+        if track.best_frame is not None and track.best_frame_box is not None:
+            color = identify.vehicle_color(track.best_frame, track.best_frame_box)
+        self._parked.append((track.box, track.last_seen, track.scan_id, track.status or "",
+                             track.emitted_key or "", color))
+
+    def _forget_parked_where_moved(self, f: "_Frame") -> None:
+        """A vehicle moved over a spot where a reported car stood: that car may have driven off
+        and another taken its place, so whatever is seen there next is a new vehicle."""
+        if not self._parked or not f.moved:
+            return
+        rx, ry = f.roi[0], f.roi[1]
+        moved = [(x - rx, y - ry, w, h) for x, y, w, h in f.moved]  # into the reading area, like the tracks
+        self._parked = [p for p in self._parked if all(overlap_of_smaller(p[0], m) < 0.3 for m in moved)]
+
+    def _same_parked_vehicle(self, track: Track, color: str | None) -> tuple[int, str, str] | None:
+        """The earlier scan (id, result, plate key) of the standing vehicle this new track is, if any:
+        seen again in the same spot, within scan.same_vehicle_seconds, with no vehicle moving there
+        in between (see _forget_parked_where_moved) and not a different colour. Used once."""
+        hold = self.cfg.scan.same_vehicle_seconds
+        self._parked = [p for p in self._parked if track.first_seen - p[1] <= hold]
+        (fx, fy) = track.trail[0] if track.trail else center(track.box)
+        for p in self._parked:
+            box, earlier_color = p[0], p[5]
+            cx, cy = center(box)
+            if not (iou(box, track.box) >= 0.3 or ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 <= 0.5 * box[2]):
+                continue
+            if color and earlier_color and color != earlier_color:
+                continue  # another car in the same spot
+            self._parked.remove(p)
+            return p[2], p[3], p[4]
+        return None
 
     def _report_in_view(self) -> None:
         ids = {t.track_id for t in self.tracker.tracks.values() if t.neural_hits or t.reads}
@@ -737,25 +801,42 @@ class RecognizerWorker(QThread):
         # Reads that disagree on a character are exactly what decoding resolves.
         clear_lead = track.margin() >= 0.6 or decoded
         if track.emitted_key:
-            # Already reported as another plate: only correct it on solid evidence.
-            ready = lead.reads >= ocr.confirm_reads + 1 and clear_lead
+            # Already reported as another plate: only correct it on solid evidence, and never
+            # with a read too doubtful to have been reported in the first place.
+            need = ocr.read_confidence if result.status == db.RESULT_VIOLATION else ocr.report_confidence
+            ready = lead.reads >= ocr.confirm_reads + 1 and clear_lead and avg >= need
         elif result.status == db.RESULT_VIOLATION:
             # Speed matters most here: alert on the first confident read.
             ready = clear_lead and (lead.best_conf >= ocr.alert_confidence or lead.reads >= ocr.confirm_reads)
         else:
             ready = clear_lead and lead.reads >= ocr.confirm_reads
+        if result.status != db.RESULT_VIOLATION and lead.weakest < ocr.min_char_confidence:
+            ready = False  # one character is too doubtful to show this plate as read
         if final and not track.emitted_key:
             # The vehicle left: report the best guess if it is good enough.
             need = ocr.read_confidence if result.status == db.RESULT_VIOLATION else ocr.report_confidence
-            ready = avg >= need
+            ready = avg >= need and (result.status == db.RESULT_VIOLATION or lead.weakest >= ocr.min_char_confidence)
         if not ready:
             return
 
+        # A corrected read of a vehicle already reported replaces that report, so one car stays one
+        # card. Except after a violation alert: the alert was raised, so its record is kept.
+        replaces = track.scan_id if track.emitted_key and track.status != db.RESULT_VIOLATION else None
+        if not track.emitted_key and (parked := self._same_parked_vehicle(track, color)) is not None:
+            # The vehicle standing here was already reported; its track was only broken for a moment.
+            track.scan_id, earlier, earlier_key = parked
+            if earlier_key == key and earlier == result.status:
+                # Read the same again: nothing new to report.
+                track.emitted_key, track.emitted_text, track.status = key, text, result.status
+                return
+            if earlier != db.RESULT_VIOLATION:
+                replaces = track.scan_id
         track.emitted_key = key
         track.emitted_text = text
         track.status = result.status
         # The frame's clock: the camera's time, or the time into a video.
-        if self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen, result.status):
+        cooldown = self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen, result.status)
+        if cooldown and replaces is None:
             return
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
@@ -793,24 +874,44 @@ class RecognizerWorker(QThread):
                                          for c in ("crop_path", "vehicle_path", "snapshot_path"))
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
-        verify = needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
+        verify = (needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
+                  or lead.weakest < ocr.min_char_confidence)  # only a violation gets here with one
+        old = None
         try:
-            scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
-                                  result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
-                                  vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
-                                  position=pos, source=source, verify=verify)
+            fields = dict(ts=ts.isoformat(timespec="seconds"), plate_read=text,
+                          result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
+                          vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
+                          position=pos, source=source, verify=verify)
+            old = db.get_scan(conn, replaces) if replaces is not None and replaces > 0 else None
+            if old is not None:
+                db.replace_scan(conn, replaces, **fields)
+                scan_id = replaces
+            else:
+                scan_id = db.add_scan(conn, **fields)
         except sqlite3.Error:
             # e.g. the database stayed locked: alert anyway, the scan just isn't in the log.
             log.exception("Track #%d: %s (%s) could not be written to the scan log", track.track_id, text,
                           result.status)
             scan_id = next(self._unsaved_ids)
-        log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)%s%s", track.track_id, text, result.status,
+        track.scan_id = scan_id
+        log.info("Track #%d: %s%s (%s, %d reads, avg %.0f%%)%s%s", track.track_id,
+                 "corrected to " if replaces is not None else "", text, result.status,
                  lead.reads, avg * 100, f" in {source}" if source else "",
                  f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
                  if decoded and plates.normalize(text) != plates.normalize(lead.text) else "")
         self.scanned.emit(ScanResult(scan_id, ts, read, result, crop_path, snap, track.track_id, vehicle,
-                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify, scene))
+                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify, scene,
+                                     replaces))
         self._write_pictures(conn, scan_id, track, pictures)
+        if old is not None:
+            # The replaced scan's pictures are named after the wrong plate and nothing points at them now.
+            now_in_use = {str(p) for p, *_ in pictures.values()}
+            for column in db.PICTURE_COLUMNS:
+                if old.get(column) and old[column] not in now_in_use:
+                    try:
+                        Path(old[column]).unlink(missing_ok=True)
+                    except OSError:
+                        log.warning("Could not remove the replaced picture %s", old[column])
 
     def _write_pictures(self, conn, scan_id: int, track: Track, pictures: dict) -> None:
         """Write a scan's pictures once its alert is out. A picture that can't be written is
@@ -841,6 +942,8 @@ class RecognizerWorker(QThread):
     def _finish_track(self, conn, track: Track) -> None:
         if not track.emitted_key:
             self._decide(conn, track, final=True)
+        if track.emitted_key:
+            self._remember_parked(track)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
             self._health.plate_seen(bool(track.emitted_key))
             self._health.plate_width(track.max_width)

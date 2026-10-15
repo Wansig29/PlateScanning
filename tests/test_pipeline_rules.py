@@ -334,3 +334,173 @@ def test_live_feed_labels_carry_the_plate_width():
     assert isinstance(o, Overlay) and o.box == (160, 100, 64, 20)
     assert o.label.endswith(" | 64px SMALL")
     conn.close()
+
+
+class CorrectedReadEngine(FakeEngine):
+    """A car standing at the gate: the first reads are wrong ("CEX907"), the later, sharper ones right."""
+
+    def __init__(self, first="CEX907", then="REY207", wrong_reads=2, confidence=0.9):
+        super().__init__()
+        self.first, self.then, self.wrong_reads, self.confidence = first, then, wrong_reads, confidence
+
+    def read(self, crop):
+        self.reads += 1
+        text = self.first if self.reads <= self.wrong_reads else self.then
+        return OcrRead(text, self.confidence, [self.confidence] * len(text))
+
+
+def _stand_at_gate(engine, frames=40, violation_plate=None):
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")  # the test database is shared with the tests above
+    conn.execute("DELETE FROM violations")
+    conn.execute("DELETE FROM scan_log")
+    if violation_plate:
+        db.upsert_vehicles(conn, [{"id": 1, "plate": violation_plate}])
+        db.upsert_violations(conn, [{"id": 10, "vehicle_id": 1, "plate": violation_plate}])
+    conn.commit()
+    got = []
+    w.scanned.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(frames):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    return w, conn, got
+
+
+def test_a_corrected_read_replaces_the_cars_earlier_scan():
+    _, conn, got = _stand_at_gate(CorrectedReadEngine())
+    assert [s.read.text for s in got] == ["CEX907", "REY207"]
+    first, fixed = got
+    assert first.replaces is None and fixed.replaces == first.scan_id == fixed.scan_id
+    rows = db.recent_scans(conn)
+    assert [r["plate_read"] for r in rows] == ["REY207"]  # one car, one scan
+    conn.close()
+
+
+def test_a_doubtful_correction_is_not_reported():
+    # The later reads disagree with the first ones but are too unsure to be reported on their own.
+    class Doubtful(CorrectedReadEngine):
+        def read(self, crop):
+            first = super().read(crop)
+            return first if self.reads <= self.wrong_reads else OcrRead("IEY207", 0.55, [0.55] * 6)
+
+    _, conn, got = _stand_at_gate(Doubtful())
+    assert [s.read.text for s in got] == ["CEX907"]
+    conn.close()
+
+
+def test_a_violation_alert_is_kept_when_the_read_is_corrected():
+    _, conn, got = _stand_at_gate(CorrectedReadEngine(), violation_plate="CEX 907")
+    assert got[0].lookup.status == db.RESULT_VIOLATION
+    assert len(got) == 2 and got[1].replaces is None  # the raised alert stays on record
+    assert len(db.recent_scans(conn)) == 2
+    conn.close()
+
+
+def _car_image(bgr=(128, 128, 128)):
+    image = np.full((200, 400, 3), 128, np.uint8)
+    image[:78, 100:300] = bgr  # the body panel above the plate, where its colour is measured
+    return image
+
+
+def _parked_car_with_a_gap(engine, gap, cooldown=45.0, moved_in_gap=None, second_car_bgr=None):
+    """A car standing still whose plate the detector misses for `gap` seconds in the middle.
+
+    moved_in_gap: a vehicle's motion box (whole picture) seen during the gap.
+    second_car_bgr: the body colour seen after the gap (a different car in the same spot)."""
+    w = worker(engine)
+    w.cfg.scan.plate_cooldown_seconds = cooldown
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("DELETE FROM vehicles")  # the test database is shared with the tests above
+    conn.execute("DELETE FROM violations")
+    conn.execute("DELETE FROM scan_log")
+    conn.commit()
+    got = []
+    w.scanned.connect(got.append)
+    slot = FrameSlot()
+    t = 0.0
+    for part in range(2):
+        image = _car_image((200, 60, 20) if part == 0 or second_car_bgr is None else second_car_bgr)
+        for i in range(20):
+            w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, t), [PlateBox((150, 80, 100, 30), 0.9)])
+            t += 0.05
+        w._expire(conn, t + gap)  # the plate is missed long enough for its track to end
+        if part == 0 and moved_in_gap is not None:
+            # The camera saw it (on a frame the recognizer skipped), then a quiet frame was handed over.
+            slot.put(image, (0, 0, 400, 200), True, t, moved_in_gap)
+            slot.put(image, (0, 0, 400, 200), False, t + 0.05)
+            w._forget_parked_where_moved(slot.get_newer(0, 0.1))
+        t += gap
+        if isinstance(engine, CorrectedReadEngine):
+            engine.wrong_reads = engine.reads  # from now on the OCR reads it the other way
+    return w, conn, got
+
+
+def test_a_parked_car_whose_track_breaks_is_not_reported_twice():
+    _, conn, got = _parked_car_with_a_gap(FakeEngine(), gap=1.0, cooldown=0.0)  # not thanks to the cooldown
+    assert [s.read.text for s in got] == ["ABC1234"]
+    assert len(db.recent_scans(conn)) == 1
+    conn.close()
+
+
+def test_a_parked_car_read_differently_after_its_track_breaks_keeps_one_scan():
+    # The car's first track reads it as CEX907, its next one as REY207.
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0)
+    assert [s.read.text for s in got] == ["CEX907", "REY207"]
+    assert got[1].replaces == got[0].scan_id
+    assert [r["plate_read"] for r in db.recent_scans(conn)] == ["REY207"]
+    conn.close()
+
+
+def test_after_the_hold_a_car_in_the_same_spot_is_a_new_vehicle():
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=12.0)
+    assert [s.read.text for s in got] == ["CEX907", "REY207"] and got[1].replaces is None
+    assert len(db.recent_scans(conn)) == 2
+    conn.close()
+
+
+def test_a_car_driving_over_the_spot_makes_the_next_car_there_a_new_vehicle():
+    # Car A left and car B pulled into the same spot: the motion detector saw a vehicle move there.
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0,
+                                          moved_in_gap=(100, 20, 250, 150))
+    assert [s.read.text for s in got] == ["CEX907", "REY207"] and got[1].replaces is None
+    assert len(db.recent_scans(conn)) == 2
+    conn.close()
+
+
+def test_motion_elsewhere_does_not_split_a_parked_car():
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0,
+                                          moved_in_gap=(0, 0, 60, 60))  # another lane
+    assert got[1].replaces == got[0].scan_id
+    assert len(db.recent_scans(conn)) == 1
+    conn.close()
+
+
+def test_a_different_coloured_car_in_the_same_spot_is_a_new_vehicle():
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0,
+                                          second_car_bgr=(30, 30, 220))  # blue car, then a red one
+    assert [s.color for s in got] == ["Blue", "Red"]
+    assert got[1].replaces is None and len(db.recent_scans(conn)) == 2
+    conn.close()
+
+
+class OneDoubtfulCharacterEngine(FakeEngine):
+    """Sure of every character but the first (the OCR's 74% average hides a 20% guess)."""
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("ABC1234", 0.78, [0.2] + [0.88] * 6)
+
+
+def test_a_plate_with_one_doubtful_character_is_not_shown_as_read():
+    _, conn, got = _stand_at_gate(OneDoubtfulCharacterEngine())
+    assert got == []
+    conn.close()
+
+
+def test_a_violation_with_one_doubtful_character_still_alerts_but_asks_to_verify():
+    _, conn, got = _stand_at_gate(OneDoubtfulCharacterEngine(), violation_plate="ABC 1234")
+    assert got and got[0].lookup.status == db.RESULT_VIOLATION and got[0].verify
+    conn.close()

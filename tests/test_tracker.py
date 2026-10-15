@@ -76,3 +76,24 @@ def test_a_long_stay_keeps_a_bounded_number_of_reads():
         t.note_unmatched("??")
     assert len(t.reads) == tr.MAX_READS and len(t.unmatched) == tr.MAX_UNMATCHED
     assert t.leader().text in ("ABC1234", "ABC1235")
+
+
+def test_weakest_character_shows_through_a_good_average():
+    # Five sure characters and one doubtful one: 74% on average, but the "C" is a guess.
+    t = Track(1, (0, 0, 10, 10), 0.0, 0.0, layouts=LAYOUTS)
+    for _ in range(3):
+        t.add_vote("CEX907", "CEX907", 0.74, [0.2, 0.85, 0.85, 0.85, 0.85, 0.85])
+    lead = t.leader()
+    assert lead.score / lead.reads > 0.7 and lead.weakest < 0.25
+
+
+def test_only_the_most_confident_reads_vote():
+    # A far, blurred plate is misread four times, then read clearly twice once it is close.
+    t = Track(1, (0, 0, 10, 10), 0.0, 0.0, layouts=LAYOUTS, vote_reads=2)
+    for _ in range(4):
+        t.add_vote("IEY207", "IEY207", 0.55, [0.55] * 6)
+    for _ in range(2):
+        t.add_vote("REY207", "REY207", 0.9, [0.9] * 6)
+    assert t.leader().text == "REY207" and t.leader().reads == 2
+    t.vote_reads = 0  # every read votes: the early misreads win the first character
+    assert t.leader().text == "IEY207"

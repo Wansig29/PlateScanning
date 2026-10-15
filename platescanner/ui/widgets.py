@@ -1387,7 +1387,13 @@ class CapturedPlatePanel(QFrame):
 
     def add_capture(self, scan_id: int, ts: str, pixmap: QPixmap | None, plate: str,
                     confidence: float | None, result: str, snapshot_path: str | None = None,
-                    color: str | None = None) -> None:
+                    color: str | None = None, replaces: int | None = None) -> None:
+        """replaces: an earlier scan of the same vehicle this one corrects; its card goes."""
+        if replaces is not None:
+            for card in [c for c in self._cards if c.scan_id == replaces]:
+                self._cards.remove(card)
+                self.list.removeWidget(card)
+                card.deleteLater()
         self._append(PlateCard(scan_id, ts, pixmap, plate, confidence, result, snapshot_path, color))
         self._highlight(scan_id)
         self.follower.entry_added()
@@ -1495,10 +1501,16 @@ class LogsPanel(QFrame):
 
     def add_entry(self, scan_id: int, ts: str, plate: str, result: str, detail: str,
                   approximate: bool = False, confidence: float | None = None, vehicle: str = "",
-                  ack: str | None = None) -> None:
+                  ack: str | None = None, replaces: int | None = None) -> None:
         """Append at the bottom (newest last, like a chat).
 
-        ack (violations only): who acknowledged it, or None if nobody has yet."""
+        ack (violations only): who acknowledged it, or None if nobody has yet.
+        replaces: an earlier scan of the same vehicle this one corrects; its row goes."""
+        if replaces is not None:
+            for r in reversed(range(self.table.rowCount())):
+                item = self.table.item(r, 0)
+                if item and item.data(Qt.ItemDataRole.UserRole) == replaces:
+                    self.table.removeRow(r)
         color = QColor(theme.RESULT_COLORS.get(result, theme.TEXT))
         row = self.table.rowCount()
         self.table.insertRow(row)
