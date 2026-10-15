@@ -16,6 +16,7 @@ import logging
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,6 +27,9 @@ log = logging.getLogger(__name__)
 LATEST_RELEASE_API = "https://api.github.com/repos/Wansig29/PlateScanning/releases/latest"
 INSTALLER_NAME = "PlateScanner-Setup.exe"
 TIMEOUT_S = 8
+# The installer download: (connect, longest silence) in seconds, and how often it resumes after a stall.
+DOWNLOAD_TIMEOUT = (15, 60)
+DOWNLOAD_ATTEMPTS = 6
 
 
 @dataclass
@@ -83,22 +87,41 @@ def download_installer(rel: Release, folder: Path, progress=None) -> Path:
     """Download to folder; raises on any failure or if the checksum GitHub published does not match.
     Nothing that failed the check is left behind under an .exe name.
 
+    A gate laptop's connection can be slow (the installer is ~90 MB) and stall now and then: a dropped
+    or stalled download resumes where it stopped (an HTTP Range request) instead of starting over,
+    up to DOWNLOAD_ATTEMPTS times.
+
     progress(done_bytes, total_bytes) is called after each chunk (total is 0 when the size is unknown)."""
     folder.mkdir(parents=True, exist_ok=True)
     dest = folder / f"PlateScanner-Setup-{rel.tag}.exe"
     part = dest.with_suffix(".part")
+    part.unlink(missing_ok=True)
     h = hashlib.sha256()
-    with requests.get(rel.installer_url, stream=True, timeout=30) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("Content-Length") or 0)
-        done = 0
-        with open(part, "wb") as f:
-            for chunk in r.iter_content(1 << 18):
-                f.write(chunk)
-                h.update(chunk)
-                done += len(chunk)
-                if progress:
-                    progress(done, total)
+    done = total = 0
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            headers = {"Range": f"bytes={done}-"} if done else {}
+            with requests.get(rel.installer_url, stream=True, timeout=DOWNLOAD_TIMEOUT, headers=headers) as r:
+                r.raise_for_status()
+                if done and getattr(r, "status_code", 200) != 206:  # the server ignored the range: start over
+                    part.unlink(missing_ok=True)
+                    h, done = hashlib.sha256(), 0
+                if not total:
+                    total = done + int(r.headers.get("Content-Length") or 0)
+                with open(part, "ab") as f:
+                    for chunk in r.iter_content(1 << 18):
+                        f.write(chunk)
+                        h.update(chunk)
+                        done += len(chunk)
+                        if progress:
+                            progress(done, total)
+            break
+        except requests.RequestException as e:
+            if attempt == DOWNLOAD_ATTEMPTS:
+                part.unlink(missing_ok=True)
+                raise
+            log.info("update download interrupted at %d of %d bytes (%s); resuming", done, total, e)
+            time.sleep(min(5 * attempt, 20))
     if rel.sha256 and h.hexdigest().lower() != rel.sha256.lower():
         part.unlink(missing_ok=True)
         raise ValueError("downloaded installer failed its checksum")

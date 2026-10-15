@@ -676,6 +676,11 @@ class MainWindow(QMainWindow):
     def _download_job(self, rel: updates.Release) -> None:
         try:
             self.install_now.emit(str(updates.download_installer(rel, self.cfg.home / "updates", self._report_progress)))
+        except updates.requests.RequestException as e:
+            log.warning("update download failed: %s", e)
+            self.update_failed.emit("The update could not be downloaded: the internet connection is too slow "
+                                    "or keeps dropping.\n\nScanning is not affected. Click the update button "
+                                    "to try again later.")
         except Exception as e:  # noqa: BLE001
             log.warning("update download failed: %s", e)
             self.update_failed.emit(f"The update could not be downloaded:\n\n{e}")
