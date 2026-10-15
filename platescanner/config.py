@@ -295,6 +295,9 @@ class SyncConfig:
     # (a truncated or empty response must not wipe the local violation list).
     min_full_sync_ratio: float = 0.5
     download_photos: bool = True
+    # Back up plates.db (vehicles, violations and the scan log) into backups\ before every sync,
+    # keeping this many of the newest copies. 0 turns it off.
+    backup_keep: int = 20
     # Violation statuses that mean "no longer active". Anything else is active.
     resolved_statuses: list[str] = field(default_factory=lambda: [
         "resolved", "settled", "cleared", "closed", "paid", "dismissed",
@@ -338,6 +341,10 @@ class Config:
     @property
     def archive_path(self) -> Path:
         return Path(self.scan.archive_dir) if self.scan.archive_dir.strip() else self.home / "archive"
+
+    @property
+    def backups_dir(self) -> Path:
+        return self.home / "backups"
 
     @property
     def photos_dir(self) -> Path:

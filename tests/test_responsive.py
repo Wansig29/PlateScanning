@@ -137,3 +137,19 @@ def test_dragging_the_zoomed_feed_moves_the_zoom(window):
     w.zoom_slider.setValue(10)                         # back at 1x: nothing to move around in
     w.video.pan_to.emit(0.3, 0.3)
     assert w.cfg.camera.zoom_center != [0.3, 0.3]
+
+
+def test_restoring_a_backup_reloads_the_window_from_it(window):
+    w, app = window
+    w._open_database()
+    saved = db.backup(w.conn, w.cfg.backups_dir, keep=5)            # no scans yet
+    db.add_scan(w.conn, ts="2026-10-15T10:00:00", plate_read="NBC1234",
+                result=db.lookup(w.conn, "NBC1234"), confidence=0.9, crop_path=None)
+    w.logs.clear()
+    w._load_history()
+    assert w.logs.table.rowCount() == 1
+    db.restore(w.conn, saved, w.cfg.backups_dir, keep=5)
+    w.db_window.restored.emit()
+    app.processEvents()
+    assert w.logs.table.rowCount() == 0                               # the scan made after the backup is gone
+    w.db_window.hide()

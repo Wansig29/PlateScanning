@@ -993,11 +993,27 @@ class MainWindow(QMainWindow):
         if not self._require_sign_in():
             return
         if self.db_window is None:
-            self.db_window = DatabaseWindow(self.conn, self)
+            self.db_window = DatabaseWindow(self.conn, self.cfg, self)
+            self.db_window.restored.connect(self._db_restored)
         self.db_window.refresh()
         self.db_window.show()
         self.db_window.raise_()
         self.db_window.activateWindow()
+
+    def _db_restored(self) -> None:
+        """A backup replaced the database: reload the Logs, captures, counts and reports from it."""
+        # Scans on the dashboard or waiting for the guard may not exist in the backup.
+        self.dash.current, self.dash.viewing = None, False
+        self.dash.waiting.clear()
+        self.identity.clear()
+        self.logs.clear()
+        self.captured.clear()
+        self._update_pending()
+        self._load_history()
+        self._refresh_sync_label()
+        if self.reports_window is not None and self.reports_window.isVisible():
+            self.reports_window.refresh()
+        self.statusBar().showMessage("Backup restored", 8000)
 
     def _open_reports(self) -> None:
         if not self._require_sign_in():
