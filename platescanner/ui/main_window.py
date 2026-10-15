@@ -1160,9 +1160,10 @@ class MainWindow(QMainWindow):
         if is_violation:
             self._alert(sound=False)  # flash now (the alarm is already playing); the panels below can wait
         self.captured.add_capture(scan.scan_id, ts, vehicle_pm or crop_pm, shown_plate, scan.read.confidence,
-                                  res.status, scan.snapshot_path, scan.color)
+                                  res.status, scan.snapshot_path, scan.color, scan.replaces)
         self.logs.add_entry(scan.scan_id, ts, shown_plate, res.status, ("VERIFY PLATE · " if scan.verify else "") + self._detail(res), res.approximate,
-                           scan.read.confidence, self._looks(scan.color, scan.position, scan.source), None)
+                           scan.read.confidence, self._looks(scan.color, scan.position, scan.source), None,
+                           scan.replaces)
         self._refresh_sync_label()
 
     def _acknowledged(self) -> None:

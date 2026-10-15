@@ -37,7 +37,7 @@ from .vision import focus, identify
 from .vision.alpr import PlateBox, PlateEngine, merge_proposals, overlap_of_smaller, pad_box
 from .vision.motion import MotionDetector, sharpness
 from .vision.plate import PlateRead, find_plate_regions
-from .vision.tracker import PlateTracker, Track
+from .vision.tracker import PlateTracker, Track, center, iou
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +87,9 @@ class ScanResult:
     verify: bool = False       # a doubtful violation, or a look-alike "registered" match: the guard should check the plate
     # The scene with this vehicle highlighted, in memory: the alert goes out before its file is written.
     snapshot: np.ndarray | None = None
+    # The earlier scan of this same vehicle that this one corrects (a better read of a car still in
+    # view): the Captured Plates card and Logs row of that scan are replaced, not added to.
+    replaces: int | None = None
 
 
 @dataclass
@@ -431,6 +434,9 @@ class RecognizerWorker(QThread):
         # Ids for alerts whose scan could not be written to the database (-1, -2, ...):
         # the guard is still alerted, the row just isn't in the log.
         self._unsaved_ids = itertools.count(-1, -1)
+        # Reported vehicles that stood still until their track ended:
+        # (plate box, when, scan id, result, plate key reported).
+        self._parked: list[tuple[tuple[int, int, int, int], float, int, str, str]] = []
 
     def _source(self, track: Track) -> str | None:
         # In a video, frame timestamps are the time into the video.
@@ -621,7 +627,9 @@ class RecognizerWorker(QThread):
         self.frames_processed += 1
         if self._area_origin is not None and self._area_origin != (rx, ry):
             # The zoom moved the reading area: keep each vehicle's track where the vehicle is.
-            self.tracker.shift(self._area_origin[0] - rx, self._area_origin[1] - ry)
+            dx, dy = self._area_origin[0] - rx, self._area_origin[1] - ry
+            self.tracker.shift(dx, dy)
+            self._parked = [((x + dx, y + dy, w, h), *rest) for (x, y, w, h), *rest in self._parked]
         self._area_origin = (rx, ry)
         matched, ended = self.tracker.update([d.box for d in dets], f.ts)
         for t in ended:
@@ -678,6 +686,30 @@ class RecognizerWorker(QThread):
             self._decide(conn, track, final=False)
         self._push_overlays(f.roi)
         self._report_in_view()
+
+    def _remember_parked(self, track: Track) -> None:
+        """A reported vehicle's track ended. If it was standing still, its plate was most likely
+        just missed for a moment: remember where, so it is not reported again as a new vehicle."""
+        if self.cfg.scan.same_vehicle_seconds <= 0 or track.scan_id is None or not track.trail:
+            return
+        xs, ys = [p[0] for p in track.trail], [p[1] for p in track.trail]
+        if max(max(xs) - min(xs), max(ys) - min(ys)) > 0.5 * max(1, track.box[2]):
+            return  # it was driving: it left
+        self._parked.append((track.box, track.last_seen, track.scan_id, track.status or "", track.emitted_key or ""))
+
+    def _same_parked_vehicle(self, track: Track) -> tuple[int, str, str] | None:
+        """The earlier scan (id, result, plate key) of the standing vehicle this new track is, if any.
+        Used once."""
+        hold = self.cfg.scan.same_vehicle_seconds
+        self._parked = [p for p in self._parked if track.first_seen - p[1] <= hold]
+        (fx, fy) = track.trail[0] if track.trail else center(track.box)
+        for p in self._parked:
+            box = p[0]
+            cx, cy = center(box)
+            if iou(box, track.box) >= 0.3 or ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 <= 0.5 * box[2]:
+                self._parked.remove(p)
+                return p[2], p[3], p[4]
+        return None
 
     def _report_in_view(self) -> None:
         ids = {t.track_id for t in self.tracker.tracks.values() if t.neural_hits or t.reads}
@@ -737,8 +769,10 @@ class RecognizerWorker(QThread):
         # Reads that disagree on a character are exactly what decoding resolves.
         clear_lead = track.margin() >= 0.6 or decoded
         if track.emitted_key:
-            # Already reported as another plate: only correct it on solid evidence.
-            ready = lead.reads >= ocr.confirm_reads + 1 and clear_lead
+            # Already reported as another plate: only correct it on solid evidence, and never
+            # with a read too doubtful to have been reported in the first place.
+            need = ocr.read_confidence if result.status == db.RESULT_VIOLATION else ocr.report_confidence
+            ready = lead.reads >= ocr.confirm_reads + 1 and clear_lead and avg >= need
         elif result.status == db.RESULT_VIOLATION:
             # Speed matters most here: alert on the first confident read.
             ready = clear_lead and (lead.best_conf >= ocr.alert_confidence or lead.reads >= ocr.confirm_reads)
@@ -751,11 +785,24 @@ class RecognizerWorker(QThread):
         if not ready:
             return
 
+        # A corrected read of a vehicle already reported replaces that report, so one car stays one
+        # card. Except after a violation alert: the alert was raised, so its record is kept.
+        replaces = track.scan_id if track.emitted_key and track.status != db.RESULT_VIOLATION else None
+        if not track.emitted_key and (parked := self._same_parked_vehicle(track)) is not None:
+            # The vehicle standing here was already reported; its track was only broken for a moment.
+            track.scan_id, earlier, earlier_key = parked
+            if earlier_key == key and earlier == result.status:
+                # Read the same again: nothing new to report.
+                track.emitted_key, track.emitted_text, track.status = key, text, result.status
+                return
+            if earlier != db.RESULT_VIOLATION:
+                replaces = track.scan_id
         track.emitted_key = key
         track.emitted_text = text
         track.status = result.status
         # The frame's clock: the camera's time, or the time into a video.
-        if self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen, result.status):
+        cooldown = self._in_cooldown(plates.plate_key(result.matched_plate or text), track.last_seen, result.status)
+        if cooldown and replaces is None:
             return
         ts = datetime.now()
         crop = track.best_crop if track.best_crop is not None else np.zeros((10, 30, 3), np.uint8)
@@ -794,23 +841,42 @@ class RecognizerWorker(QThread):
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
         verify = needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
+        old = None
         try:
-            scan_id = db.add_scan(conn, ts=ts.isoformat(timespec="seconds"), plate_read=text,
-                                  result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
-                                  vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
-                                  position=pos, source=source, verify=verify)
+            fields = dict(ts=ts.isoformat(timespec="seconds"), plate_read=text,
+                          result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
+                          vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
+                          position=pos, source=source, verify=verify)
+            old = db.get_scan(conn, replaces) if replaces is not None and replaces > 0 else None
+            if old is not None:
+                db.replace_scan(conn, replaces, **fields)
+                scan_id = replaces
+            else:
+                scan_id = db.add_scan(conn, **fields)
         except sqlite3.Error:
             # e.g. the database stayed locked: alert anyway, the scan just isn't in the log.
             log.exception("Track #%d: %s (%s) could not be written to the scan log", track.track_id, text,
                           result.status)
             scan_id = next(self._unsaved_ids)
-        log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)%s%s", track.track_id, text, result.status,
+        track.scan_id = scan_id
+        log.info("Track #%d: %s%s (%s, %d reads, avg %.0f%%)%s%s", track.track_id,
+                 "corrected to " if replaces is not None else "", text, result.status,
                  lead.reads, avg * 100, f" in {source}" if source else "",
                  f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
                  if decoded and plates.normalize(text) != plates.normalize(lead.text) else "")
         self.scanned.emit(ScanResult(scan_id, ts, read, result, crop_path, snap, track.track_id, vehicle,
-                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify, scene))
+                                     vehicle_path, color, pos, len(track.best_frame_others), source, verify, scene,
+                                     replaces))
         self._write_pictures(conn, scan_id, track, pictures)
+        if old is not None:
+            # The replaced scan's pictures are named after the wrong plate and nothing points at them now.
+            now_in_use = {str(p) for p, *_ in pictures.values()}
+            for column in db.PICTURE_COLUMNS:
+                if old.get(column) and old[column] not in now_in_use:
+                    try:
+                        Path(old[column]).unlink(missing_ok=True)
+                    except OSError:
+                        log.warning("Could not remove the replaced picture %s", old[column])
 
     def _write_pictures(self, conn, scan_id: int, track: Track, pictures: dict) -> None:
         """Write a scan's pictures once its alert is out. A picture that can't be written is
@@ -841,6 +907,8 @@ class RecognizerWorker(QThread):
     def _finish_track(self, conn, track: Track) -> None:
         if not track.emitted_key:
             self._decide(conn, track, final=True)
+        if track.emitted_key:
+            self._remember_parked(track)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
             self._health.plate_seen(bool(track.emitted_key))
             self._health.plate_width(track.max_width)

@@ -508,6 +508,24 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
     return int(cur.lastrowid)
 
 
+def replace_scan(conn: sqlite3.Connection, scan_id: int, *, ts: str, plate_read: str, result: LookupResult,
+                 confidence: float | None, crop_path: str | None, snapshot_path: str | None = None,
+                 vehicle_path: str | None = None, track_id: int | None = None,
+                 vehicle_color: str | None = None, position: str | None = None,
+                 source: str | None = None, verify: bool = False) -> None:
+    """A better read of the same vehicle: the scan's row now says what add_scan would have."""
+    conn.execute(
+        "UPDATE scan_log SET ts=?, plate_read=?, matched_plate=?, result=?, confidence=?, approximate=?, "
+        "vehicle_id=?, violation_ids=?, crop_path=?, snapshot_path=?, vehicle_path=?, track_id=?, "
+        "vehicle_color=?, position=?, source=?, verify=? WHERE id=?",
+        (ts, plate_read, result.matched_plate, result.status, confidence, int(result.approximate),
+         result.vehicle["id"] if result.vehicle else None,
+         json.dumps([v["id"] for v in result.violations]), crop_path, snapshot_path,
+         vehicle_path, track_id, vehicle_color, position, source, int(verify), scan_id),
+    )
+    conn.commit()
+
+
 PICTURE_COLUMNS = ("crop_path", "vehicle_path", "snapshot_path")
 
 

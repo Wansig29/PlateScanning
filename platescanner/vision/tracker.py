@@ -71,6 +71,7 @@ class Track:
     emitted_text: str | None = None  # the plate text reported (may be a registered plate decoded from the reads)
     trail: list[tuple[int, int]] = field(default_factory=list)
     status: str | None = None        # lookup result of the reported plate (for the overlay)
+    scan_id: int | None = None       # scan log row of that report (replaced if the read is corrected)
     # Log-probabilities of every character at every position, summed over the reads.
     log_sum: np.ndarray | None = None
     dist_reads: int = 0

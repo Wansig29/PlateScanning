@@ -267,6 +267,10 @@ class ScanConfig:
     unacknowledged_lookback_hours: float = 24.0
     # A tracked vehicle is considered gone after this long without its plate.
     track_max_age_seconds: float = 0.8
+    # A vehicle that stood still and is seen again in the same spot within this many seconds
+    # (its plate was missed for a moment) is the same vehicle: its scan is updated, not repeated.
+    # 0 = every new track is a new vehicle.
+    same_vehicle_seconds: float = 10.0
     # Log "plate not readable" only for plates seen in at least this many frames.
     min_hits_for_unread: int = 4
 

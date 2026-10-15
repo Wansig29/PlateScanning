@@ -158,3 +158,18 @@ def test_owner_photo_is_decoded_small_and_evidence_only_when_opened(tmp_path, mo
     card.show_result("ABC1234", result)
     assert loaded == [("owner.jpg", 2 * card.avatar.d)]            # the owner photo only, small
     assert card.evidence_btn.text().startswith("View evidence photo ") and "(1)" in card.evidence_btn.text()
+
+
+def test_a_corrected_read_replaces_the_card_and_log_row_of_the_same_car(app):
+    from platescanner.ui.widgets import CapturedPlatePanel
+    logs, captured = LogsPanel(), CapturedPlatePanel()
+    logs.add_entry(1, "2026-01-01T10:00:01", "AAA1111", db.RESULT_CLEAR, "")
+    logs.add_entry(2, "2026-01-01T10:00:02", "CEX907", db.RESULT_NOT_REGISTERED, "")
+    captured.add_capture(1, "2026-01-01T10:00:01", None, "AAA1111", 0.9, db.RESULT_CLEAR)
+    captured.add_capture(2, "2026-01-01T10:00:02", None, "CEX907", 0.74, db.RESULT_NOT_REGISTERED)
+    # A better read of the car of scan 2, which is still at the gate.
+    logs.add_entry(2, "2026-01-01T10:00:03", "REY207", db.RESULT_NOT_REGISTERED, "", replaces=2)
+    captured.add_capture(2, "2026-01-01T10:00:03", None, "REY207", 0.74, db.RESULT_NOT_REGISTERED, replaces=2)
+    assert [logs.table.item(r, 1).text() for r in range(logs.table.rowCount())] == ["AAA 1111", "REY 207"]
+    assert [c.scan_id for c in captured._cards] == [1, 2]
+    assert captured.count.text() == "2 recent"
