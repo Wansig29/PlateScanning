@@ -484,3 +484,23 @@ def test_a_different_coloured_car_in_the_same_spot_is_a_new_vehicle():
     assert [s.color for s in got] == ["Blue", "Red"]
     assert got[1].replaces is None and len(db.recent_scans(conn)) == 2
     conn.close()
+
+
+class OneDoubtfulCharacterEngine(FakeEngine):
+    """Sure of every character but the first (the OCR's 74% average hides a 20% guess)."""
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("ABC1234", 0.78, [0.2] + [0.88] * 6)
+
+
+def test_a_plate_with_one_doubtful_character_is_not_shown_as_read():
+    _, conn, got = _stand_at_gate(OneDoubtfulCharacterEngine())
+    assert got == []
+    conn.close()
+
+
+def test_a_violation_with_one_doubtful_character_still_alerts_but_asks_to_verify():
+    _, conn, got = _stand_at_gate(OneDoubtfulCharacterEngine(), violation_plate="ABC 1234")
+    assert got and got[0].lookup.status == db.RESULT_VIOLATION and got[0].verify
+    conn.close()

@@ -71,6 +71,8 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.upscale_small` | Enlarge and lightly sharpen plate crops 60–127 px wide before reading (default `true`; see *Far plates are enlarged first*) |
 | `ocr.ocr_model` | Plate OCR models, comma-separated. Each plate is read by all of them and the results are merged character by character |
 | `ocr.read_confidence`, `report_confidence`, `alert_confidence`, `confirm_reads` | When a vehicle is reported (see *Deciding a plate*) |
+| `ocr.min_char_confidence` | Every character of a plate must be at least this sure before it is shown as read (default 0.60). The average hides one doubtful character among sure ones: `CEX 907` at 74% can be five sure characters and one guess. A plate below it is not shown as read (if it never gets clearer it is logged *plate not readable*); a violation still alerts at once, marked **VERIFY PLATE**. 0 = not checked |
+| `ocr.vote_best_reads` | Each vehicle's plate is decided by its this-many most confident reads (default 4; 0 = all), so the early reads of a far, blurred plate can't outvote the clear ones |
 | `ocr.detector_confidence` | How sure the neural detector must be that something is a plate (default 0.5). Raise it if shelves, windows or signs are still read as plates; lower it if real plates are missed |
 | `ocr.classical_only_confidence` | A candidate that only the classical finder proposed must read at least this well (default 0.75) before it is reported |
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
@@ -107,6 +109,11 @@ Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full scr
   - a **violation** on the first read that is at least `alert_confidence` (0.75) sure, or on `confirm_reads` (2) agreeing reads;
   - anything else once `confirm_reads` reads agree;
   - if the vehicle leaves first, its best guess is reported if it averages `report_confidence` (0.65 by default; a violation only needs `read_confidence`, because missing a violator is worse than a doubtful alert). Otherwise it is logged as *plate not readable*, with a snapshot.
+  - and, for anything but a violation, only if **every character** is at least `min_char_confidence` (60%) sure. The confidence shown is an average over the characters, which hides one wrong character among five right ones.
+
+  Only the vehicle's `vote_best_reads` (4) most confident reads vote. A plate seen far away and blurred first, then clearly, is otherwise outvoted by its own early misreads.
+
+  On `tools\bench_gate.py` (200 synthetic cars and 200 motorcycles with one-line plates, each creeping up to the gate, plate small, turned 10-30 degrees and partly blurred), these two rules cut the vehicles shown with a **wrong** plate from 38% to 3% (cars) and from 44% to 6% (motorcycles). Exact reads went from 46% to 44% (cars) and from 62% to 72% (motorcycles); the rest were logged *plate not readable* instead of being shown with a wrong plate. A wrong plate on the card is worse than none for enforcement: the guard trusts it. Re-measure on real gate footage with `tools\eval_footage.py`.
 
   After reporting, a vehicle is still re-read now and then. If the consensus clearly changes (at least `confirm_reads` + 1 reads, averaging `report_confidence`), the vehicle's scan is **corrected in place**: its Captured Plates card and Logs row now show the better read, so one vehicle stays one entry (e.g. a parked car first read `CEX 907`, then correctly `REY 207`). A violation alert is never rewritten: it was raised, so it stays on record and the correction is logged next to it. A parked car whose plate the detector misses for a moment gets a new track; within `scan.same_vehicle_seconds` of the old one, in the same spot, it still counts as the same vehicle, unless the motion detector saw a vehicle move over that spot in between (the car drove off and another took its place) or the body colour differs.
 

@@ -433,7 +433,8 @@ class RecognizerWorker(QThread):
         self.engine = engine
         self._stop = threading.Event()
         self._last_seen: dict[str, tuple[float, str]] = {}  # plate key -> (last time, its result)
-        self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts)
+        self.tracker = PlateTracker(max_age=cfg.scan.track_max_age_seconds, layouts=cfg.ocr.plate_layouts,
+                                    vote_reads=cfg.ocr.vote_best_reads)
         self._area_origin: tuple[int, int] | None = None  # where the reading area's (0, 0) is in the frame
         self._in_view: set[int] = set()
         self.frames_processed = 0
@@ -809,10 +810,12 @@ class RecognizerWorker(QThread):
             ready = clear_lead and (lead.best_conf >= ocr.alert_confidence or lead.reads >= ocr.confirm_reads)
         else:
             ready = clear_lead and lead.reads >= ocr.confirm_reads
+        if result.status != db.RESULT_VIOLATION and lead.weakest < ocr.min_char_confidence:
+            ready = False  # one character is too doubtful to show this plate as read
         if final and not track.emitted_key:
             # The vehicle left: report the best guess if it is good enough.
             need = ocr.read_confidence if result.status == db.RESULT_VIOLATION else ocr.report_confidence
-            ready = avg >= need
+            ready = avg >= need and (result.status == db.RESULT_VIOLATION or lead.weakest >= ocr.min_char_confidence)
         if not ready:
             return
 
@@ -871,7 +874,8 @@ class RecognizerWorker(QThread):
                                          for c in ("crop_path", "vehicle_path", "snapshot_path"))
         read = PlateRead(text, lead.raw, avg, crop, plate_box)
         source = self._source(track)
-        verify = needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
+        verify = (needs_manual_check(result.status, lead.reads, avg, result.approximate, ocr)
+                  or lead.weakest < ocr.min_char_confidence)  # only a violation gets here with one
         old = None
         try:
             fields = dict(ts=ts.isoformat(timespec="seconds"), plate_read=text,
