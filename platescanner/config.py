@@ -155,9 +155,17 @@ class OcrConfig:
     verify_below_confidence: float = 0.60
     verify_single_read_below: float = 0.90
     confirm_reads: int = 2
+    # While a vehicle is still driving up and its plate is narrower than this (px), wait for
+    # a closer read before reporting it: far-away reads are the ones that get corrected later.
+    # Violations still alert at once, and a vehicle that stops or leaves is reported as usual.
+    # 0 = report as soon as the reads agree.
+    report_min_width: int = 80
     # After a vehicle is reported, re-read it now and then (to catch a
     # misread) up to this many reads in total.
     max_reads_per_vehicle: int = 8
+    # ...but stop as soon as its plate shrinks below this share of the biggest it
+    # got: the vehicle is driving away and its reads only get worse. 0 = never stop early.
+    stop_rereads_below_size: float = 0.8
     # Database-aware decoding: score the OCR's full character probabilities
     # against the registered plates, so a plate one doubtful character away
     # from a registered one is resolved by evidence (see decode.py).

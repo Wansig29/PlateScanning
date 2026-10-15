@@ -468,6 +468,14 @@ def add_scan(conn: sqlite3.Connection, *, ts: str, plate_read: str, result: Look
     return int(cur.lastrowid)
 
 
+def update_scan_looks(conn: sqlite3.Connection, scan_id: int, vehicle_color: str | None,
+                      position: str | None) -> None:
+    """The vehicle's colour and place in the picture, re-taken from a better frame."""
+    conn.execute("UPDATE scan_log SET vehicle_color = ?, position = ? WHERE id = ?",
+                 (vehicle_color, position, scan_id))
+    conn.commit()
+
+
 def recent_scans(conn: sqlite3.Connection, limit: int = 200) -> list[dict[str, Any]]:
     """The newest scans of the current academic year (archived years live under Reports -> Archive)."""
     rows = conn.execute("SELECT * FROM scan_log WHERE archived_year IS NULL ORDER BY id DESC LIMIT ?",

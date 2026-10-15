@@ -23,7 +23,7 @@ from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config, save_config
 from ..pipeline import (
-    CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker, ScanResult, to_qimage,
+    CaptureWorker, FrameSlot, NoPlateEvent, PicturesUpdate, RecognizerWorker, ScanResult, to_qimage,
 )
 from ..session import clear_session, save_session
 from ..sync import run_sync
@@ -479,6 +479,7 @@ class MainWindow(QMainWindow):
         self.recognizer.failed.connect(self._ocr_failed)
         self.recognizer.scanned.connect(self._on_scan)
         self.recognizer.unreadable.connect(self._on_no_plate)
+        self.recognizer.pictures_updated.connect(self._on_pictures_updated)
         self.recognizer.in_view.connect(self._on_in_view)
         self.recognizer.health.connect(self._on_health)
         self.live_timer = QTimer(self)
@@ -909,6 +910,23 @@ class MainWindow(QMainWindow):
     def _on_scan(self, scan: ScanResult) -> None:
         # (The live feed labels every tracked vehicle itself.)
         self._display(scan)
+
+    def _on_pictures_updated(self, up: PicturesUpdate) -> None:
+        """The vehicle came closer after its scan: show the better pictures wherever it is."""
+        vehicle_pm = QPixmap.fromImage(to_qimage(up.vehicle if up.vehicle is not None else up.crop))
+        where_pm = load_pixmap(up.snapshot_path)
+        # Violations still queued for the guard keep their VehicleView: update it in place.
+        for item in [self.dash.current, *self.dash.waiting]:
+            if item is not None and item[0] == up.scan_id:
+                seen = item[3]
+                seen.vehicle, seen.color, seen.position = vehicle_pm, up.color, up.position
+                if where_pm is not None:
+                    seen.where = where_pm
+        for card in self.identity.cards:
+            if card.seen is not None and card.seen.scan_id == up.scan_id:
+                card.seen.color, card.seen.position = up.color, up.position
+        self.identity.update_pictures(up.scan_id, vehicle_pm, where_pm, up.color, up.position)
+        self.captured.update_picture(up.scan_id, vehicle_pm)
 
     def _on_no_plate(self, ev: NoPlateEvent) -> None:
         saw = ", ".join(ev.ocr_saw[:6]) if ev.ocr_saw else "no text at all"

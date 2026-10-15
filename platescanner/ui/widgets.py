@@ -338,6 +338,7 @@ class IdentityCard(QFrame):
         lay.setSpacing(8)
 
         self.track_id: int | None = None   # the vehicle this card is about (None: an older scan)
+        self.seen: VehicleView | None = None  # what it shows of the vehicle
         self.is_violation = False
         self.shown_at = 0.0               # when it was last filled in
         self.banner = QLabel("Waiting for vehicle…")
@@ -585,6 +586,7 @@ class IdentityCard(QFrame):
             label = f"{len(result.violations)} VIOLATIONS"
         seen = seen or VehicleView()
         self.track_id = seen.track_id
+        self.seen = seen
         self.is_violation = result.status == db.RESULT_VIOLATION
         self.shown_at = time.monotonic()
         self._banner_color = color
@@ -812,6 +814,16 @@ class IdentityPanel(QFrame):
             return others[0]
         return self._add_card() if len(keep) < self.MAX_CARDS else None
 
+    def update_pictures(self, scan_id: int, vehicle: QPixmap | None, where: QPixmap | None,
+                        color: str | None, position: str | None) -> None:
+        """A closer look replaced a scan's pictures: show them on its card, if it is up."""
+        for c in self.cards:
+            if c.seen is not None and c.seen.scan_id == scan_id:
+                c.vehicle_img.set_pixmap(vehicle)
+                if where is not None:
+                    c.where_img.set_pixmap(where)
+                c.looks.setText(c.seen.describe())
+
     def refresh_live(self, in_view: set, left_at: dict) -> None:
         """Tell each card whether its vehicle is still in the picture."""
         self._in_view, self._left_at = in_view, left_at
@@ -953,7 +965,7 @@ class PlateCard(QFrame):
         lay.setContentsMargins(12, 8, 10, 8)
         lay.setSpacing(12)
 
-        img = QLabel()
+        self.img = img = QLabel()
         img.setAlignment(Qt.AlignmentFlag.AlignCenter)
         img.setFixedSize(104, 76)
         img.setStyleSheet(f"background: {theme.VIDEO_BG}; border-radius: 5px;")
@@ -984,6 +996,11 @@ class PlateCard(QFrame):
         info.addWidget(when)
         lay.addLayout(info, 1)
         self.set_selected(False)
+
+    def set_picture(self, pixmap: QPixmap) -> None:
+        self.img.setText("")
+        self.img.setPixmap(pixmap.scaled(QSize(100, 72), Qt.AspectRatioMode.KeepAspectRatio,
+                                         Qt.TransformationMode.SmoothTransformation))
 
     def set_selected(self, selected: bool) -> None:
         bg = self.tint if selected else theme.PANEL_ALT
@@ -1083,6 +1100,11 @@ class CapturedPlatePanel(QFrame):
         for card in self._cards:
             if card.scan_id == scan_id:
                 self.scroll.ensureWidgetVisible(card)
+
+    def update_picture(self, scan_id: int, pixmap: QPixmap) -> None:
+        for card in self._cards:
+            if card.scan_id == scan_id:
+                card.set_picture(pixmap)
 
     def _on_click(self, scan_id: int) -> None:
         self._highlight(scan_id)

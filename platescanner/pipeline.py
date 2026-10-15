@@ -44,6 +44,9 @@ PREVIEW_MAX_WIDTH = 1280
 # A plate touching the edge of the picture is not read until it has been followed this
 # many frames: a vehicle that stops there never moves fully in, and still needs reading.
 EDGE_PATIENCE_HITS = 8
+# Laplacian variance (at 400 px wide) at which a plate counts as half-way to crisp. On the
+# plate dataset the median crop scores about 370 and a motion-blurred one under 20.
+PICTURE_CRISP = 100.0
 
 # BGR colors for overlays, matching the UI's result colors.
 RESULT_BGR = {
@@ -81,6 +84,29 @@ class ScanResult:
 
 
 @dataclass
+class PicturesUpdate:
+    """A reported vehicle came closer after its scan: its pictures were replaced by a better frame."""
+    scan_id: int
+    vehicle: np.ndarray | None
+    crop: np.ndarray
+    snapshot_path: str | None
+    color: str | None
+    position: str | None
+
+
+@dataclass
+class _Report:
+    """What was saved for a reported vehicle, so a better frame can replace its pictures."""
+    scan_id: int
+    label: str
+    bgr: tuple[int, int, int]
+    score: float  # picture_score of the frame the pictures came from
+    crop_path: str | None
+    vehicle_path: str | None
+    snapshot_path: str | None
+
+
+@dataclass
 class NoPlateEvent:
     """A plate was seen but could not be read."""
     scan_id: int | None
@@ -94,6 +120,17 @@ def needs_verification(reads: int, avg_confidence: float, approximate: bool, ocr
     """Should a violation alert tell the guard to check the plate against the photo?"""
     return (approximate or avg_confidence < ocr.verify_below_confidence
             or (reads < ocr.confirm_reads and avg_confidence < ocr.verify_single_read_below))
+
+
+def picture_score(confidence: float, width: int, sharp: float) -> float:
+    """Which read of a vehicle gives the picture saved with its scan.
+
+    The read the OCR was surest of, on the biggest and clearest plate: the
+    width counts in full (twice the pixels, twice the score) and the
+    clarity (variance of the Laplacian) levels off once the plate is crisp,
+    so a slightly sharper far-away plate never beats a close-up."""
+    clarity = sharp / (sharp + PICTURE_CRISP)
+    return confidence * max(width, 1) * clarity
 
 
 def video_clock(seconds: float) -> str:
@@ -315,6 +352,7 @@ class RecognizerWorker(QThread):
     failed = Signal(str)
     scanned = Signal(object)  # ScanResult
     unreadable = Signal(object)  # NoPlateEvent
+    pictures_updated = Signal(object)  # PicturesUpdate
     in_view = Signal(object)  # set of the track ids currently in the picture
     health = Signal(str, str, str)  # code, severity ('warn' | 'bad' | 'ok'), message
 
@@ -380,6 +418,10 @@ class RecognizerWorker(QThread):
         path = captures.picture_path(self.cfg, ts, plate, kind, status)
         if path is None:
             return None
+        return self._write_jpeg(img, path, max_width, quality)
+
+    @staticmethod
+    def _write_jpeg(img: np.ndarray, path: Path, max_width: int = 0, quality: int = 92) -> str | None:
         path.parent.mkdir(parents=True, exist_ok=True)
         if max_width and img.shape[1] > max_width:
             f = max_width / img.shape[1]
@@ -492,6 +534,9 @@ class RecognizerWorker(QThread):
             track.motion_hits += f.motion
         real = {i for t, i in matched if t.neural_hits or t.reads}  # not classical guesses
 
+        def at_edge(box: tuple[int, int, int, int]) -> bool:
+            return box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2
+
         def others(i: int) -> list[tuple[int, int, int, int]]:
             return [(d.box[0] + rx, d.box[1] + ry, d.box[2], d.box[3])
                     for j, d in enumerate(dets) if j != i and j in real]
@@ -504,11 +549,19 @@ class RecognizerWorker(QThread):
                 track.best_frame_others = others(i)
             # Once a vehicle is reported, keep checking it now and then (to catch
             # a misread) but spend most of the time on the others.
+            if track.emitted_key and box[2] < ocr.stop_rereads_below_size * track.max_width:
+                continue  # reported and driving away (its plate is shrinking): its reads only get worse
             if track.emitted_key and (track.reads_tried >= ocr.max_reads_per_vehicle or track.hits % 3):
+                # Not read, but it may still be the closest look yet: keep that for the pictures.
+                lead = track.leader()
+                if lead and not at_edge(box):
+                    pb = pad_box(box, 0.06, 0.10, work.shape)
+                    crop = work[pb[1]:pb[1] + pb[3], pb[0]:pb[0] + pb[2]]
+                    self._consider_picture(track, f, crop, pb, others(i), lead.score / lead.reads)
                 continue
             if not track.neural_hits and not track.reads and track.reads_tried >= 3 and track.hits % 10:
                 continue  # a classical guess that never read as a plate: only recheck now and then
-            if (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2) and track.hits < EDGE_PATIENCE_HITS:
+            if at_edge(box) and track.hits < EDGE_PATIENCE_HITS:
                 continue  # plate cut off by the edge of the picture: wait until it's fully in
             px, py, pw, ph = pad_box(box, 0.06, 0.10, work.shape)
             todo.append((track, i, px, py, pw, ph, work[py:py + ph, px:px + pw]))
@@ -516,6 +569,7 @@ class RecognizerWorker(QThread):
         # Every plate in the frame is read at once; the results are applied in order.
         reads = list(self._pool.map(lambda t: self.engine.read(t[-1]), todo))
         for (track, i, px, py, pw, ph, crop), read in zip(todo, reads):
+            box = dets[i].box
             track.reads_tried += 1
             if not read or not read.text:
                 continue
@@ -523,15 +577,21 @@ class RecognizerWorker(QThread):
             if not fixed or read.confidence < ocr.read_confidence:
                 track.unmatched.append(f"{read.text}({read.confidence:.0%})")
                 continue
-            track.add_vote(fixed, read.text, read.confidence, read.char_probs, read.dist)
-            score = read.confidence * (1.0 + 0.001 * sharpness(crop))
-            if score > track.best_crop_score:
-                track.best_crop_score, track.best_crop = score, crop.copy()
-                track.best_frame, track.best_frame_box = f.image, (px + rx, py + ry, pw, ph)
-                track.best_frame_others = others(i)
+            track.add_vote(fixed, read.text, read.confidence, read.char_probs, read.dist, box[2])
+            self._consider_picture(track, f, crop, (px, py, pw, ph), others(i), read.confidence)
             self._decide(conn, track, final=False)
         self._push_overlays(f.roi)
         self._report_in_view()
+
+    @staticmethod
+    def _consider_picture(track: Track, f: "_Frame", crop: np.ndarray, padded: tuple[int, int, int, int],
+                          others: list[tuple[int, int, int, int]], confidence: float) -> None:
+        """Keep this frame for the vehicle's pictures if it is the best look at it yet."""
+        score = picture_score(confidence, padded[2], sharpness(crop))
+        if score > track.best_crop_score:
+            track.best_crop_score, track.best_crop = score, crop.copy()
+            track.best_frame, track.best_frame_others = f.image, others
+            track.best_frame_box = (padded[0] + f.roi[0], padded[1] + f.roi[1], padded[2], padded[3])
 
     def _report_in_view(self) -> None:
         ids = {t.track_id for t in self.tracker.tracks.values() if t.neural_hits or t.reads}
@@ -590,6 +650,9 @@ class RecognizerWorker(QThread):
             ready = clear_lead and (lead.best_conf >= ocr.alert_confidence or lead.reads >= ocr.confirm_reads)
         else:
             ready = clear_lead and lead.reads >= ocr.confirm_reads
+        if (ready and not final and not track.emitted_key and result.status != db.RESULT_VIOLATION
+                and track.box[2] < ocr.report_min_width and track.growing(track.last_seen)):
+            ready = False  # still driving up and far away: a closer read is coming
         if final and not track.emitted_key:
             # The vehicle left: report the best guess if it is good enough.
             need = ocr.read_confidence if result.status == db.RESULT_VIOLATION else ocr.report_confidence
@@ -625,6 +688,9 @@ class RecognizerWorker(QThread):
                               result=result, confidence=avg, crop_path=crop_path, snapshot_path=snap,
                               vehicle_path=vehicle_path, track_id=track.track_id, vehicle_color=color,
                               position=pos, source=source, verify=verify)
+        track.report = _Report(scan_id, f"#{track.track_id} {plates.display(text)}",
+                               RESULT_BGR.get(result.status, READING_BGR), track.best_crop_score,
+                               crop_path, vehicle_path, snap)
         log.info("Track #%d: %s (%s, %d reads, avg %.0f%%)%s%s", track.track_id, text, result.status,
                  lead.reads, avg * 100, f" in {source}" if source else "",
                  f" [decoded from {lead.text}, {dec.best.posterior:.0%} sure]"
@@ -644,6 +710,8 @@ class RecognizerWorker(QThread):
         """The vehicle left the picture."""
         if not track.emitted_key:
             self._decide(conn, track, final=True)
+        elif isinstance(track.report, _Report) and track.best_crop_score > track.report.score:
+            self._improve_pictures(conn, track, track.report)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
             self._health.plate_seen(bool(track.emitted_key))
             self._health.plate_width(track.max_width)
@@ -664,6 +732,27 @@ class RecognizerWorker(QThread):
         log.info("Track #%d: plate not readable. OCR saw: %s", track.track_id,
                  ", ".join(track.unmatched[:6]) or "nothing")
         self.unreadable.emit(NoPlateEvent(scan_id, ts, snap, track.unmatched[:6], source))
+
+    def _improve_pictures(self, conn, track: Track, r: _Report) -> None:
+        """The vehicle came closer after it was reported: give its scan the pictures of
+        that better frame (the same files, so the Logs and exports show them too)."""
+        frame, box, crop = track.best_frame, track.best_frame_box, track.best_crop
+        if frame is None or box is None or crop is None:
+            return
+        vehicle = identify.crop(frame, identify.vehicle_box(box, frame.shape))
+        color = identify.vehicle_color(frame, box)
+        pos = identify.position(box, frame.shape)
+        if r.crop_path:
+            self._write_jpeg(crop, Path(r.crop_path))
+        if r.vehicle_path:
+            self._write_jpeg(vehicle, Path(r.vehicle_path), 640, 88)
+        if r.snapshot_path:
+            img = identify.locator(frame, box, track.best_frame_others, r.bgr, r.label)
+            self._write_jpeg(img, Path(r.snapshot_path), self.cfg.scan.snapshot_max_width, 85)
+        db.update_scan_looks(conn, r.scan_id, color, pos)
+        r.score = track.best_crop_score
+        log.info("Track #%d: pictures of scan %d replaced by a closer look", track.track_id, r.scan_id)
+        self.pictures_updated.emit(PicturesUpdate(r.scan_id, vehicle, crop, r.snapshot_path, color, pos))
 
     def _push_overlays(self, roi: tuple[int, int, int, int] | None) -> None:
         if self.capture is None:

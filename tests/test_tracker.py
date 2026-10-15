@@ -66,3 +66,20 @@ def test_merge_proposals_adds_only_uncovered_classical_boxes():
     merged = merge_proposals(neural, [(105, 105, 170, 50), (600, 400, 180, 60)])
     assert [m.box for m in merged] == [(100, 100, 180, 60), (600, 400, 180, 60)]
     assert merged[1].neural is False
+
+
+def test_a_close_up_read_outweighs_far_away_misreads():
+    t = Track(1, (0, 0, 10, 10), 0.0, 0.0, max_width=160, layouts=LAYOUTS)
+    t.add_vote("WBC1234", "WBC1234", 0.9, [0.9] * 7, width=50)   # far away, misread
+    t.add_vote("WBC1234", "WBC1234", 0.9, [0.9] * 7, width=60)
+    t.add_vote("NBC1234", "NBC1234", 0.9, [0.9] * 7, width=160)  # close up
+    lead = t.leader()
+    assert lead.text == "NBC1234"
+    # The confidence is the plain average: only 1 of 3 reads backs the first character.
+    assert abs(lead.score / lead.reads - (0.3 + 6 * 0.9) / 7) < 1e-9
+
+
+def test_reads_of_unknown_size_count_fully():
+    t = Track(1, (0, 0, 10, 10), 0.0, 0.0, max_width=160, layouts=LAYOUTS)
+    assert t.size_weight(0) == 1.0
+    assert t.size_weight(160) == 1.0 and t.size_weight(80) == 0.5 and t.size_weight(10) == 0.25

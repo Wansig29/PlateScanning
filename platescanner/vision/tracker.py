@@ -63,31 +63,51 @@ class Track:
     emitted_key: str | None = None   # plate key already reported for this vehicle
     emitted_text: str | None = None  # the plate text reported (may be a registered plate decoded from the reads)
     trail: list[tuple[int, int]] = field(default_factory=list)
+    sizes: list[tuple[float, int]] = field(default_factory=list)  # (time, plate width) of recent frames
     status: str | None = None        # lookup result of the reported plate (for the overlay)
-    # Log-probabilities of every character at every position, summed over the reads.
-    log_sum: np.ndarray | None = None
-    dist_reads: int = 0
+    report: object | None = None     # the scan saved for this vehicle, to give it a better picture later
+    widths: list[int] = field(default_factory=list)  # plate width (px) of each read, parallel to reads
+    # Log-probabilities of every character at every position, one per read, with its plate width.
+    dists: list[tuple[np.ndarray, int]] = field(default_factory=list)
 
     def predicted(self, now: float) -> Box:
         dt = now - self.last_seen
         x, y, w, h = self.box
         return int(x + self.velocity[0] * dt), int(y + self.velocity[1] * dt), w, h
 
+    def growing(self, now: float, window: float = 0.4) -> bool:
+        """Is the plate still getting bigger (the vehicle driving up to the camera)?
+
+        Compared with the oldest size within the last `window` seconds, so a vehicle
+        that stops is no longer "growing" a moment later, whatever it did before."""
+        recent = [w for t, w in self.sizes if now - t <= window]
+        return len(recent) >= 2 and self.box[2] > 1.05 * recent[0]
+
     def add_vote(self, text: str, raw: str, conf: float, char_probs: list[float] | None = None,
-                 dist: np.ndarray | None = None) -> None:
+                 dist: np.ndarray | None = None, width: int = 0) -> None:
         """Record one layout-corrected OCR read of this vehicle's plate.
 
-        dist: the OCR's full character distribution for this read, if it has one."""
+        dist: the OCR's full character distribution for this read, if it has one.
+        width: the plate's width in px when it was read (0 = unknown)."""
         if dist is not None:
             lp = decode.log_dist(dist)
-            if self.log_sum is None or self.log_sum.shape != lp.shape:
-                self.log_sum, self.dist_reads = lp, 1
-            else:
-                self.log_sum, self.dist_reads = self.log_sum + lp, self.dist_reads + 1
+            if self.dists and self.dists[0][0].shape != lp.shape:
+                self.dists.clear()
+            self.dists.append((lp, width))
         probs = list(char_probs or [])
         if len(probs) != len(text):
             probs = [conf] * len(text)
         self.reads.append((text, raw, conf, probs))
+        self.widths.append(width)
+
+    def size_weight(self, width: int) -> float:
+        """How much a read counts, by how big the plate was in it (0.25..1).
+
+        A plate read at half the size it reached had half the pixels per
+        character: when it disagrees with a close-up read, the close-up wins."""
+        if width <= 0 or self.max_width <= 0:
+            return 1.0
+        return min(1.0, max(0.25, width / self.max_width))
 
     def leader(self) -> Vote | None:
         """Character-level consensus over every read of this vehicle.
@@ -99,30 +119,36 @@ class Track:
         if not self.reads:
             return None
         groups: dict[int, list] = {}
-        for r in self.reads:
-            groups.setdefault(len(r[0]), []).append(r)
-        group = max(groups.values(), key=lambda g: sum(r[2] for r in g))
+        for r, w in zip(self.reads, self.widths):
+            groups.setdefault(len(r[0]), []).append((r, self.size_weight(w)))
+        group = max(groups.values(), key=lambda g: sum(r[2] * sw for r, sw in g))
         n = len(group)
         chars, shares, wins = [], [], []
-        for i in range(len(group[0][0])):
+        for i in range(len(group[0][0][0])):
+            # Closer looks decide the character; the confidence stays the plain average.
             weight: dict[str, float] = {}
-            for text, _, _, probs in group:
-                weight[text[i]] = weight.get(text[i], 0.0) + probs[i]
+            plain: dict[str, float] = {}
+            for (text, _, _, probs), sw in group:
+                weight[text[i]] = weight.get(text[i], 0.0) + probs[i] * sw
+                plain[text[i]] = plain.get(text[i], 0.0) + probs[i]
             ch = max(weight, key=weight.get)
             chars.append(ch)
             shares.append(weight[ch] / max(1e-9, sum(weight.values())))
-            wins.append(weight[ch] / n)
+            wins.append(plain[ch] / n)
         text = "".join(chars)
         text = plates.best_layout_match(text, self.layouts) or text if self.layouts else text
-        best = max(group, key=lambda r: r[2])
+        best = max((r for r, _ in group), key=lambda r: r[2])
         conf = sum(wins) / len(wins)
         return Vote(text, conf * n, n, best[2], best[1], min(shares) * (n / len(self.reads)))
 
     def distribution(self, temperature: float = 1.0) -> np.ndarray | None:
         """Everything the OCR believed about this plate, over all reads (positions x alphabet)."""
-        if self.log_sum is None:
+        if not self.dists:
             return None
-        return decode.combine(self.log_sum, self.dist_reads, temperature)
+        # Weighted mean over the reads (closer looks count more), worth as many reads as were taken.
+        weights = np.array([self.size_weight(w) for _, w in self.dists])
+        mean = sum(sw * lp for sw, (lp, _) in zip(weights, self.dists)) / weights.sum()
+        return decode.combine(mean * len(self.dists), len(self.dists), temperature)
 
     def margin(self) -> float:
         """How unanimous the consensus is (0..1): its weakest character's share of
@@ -188,6 +214,8 @@ class PlateTracker:
             cx, cy = center(boxes[i])
             t.trail.append((int(cx), int(cy)))
             del t.trail[:-30]
+            t.sizes.append((now, boxes[i][2]))
+            del t.sizes[:-30]
 
         ended = [t for t in self.tracks.values() if now - t.last_seen > self.max_age]
         for t in ended:
