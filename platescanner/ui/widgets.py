@@ -1065,6 +1065,14 @@ class CapturedPlatePanel(QFrame):
         if self._cards:
             self._highlight(self._cards[-1].scan_id)
 
+    def clear(self) -> None:
+        for card in self._cards:
+            self.list.removeWidget(card)
+            card.deleteLater()
+        self._cards.clear()
+        self.empty.show()
+        self.count.setText("")
+
     def _highlight(self, scan_id: int) -> None:
         for card in self._cards:
             card.set_selected(card.scan_id == scan_id)
@@ -1121,6 +1129,10 @@ class LogsPanel(QFrame):
 
     AWAITING = "⚠ NOT ACKNOWLEDGED"
     show_ack = True  # False when acknowledgement is not required: no "not acknowledged" mark
+
+    def clear(self) -> None:
+        self.table.setRowCount(0)
+        self._update_count()
 
     def mark_acknowledged(self, scan_id: int, ack: str) -> None:
         for row in range(self.table.rowCount()):

@@ -1,20 +1,26 @@
 """Browse the local copy of psau-security's vehicles and violations."""
 from __future__ import annotations
 
+import logging
 import sqlite3
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont
 from PySide6.QtWidgets import (
-    QAbstractItemView, QDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-    QScrollArea, QSplitter, QTableWidget, QTableWidgetItem, QTabWidget, QVBoxLayout, QWidget,
+    QAbstractItemView, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
+    QLineEdit, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
+    QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .. import db, plates, timefmt
+from ..config import Config
 from . import theme
 from .widgets import Avatar, ImageSlot, fit_to_screen, fmt_date, load_pixmap, panel, suspension_text
+
+log = logging.getLogger(__name__)
 
 VEHICLE_HEADERS = ["PLATE", "OWNER", "VEHICLE", "REGISTRATION", "STATUS"]
 VIOLATION_HEADERS = ["PLATE", "OWNER", "VIOLATION", "STATUS", "SUSPENSION", "DATE"]
@@ -97,11 +103,17 @@ def _label(text: str, name: str | None = None, wrap: bool = False) -> QLabel:
 
 
 class DatabaseWindow(QDialog):
-    """Read-only, searchable view of the synced records, with a detail card per vehicle."""
+    """Read-only, searchable view of the synced records, with a detail card per vehicle.
 
-    def __init__(self, conn: sqlite3.Connection, parent=None):
+    Also where the local database is backed up by hand and restored from a backup.
+    """
+
+    restored = Signal()  # the whole database was replaced: everything shown must reload
+
+    def __init__(self, conn: sqlite3.Connection, cfg: Config, parent=None):
         super().__init__(parent)
         self.conn = conn
+        self.cfg = cfg
         self.setWindowTitle("Local database: PSAU Gate Plate Scanner")
         fit_to_screen(self, 1240, 720)
         self._vehicles: list[dict[str, Any]] = []
@@ -129,6 +141,15 @@ class DatabaseWindow(QDialog):
         self.search.setMinimumWidth(360)
         self.search.textChanged.connect(self._apply_filter)
         top.addWidget(self.search)
+        backup_btn = QPushButton("Back up now")
+        backup_btn.setToolTip("Save a copy of vehicles, violations and the scan log to the backups folder.\n"
+                              "A copy is also made automatically before every sync.")
+        backup_btn.clicked.connect(self._backup_now)
+        restore_btn = QPushButton("Restore backup…")
+        restore_btn.setToolTip("Replace the local database with a saved backup")
+        restore_btn.clicked.connect(self._restore)
+        top.addWidget(backup_btn)
+        top.addWidget(restore_btn)
         lay.addLayout(top)
 
         split = QSplitter(Qt.Orientation.Horizontal)
@@ -205,6 +226,47 @@ class DatabaseWindow(QDialog):
         _fill(self.violation_table, rows)
         self._apply_filter()
         self._show_placeholder()
+
+    # --- backup / restore -------------------------------------------------------
+
+    def _backup_now(self) -> None:
+        try:
+            path = db.backup(self.conn, self.cfg.backups_dir, max(self.cfg.sync.backup_keep, 1))
+        except Exception as e:  # noqa: BLE001
+            log.exception("Manual backup failed")
+            QMessageBox.warning(self, "Back up", f"The backup failed:\n{e}")
+            return
+        QMessageBox.information(self, "Back up", f"Backed up to:\n{path}")
+
+    def _restore(self) -> None:
+        self.cfg.backups_dir.mkdir(parents=True, exist_ok=True)
+        name, _ = QFileDialog.getOpenFileName(self, "Restore backup", str(self.cfg.backups_dir),
+                                              "PlateScanner backups (*.db);;All files (*)")
+        if not name:
+            return
+        ask = QMessageBox.question(
+            self, "Restore backup",
+            f"Replace the local database with {Path(name).name}?\n\n"
+            "Vehicles, violations and the scan log will be exactly as they were in that backup; "
+            "scans made since then are removed. A copy of the current data is saved first, "
+            "so this can be undone by restoring that copy.\n\n"
+            "Vehicles and violations update again at the next sync.")
+        if ask != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            safety = db.restore(self.conn, Path(name), self.cfg.backups_dir, self.cfg.sync.backup_keep)
+        except ValueError as e:
+            QMessageBox.warning(self, "Restore backup", str(e))
+            return
+        except Exception as e:  # noqa: BLE001
+            log.exception("Restore failed")
+            QMessageBox.warning(self, "Restore backup", f"The restore failed:\n{e}")
+            return
+        log.info("Restored %s (previous data saved to %s)", name, safety)
+        self.refresh()
+        self.restored.emit()
+        QMessageBox.information(self, "Restore backup",
+                                f"Restored {Path(name).name}.\n\nThe data before the restore was saved to:\n{safety}")
 
     # --- search -----------------------------------------------------------------
 

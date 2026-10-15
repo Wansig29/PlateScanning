@@ -155,3 +155,66 @@ def test_permanent_revoke_clears_when_server_lifts_it_and_survives_embedded_copy
     assert db.lookup(conn, "NBC1234").vehicle["permanently_revoked"] == 1
     sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan", owner_permanently_revoked=False)], []), conn, force_full=True)
     assert all(v["violation_type"] != "Permanently revoked sticker" for v in db.lookup(conn, "NBC1234").violations)
+
+
+def test_every_sync_backs_up_the_database_first(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    conn.execute("INSERT INTO sync_state (key, value) VALUES ('marker', 'before')")
+    conn.commit()
+    sync.run_sync(cfg, FakeClient([vehicle(1, "NBC 1234", "Juan")], []), conn)
+    backups = list(cfg.backups_dir.glob("plates-*.db"))
+    assert len(backups) == 1
+    copy = db.connect(backups[0])
+    assert db.get_state(copy, "marker") == "before"  # taken before the sync wrote anything
+    assert copy.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0] == 0
+    copy.close()
+
+
+def test_backups_keep_only_the_newest(tmp_path):
+    cfg = _cfg(tmp_path)
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    cfg.backups_dir.mkdir(parents=True)
+    for day in range(1, 5):
+        (cfg.backups_dir / f"plates-2026010{day}-000000.db").write_bytes(b"")
+    db.backup(conn, cfg.backups_dir, keep=3)
+    names = sorted(p.name for p in cfg.backups_dir.glob("plates-*.db"))
+    assert len(names) == 3 and names[0] == "plates-20260103-000000.db"
+    assert db.backup(conn, cfg.backups_dir, keep=0) is None  # 0 = off
+
+
+def test_a_failed_backup_does_not_stop_the_sync(tmp_path, monkeypatch):
+    def broken(*_a, **_k):
+        raise OSError("disk full")
+    monkeypatch.setattr(db, "backup", broken)
+    _, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [])
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_restore_brings_back_a_backup_and_saves_the_current_data_first(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [])
+    saved = db.backup(conn, cfg.backups_dir, keep=5)
+    conn.execute("DELETE FROM vehicles")
+    conn.commit()
+    other = db.connect(cfg.db_path)  # e.g. the recognizer's connection
+    safety = db.restore(conn, saved, cfg.backups_dir, keep=5)
+    assert db.lookup(other, "NBC1234").status == db.RESULT_CLEAR  # visible without reconnecting
+    copy = db.connect(safety)
+    assert copy.execute("SELECT COUNT(*) FROM vehicles").fetchone()[0] == 0  # the pre-restore state
+    copy.close()
+
+
+def test_restore_refuses_files_that_are_not_backups(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [])
+    junk = tmp_path / "junk.db"
+    junk.write_bytes(b"not a database at all" * 100)
+    foreign = tmp_path / "foreign.db"
+    f = db.connect(foreign)
+    f.execute("CREATE TABLE other (x)")
+    f.close()
+    for bad in (junk, foreign, cfg.db_path):
+        with pytest.raises(ValueError):
+            db.restore(conn, bad, cfg.backups_dir, keep=5)
+    assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR

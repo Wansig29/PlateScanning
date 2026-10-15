@@ -129,6 +129,67 @@ def connect(path: Path | str) -> sqlite3.Connection:
     return conn
 
 
+def backup(conn: sqlite3.Connection, backups_dir: Path, keep: int) -> Path | None:
+    """Copy the whole database to backups_dir/plates-YYYYMMDD-HHMMSS.db; keep the newest `keep`.
+
+    SQLite's online backup is consistent even while other threads write (WAL), unlike a file
+    copy. It is written under a temporary name first, so a crash never leaves a half backup.
+    keep <= 0 turns backups off.
+    """
+    if keep <= 0:
+        return None
+    backups_dir.mkdir(parents=True, exist_ok=True)
+    stamp = f"plates-{datetime.now():%Y%m%d-%H%M%S}"
+    dest, n = backups_dir / f"{stamp}.db", 1
+    while dest.exists():  # two backups in one second (e.g. a restore right after one) never share a file
+        n += 1
+        dest = backups_dir / f"{stamp}_{n}.db"  # "_" sorts after ".", so rotation keeps the order
+    tmp = dest.with_suffix(".db.part")
+    out = sqlite3.connect(str(tmp))
+    try:
+        conn.backup(out)
+    finally:
+        out.close()
+    tmp.replace(dest)
+    for old in sorted(backups_dir.glob("plates-*.db"))[:-keep]:
+        old.unlink(missing_ok=True)
+    return dest
+
+
+def restore(conn: sqlite3.Connection, source: Path, backups_dir: Path, keep: int) -> Path:
+    """Replace the whole database with a backup file; returns the copy taken of it first.
+
+    The current data is always backed up before it is overwritten (even if backups are off),
+    so a restore can itself be undone. Raises ValueError if `source` isn't a usable backup.
+    Other connections see the restored data at once, so the scanner needs no restart.
+    """
+    source = Path(source)
+    if source.resolve() == Path(conn.execute("PRAGMA database_list").fetchone()[2]).resolve():
+        raise ValueError("That is the database in use, not a backup.")
+    try:
+        # immutable: read the file as is, without creating -wal/-shm files next to it.
+        src = sqlite3.connect(source.resolve().as_uri() + "?immutable=1", uri=True)
+    except sqlite3.Error as e:
+        raise ValueError(f"Can't open {source.name}: {e}") from e
+    try:
+        try:
+            ok = src.execute("PRAGMA quick_check").fetchone()[0] == "ok"
+            tables = {r[0] for r in src.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.DatabaseError as e:
+            raise ValueError(f"{source.name} is not a PlateScanner database.") from e
+        if not {"vehicles", "violations", "scan_log"} <= tables:
+            raise ValueError(f"{source.name} is not a PlateScanner database.")
+        if not ok:
+            raise ValueError(f"{source.name} is damaged and can't be restored.")
+        safety = backup(conn, backups_dir, max(keep, 1) + 1)  # +1: never rotate out a backup to make room
+        src.backup(conn)
+    finally:
+        src.close()
+    init_schema(conn)  # a backup from an older version may lack newer columns
+    conn.commit()
+    return safety
+
+
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     if "permanently_revoked" not in {r["name"] for r in conn.execute("PRAGMA table_info(vehicles)")}:
