@@ -91,6 +91,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `scan.reminder_seconds` | Repeat the alarm this often while a violation is unacknowledged (0 = alert once only) |
 | `scan.bring_to_front` | Bring the app to the front on every violation alert |
 | `sync.interval_hours` / `full_resync_hours` | Sync every 3 h: vehicles as a delta, violations always as the complete list of unsettled ones, so a violation deleted online stops alerting at the next sync (nothing is written when nothing changed). A full re-download of the vehicles every 24 h drops vehicles deleted online without a `removed` record |
+| `sync.backup_keep` | Before every sync (clicked or timed), `plates.db` (vehicles, violations **and the scan log**) is copied to `backups\plates-YYYYMMDD-HHMMSS.db`; the newest 20 are kept. Scans are never uploaded, so this is their only copy besides the laptop's own. **Database → Back up now** makes one by hand; **Database → Restore backup…** loads one back (the current data is backed up first, so a restore can be undone, and scanning keeps running). 0 turns the automatic backups off |
 
 Keyboard: **F11** toggles full screen. `--fullscreen` starts the app in full screen.
 

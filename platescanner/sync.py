@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -9,6 +10,8 @@ from typing import Any, Callable
 from . import db, mapping
 from .api import ApiClient, ApiError, AuthError
 from .config import Config
+
+log = logging.getLogger(__name__)
 
 # Re-request a small window before the last sync to absorb clock skew
 # between the laptop and the server; upserts make the overlap harmless.
@@ -48,6 +51,14 @@ def _photo_path(photos_dir: Path, url: str) -> Path:
 def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
              progress: Callable[[str], None] = lambda _m: None) -> dict[str, Any]:
     """One sync pass. Raises api.ApiError / AuthError on failure (nothing is written)."""
+    # Back up first, whether the sync is clicked or timed. The scan log exists only on this
+    # laptop, so this copy is its only safety net. A failed backup must not stop the sync.
+    progress("Backing up the local database…")
+    try:
+        db.backup(conn, cfg.backups_dir, cfg.sync.backup_keep)
+    except Exception:  # noqa: BLE001
+        log.exception("Backup before sync failed")
+
     now = datetime.now(timezone.utc)
     last_sync = _parse_iso(db.get_state(conn, "last_sync_at"))
     last_full = _parse_iso(db.get_state(conn, "last_full_sync_at"))
