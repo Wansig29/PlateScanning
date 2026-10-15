@@ -398,8 +398,17 @@ def test_a_violation_alert_is_kept_when_the_read_is_corrected():
     conn.close()
 
 
-def _parked_car_with_a_gap(engine, gap, cooldown=45.0):
-    """A car standing still whose plate the detector misses for `gap` seconds in the middle."""
+def _car_image(bgr=(128, 128, 128)):
+    image = np.full((200, 400, 3), 128, np.uint8)
+    image[:78, 100:300] = bgr  # the body panel above the plate, where its colour is measured
+    return image
+
+
+def _parked_car_with_a_gap(engine, gap, cooldown=45.0, moved_in_gap=None, second_car_bgr=None):
+    """A car standing still whose plate the detector misses for `gap` seconds in the middle.
+
+    moved_in_gap: a vehicle's motion box (whole picture) seen during the gap.
+    second_car_bgr: the body colour seen after the gap (a different car in the same spot)."""
     w = worker(engine)
     w.cfg.scan.plate_cooldown_seconds = cooldown
     conn = db.connect(w.cfg.db_path)
@@ -410,13 +419,19 @@ def _parked_car_with_a_gap(engine, gap, cooldown=45.0):
     conn.commit()
     got = []
     w.scanned.connect(got.append)
-    image = np.full((200, 400, 3), 128, np.uint8)
+    slot = FrameSlot()
     t = 0.0
     for part in range(2):
+        image = _car_image((200, 60, 20) if part == 0 or second_car_bgr is None else second_car_bgr)
         for i in range(20):
             w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, t), [PlateBox((150, 80, 100, 30), 0.9)])
             t += 0.05
         w._expire(conn, t + gap)  # the plate is missed long enough for its track to end
+        if part == 0 and moved_in_gap is not None:
+            # The camera saw it (on a frame the recognizer skipped), then a quiet frame was handed over.
+            slot.put(image, (0, 0, 400, 200), True, t, moved_in_gap)
+            slot.put(image, (0, 0, 400, 200), False, t + 0.05)
+            w._forget_parked_where_moved(slot.get_newer(0, 0.1))
         t += gap
         if isinstance(engine, CorrectedReadEngine):
             engine.wrong_reads = engine.reads  # from now on the OCR reads it the other way
@@ -443,4 +458,29 @@ def test_after_the_hold_a_car_in_the_same_spot_is_a_new_vehicle():
     _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=12.0)
     assert [s.read.text for s in got] == ["CEX907", "REY207"] and got[1].replaces is None
     assert len(db.recent_scans(conn)) == 2
+    conn.close()
+
+
+def test_a_car_driving_over_the_spot_makes_the_next_car_there_a_new_vehicle():
+    # Car A left and car B pulled into the same spot: the motion detector saw a vehicle move there.
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0,
+                                          moved_in_gap=(100, 20, 250, 150))
+    assert [s.read.text for s in got] == ["CEX907", "REY207"] and got[1].replaces is None
+    assert len(db.recent_scans(conn)) == 2
+    conn.close()
+
+
+def test_motion_elsewhere_does_not_split_a_parked_car():
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0,
+                                          moved_in_gap=(0, 0, 60, 60))  # another lane
+    assert got[1].replaces == got[0].scan_id
+    assert len(db.recent_scans(conn)) == 1
+    conn.close()
+
+
+def test_a_different_coloured_car_in_the_same_spot_is_a_new_vehicle():
+    _, conn, got = _parked_car_with_a_gap(CorrectedReadEngine(wrong_reads=10 ** 6), gap=1.0,
+                                          second_car_bgr=(30, 30, 220))  # blue car, then a red one
+    assert [s.color for s in got] == ["Blue", "Red"]
+    assert got[1].replaces is None and len(db.recent_scans(conn)) == 2
     conn.close()

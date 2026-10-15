@@ -20,7 +20,7 @@ import sqlite3
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -135,20 +135,30 @@ class _Frame:
     motion: bool
     ts: float
     motion_box: tuple[int, int, int, int] | None = None  # the moving vehicle, in ROI coordinates
+    # Where a vehicle moved since the previous frame handed over, dropped frames included
+    # (whole-picture coordinates).
+    moved: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 class FrameSlot:
     """Holds only the newest camera frame (shared by both threads)."""
 
+    MAX_MOVED = 64  # vehicle movements kept between two handed-over frames
+
     def __init__(self):
         self._cond = threading.Condition()
         self._frame: _Frame | None = None
         self._seq = 0
+        self._moved: list[tuple[int, int, int, int]] = []
 
     def put(self, image: np.ndarray, roi: tuple[int, int, int, int], motion: bool, ts: float,
             motion_box: tuple[int, int, int, int] | None = None) -> None:
         with self._cond:
             self._seq += 1
+            if motion_box is not None:
+                # Kept even if this frame is dropped: a car driving off must not go unnoticed.
+                self._moved.append((motion_box[0] + roi[0], motion_box[1] + roi[1], motion_box[2], motion_box[3]))
+                del self._moved[:-self.MAX_MOVED]
             self._frame = _Frame(self._seq, image, roi, motion, ts, motion_box)
             self._cond.notify_all()
 
@@ -157,7 +167,10 @@ class FrameSlot:
             if self._frame is None or self._frame.seq <= seq:
                 self._cond.wait(timeout)
             f = self._frame
-            return f if f is not None and f.seq > seq else None
+            if f is None or f.seq <= seq:
+                return None
+            f.moved, self._moved = self._moved, []
+            return f
 
 
 def plate_size_text(width_px: int, min_width_px: float) -> str:
@@ -435,8 +448,8 @@ class RecognizerWorker(QThread):
         # the guard is still alerted, the row just isn't in the log.
         self._unsaved_ids = itertools.count(-1, -1)
         # Reported vehicles that stood still until their track ended:
-        # (plate box, when, scan id, result, plate key reported).
-        self._parked: list[tuple[tuple[int, int, int, int], float, int, str, str]] = []
+        # (plate box, when, scan id, result, plate key reported, body colour).
+        self._parked: list[tuple[tuple[int, int, int, int], float, int, str, str, str | None]] = []
 
     def _source(self, track: Track) -> str | None:
         # In a video, frame timestamps are the time into the video.
@@ -551,6 +564,7 @@ class RecognizerWorker(QThread):
                     self._expire(conn, time.monotonic())
                     continue
                 seq = f.seq
+                self._forget_parked_where_moved(f)
                 # Idle scene: skip the detector, but still look about once a
                 # second in case a vehicle crept in without tripping the motion gate.
                 # Only real plates keep it busy, not the classical finder's static
@@ -695,20 +709,37 @@ class RecognizerWorker(QThread):
         xs, ys = [p[0] for p in track.trail], [p[1] for p in track.trail]
         if max(max(xs) - min(xs), max(ys) - min(ys)) > 0.5 * max(1, track.box[2]):
             return  # it was driving: it left
-        self._parked.append((track.box, track.last_seen, track.scan_id, track.status or "", track.emitted_key or ""))
+        color = None
+        if track.best_frame is not None and track.best_frame_box is not None:
+            color = identify.vehicle_color(track.best_frame, track.best_frame_box)
+        self._parked.append((track.box, track.last_seen, track.scan_id, track.status or "",
+                             track.emitted_key or "", color))
 
-    def _same_parked_vehicle(self, track: Track) -> tuple[int, str, str] | None:
-        """The earlier scan (id, result, plate key) of the standing vehicle this new track is, if any.
-        Used once."""
+    def _forget_parked_where_moved(self, f: "_Frame") -> None:
+        """A vehicle moved over a spot where a reported car stood: that car may have driven off
+        and another taken its place, so whatever is seen there next is a new vehicle."""
+        if not self._parked or not f.moved:
+            return
+        rx, ry = f.roi[0], f.roi[1]
+        moved = [(x - rx, y - ry, w, h) for x, y, w, h in f.moved]  # into the reading area, like the tracks
+        self._parked = [p for p in self._parked if all(overlap_of_smaller(p[0], m) < 0.3 for m in moved)]
+
+    def _same_parked_vehicle(self, track: Track, color: str | None) -> tuple[int, str, str] | None:
+        """The earlier scan (id, result, plate key) of the standing vehicle this new track is, if any:
+        seen again in the same spot, within scan.same_vehicle_seconds, with no vehicle moving there
+        in between (see _forget_parked_where_moved) and not a different colour. Used once."""
         hold = self.cfg.scan.same_vehicle_seconds
         self._parked = [p for p in self._parked if track.first_seen - p[1] <= hold]
         (fx, fy) = track.trail[0] if track.trail else center(track.box)
         for p in self._parked:
-            box = p[0]
+            box, earlier_color = p[0], p[5]
             cx, cy = center(box)
-            if iou(box, track.box) >= 0.3 or ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 <= 0.5 * box[2]:
-                self._parked.remove(p)
-                return p[2], p[3], p[4]
+            if not (iou(box, track.box) >= 0.3 or ((fx - cx) ** 2 + (fy - cy) ** 2) ** 0.5 <= 0.5 * box[2]):
+                continue
+            if color and earlier_color and color != earlier_color:
+                continue  # another car in the same spot
+            self._parked.remove(p)
+            return p[2], p[3], p[4]
         return None
 
     def _report_in_view(self) -> None:
@@ -788,7 +819,7 @@ class RecognizerWorker(QThread):
         # A corrected read of a vehicle already reported replaces that report, so one car stays one
         # card. Except after a violation alert: the alert was raised, so its record is kept.
         replaces = track.scan_id if track.emitted_key and track.status != db.RESULT_VIOLATION else None
-        if not track.emitted_key and (parked := self._same_parked_vehicle(track)) is not None:
+        if not track.emitted_key and (parked := self._same_parked_vehicle(track, color)) is not None:
             # The vehicle standing here was already reported; its track was only broken for a moment.
             track.scan_id, earlier, earlier_key = parked
             if earlier_key == key and earlier == result.status:
