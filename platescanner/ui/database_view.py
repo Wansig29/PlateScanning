@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtGui import QColor, QFont
+from PySide6.QtCore import QSize, Qt, QUrl, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
@@ -238,7 +238,19 @@ class DatabaseWindow(QDialog):
             log.exception("Manual backup failed")
             QMessageBox.warning(self, "Back up", f"The backup failed:\n{e}")
             return
-        QMessageBox.information(self, "Back up", f"Backed up to:\n{path}")
+        self._backup_done("Back up", f"Backed up as {path.name}, in the backups folder.")
+
+    def _backup_done(self, title: str, text: str) -> None:
+        """A success message naming files only (a full path wraps badly), with a way to the folder."""
+        box = QMessageBox(QMessageBox.Icon.Information, title, text, QMessageBox.StandardButton.Ok, self)
+        folder_btn = box.addButton("Open backups folder", QMessageBox.ButtonRole.ActionRole)
+        box.exec()
+        if box.clickedButton() is folder_btn:
+            self._open_backups_folder()
+
+    def _open_backups_folder(self) -> None:
+        self.cfg.backups_dir.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.cfg.backups_dir)))
 
     def _restore(self) -> None:
         self.cfg.backups_dir.mkdir(parents=True, exist_ok=True)
@@ -267,8 +279,9 @@ class DatabaseWindow(QDialog):
         log.info("Restored %s (previous data saved to %s)", name, safety)
         self.refresh()
         self.restored.emit()
-        QMessageBox.information(self, "Restore backup",
-                                f"Restored {Path(name).name}.\n\nThe data before the restore was saved to:\n{safety}")
+        self._backup_done("Restore backup",
+                          f"Restored {Path(name).name}.\n\nThe data from before the restore was saved as "
+                          f"{safety.name}, in the backups folder. Restore that file to undo this.")
 
     # --- search -----------------------------------------------------------------
 

@@ -153,3 +153,21 @@ def test_restoring_a_backup_reloads_the_window_from_it(window):
     app.processEvents()
     assert w.logs.table.rowCount() == 0                               # the scan made after the backup is gone
     w.db_window.hide()
+
+
+def test_backup_message_names_the_file_and_opens_the_folder(window, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    w, app = window
+    w._open_database()
+    shown, opened = [], []
+
+    def exec_(box):
+        shown.append(box.text())
+        next(b for b in box.buttons() if b.text() == "Open backups folder").click()
+    monkeypatch.setattr(QMessageBox, "exec", exec_)
+    monkeypatch.setattr(w.db_window, "_open_backups_folder", lambda: opened.append(1))
+    w.db_window._backup_now()
+    name = next(w.cfg.backups_dir.glob("plates-*.db")).name
+    assert name in shown[0] and "\\" not in shown[0]   # the file name, not a path that wraps
+    assert opened == [1]
+    w.db_window.hide()
