@@ -138,3 +138,58 @@ def test_check_for_update_never_raises_on_unexpected_replies(monkeypatch, body):
     r._content = body
     monkeypatch.setattr(requests, "get", lambda *a, **k: r)
     assert updates.check_for_update("1.0.0") is None
+
+
+class _Flaky:
+    """Fake GitHub that stalls after `cut` bytes on the first `stalls` requests, honouring Range if `ranges`."""
+
+    def __init__(self, body: bytes, cut: int, stalls: int = 1, ranges: bool = True):
+        self.body, self.cut, self.stalls, self.ranges = body, cut, stalls, ranges
+        self.requests: list[dict] = []
+
+    def get(self, url, *a, headers=None, **k):
+        headers = headers or {}
+        self.requests.append(headers)
+        start = int(headers["Range"][6:-1]) if self.ranges and "Range" in headers else 0
+        data = self.body[start:]
+        stall = len(self.requests) <= self.stalls
+        r = _Resp(chunks=[data[: self.cut]] if stall else [data])
+        r.status_code = 206 if start else 200
+        r.headers = {"Content-Length": str(len(data))}
+        if stall:
+            def chunks(_n, first=data[: self.cut]):
+                yield first
+                raise updates.requests.ConnectionError("Read timed out.")
+            r.iter_content = chunks
+        return r
+
+
+def test_a_stalled_download_resumes_where_it_stopped(monkeypatch, tmp_path):
+    body = bytes(range(256)) * 40
+    server = _Flaky(body, cut=3000, stalls=2)
+    monkeypatch.setattr(updates.requests, "get", server.get)
+    monkeypatch.setattr(updates.time, "sleep", lambda s: None)
+    seen = []
+    path = updates.download_installer(_rel(sha=hashlib.sha256(body).hexdigest()), tmp_path,
+                                      lambda done, total: seen.append((done, total)))
+    assert path.read_bytes() == body
+    assert server.requests == [{}, {"Range": "bytes=3000-"}, {"Range": "bytes=6000-"}]
+    assert seen[-1] == (len(body), len(body))      # the progress keeps the full size across resumes
+
+
+def test_a_server_that_ignores_resume_starts_over_cleanly(monkeypatch, tmp_path):
+    body = b"x" * 5000 + b"y" * 5000
+    monkeypatch.setattr(updates.requests, "get", _Flaky(body, cut=4000, ranges=False).get)
+    monkeypatch.setattr(updates.time, "sleep", lambda s: None)
+    path = updates.download_installer(_rel(sha=hashlib.sha256(body).hexdigest()), tmp_path)
+    assert path.read_bytes() == body
+
+
+def test_a_download_that_never_recovers_fails_and_leaves_nothing(monkeypatch, tmp_path):
+    server = _Flaky(b"z" * 10000, cut=100, stalls=99)
+    monkeypatch.setattr(updates.requests, "get", server.get)
+    monkeypatch.setattr(updates.time, "sleep", lambda s: None)
+    with pytest.raises(updates.requests.RequestException):
+        updates.download_installer(_rel(), tmp_path)
+    assert len(server.requests) == updates.DOWNLOAD_ATTEMPTS
+    assert not list(tmp_path.iterdir())
