@@ -1,6 +1,7 @@
 """Webcam settings: applied in the right order, driver refusals reported, probe choices."""
 import importlib.util
 import logging
+import math
 from pathlib import Path
 
 import cv2
@@ -28,7 +29,7 @@ class FakeCap:
 
 def test_format_is_set_before_the_size_and_exposure_only_when_asked():
     cap = FakeCap()
-    camera.apply_settings(cap, CameraConfig())
+    camera.apply_settings(cap, CameraConfig(auto_shutter=False))
     assert cap.calls.index(cv2.CAP_PROP_FOURCC) < cap.calls.index(cv2.CAP_PROP_FRAME_WIDTH)
     assert cv2.CAP_PROP_EXPOSURE not in cap.calls and cv2.CAP_PROP_FOCUS not in cap.calls
     assert cap.values[cv2.CAP_PROP_AUTOFOCUS] == 1   # focusing by itself (undoes a focus locked earlier)
@@ -36,7 +37,7 @@ def test_format_is_set_before_the_size_and_exposure_only_when_asked():
 
 def test_manual_exposure_and_fixed_focus_are_applied():
     cap = FakeCap()
-    camera.apply_settings(cap, CameraConfig(exposure=-7, gain=40, autofocus=False, focus=30))
+    camera.apply_settings(cap, CameraConfig(auto_shutter=False, exposure=-7, gain=40, autofocus=False, focus=30))
     assert cap.values[cv2.CAP_PROP_AUTO_EXPOSURE] == camera.AUTO_EXPOSURE_MANUAL
     assert cap.values[cv2.CAP_PROP_EXPOSURE] == -7 and cap.values[cv2.CAP_PROP_GAIN] == 40
     assert cap.values[cv2.CAP_PROP_AUTOFOCUS] == 0 and cap.values[cv2.CAP_PROP_FOCUS] == 30
@@ -566,7 +567,8 @@ def test_lock_focus_keeps_where_autofocus_focused():
     assert camera.lock_focus(cam) == 35.0
     assert cam.sets == [(camera.cv2.CAP_PROP_AUTOFOCUS, 0), (camera.cv2.CAP_PROP_FOCUS, 35.0)]
     cam = FocusCam(-1)                       # a webcam that doesn't report its focus
-    assert camera.lock_focus(cam) is None and cam.sets == []   # autofocus stays on
+    assert math.isnan(camera.lock_focus(cam))                  # nothing to remember...
+    assert cam.sets == [(camera.cv2.CAP_PROP_AUTOFOCUS, 0)]     # ...but the lens is held where it is
 
 
 def test_a_remembered_focus_is_set_at_once_when_the_camera_opens():
@@ -649,7 +651,7 @@ def test_plate_reading_slows_down_while_the_live_feed_stutters(caplog):
     w._next_report = 0.0
     with caplog.at_level(logging.WARNING):
         w._pace(0.033, 31.0)
-    assert "3 pauses over 0.2 s" in caplog.text and "longest 400 ms" in caplog.text
+    assert "3 pauses in the last minute" in caplog.text and "longest 400 ms" in caplog.text
 
 
 def test_recognizer_reads_less_often_while_the_capture_says_so(monkeypatch):
@@ -684,3 +686,70 @@ def test_recognizer_reads_less_often_while_the_capture_says_so(monkeypatch):
     t.join(5)
     assert 1 <= len(looked) <= 3                              # 8/s at a quarter: 2 per second
     assert all(b - a >= 0.5 - 1e-9 for a, b in zip(looked, looked[1:]))
+
+
+class ModeCam:
+    """A webcam whose speed depends on how its video mode was asked for, like the gate camera:
+    MJPG asked for before the size is ignored (YUY2, 5 pictures/s at 1080p)."""
+
+    def __init__(self, fast_when):
+        self.fast_when, self.props, self.order = fast_when, {}, []
+
+    def isOpened(self): return True
+    def release(self): pass
+    def get(self, prop): return self.props.get(prop, 0)
+
+    def set(self, prop, value):
+        self.props[prop] = value
+        self.order.append(prop)
+        return True
+
+    def read(self):
+        import time
+
+        import numpy as np
+        time.sleep(0.005 if self.fast_when(self) else 0.2)
+        return True, np.zeros((4, 4, 3), np.uint8)
+
+
+def _fourcc_after_size(cam):
+    return cam.order.index(cv2.CAP_PROP_FOURCC) > cam.order.index(cv2.CAP_PROP_FRAME_WIDTH)
+
+
+def test_a_slow_camera_is_asked_for_mjpg_the_other_way_round(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    opened = []
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(ModeCam(_fourcc_after_size)) or opened[-1])
+    cap, got = camera.open_index(0, CameraConfig())
+    assert cap is opened[1] and got["measured_fps"] > camera.MIN_GOOD_FPS and "note" not in got
+    assert camera._good_modes[0] == (1920, 1080, True)
+    opened.clear()
+    cap, _ = camera.open_index(0, CameraConfig())             # reopened: the mode that worked goes first
+    assert len(opened) == 1 and _fourcc_after_size(cap)
+
+
+def test_a_camera_too_slow_at_1080p_falls_back_to_720p(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    monkeypatch.setattr(camera.cv2, "VideoCapture",
+                        lambda *a: ModeCam(lambda c: c.props.get(cv2.CAP_PROP_FRAME_WIDTH) == 1280))
+    cap, got = camera.open_index(0, CameraConfig())
+    assert cap.props[cv2.CAP_PROP_FRAME_WIDTH] == 1280 and got["measured_fps"] > camera.MIN_GOOD_FPS
+    assert "1280x720" in got["note"] and "1920x1080" in got["note"]
+
+
+def test_when_every_mode_is_slow_the_fastest_is_kept(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: ModeCam(lambda c: False))
+    cap, got = camera.open_index(0, CameraConfig())
+    assert cap is not None and got["measured_fps"] < camera.MIN_GOOD_FPS   # still a picture, never none
+
+
+def test_a_slow_camera_is_not_taken_for_a_busy_computer():
+    from platescanner import pipeline
+    from platescanner.config import Config
+    w = pipeline.CaptureWorker(Config(), pipeline.FrameSlot())
+    for i in range(30):                                       # 5 pictures/s, steadily
+        w._pace(0.2, i * 0.2)
+    assert w.read_speed == 1.0 and w._pauses == []
+    w._pace(0.6, 7.0)                                         # a real pause, 3x its pace
+    assert w.read_speed == 0.5 and w._pauses == [0.6]

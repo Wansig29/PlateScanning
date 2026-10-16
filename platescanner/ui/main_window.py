@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import html
 import logging
+import math
 import queue
 import sys
 import threading
@@ -515,7 +516,7 @@ class MainWindow(QMainWindow):
 
     def _on_health(self, code: str, severity: str, msg: str) -> None:
         """The scanner noticed the camera or the plate reading getting worse (or recovering)."""
-        if code == "blurred" and severity != "ok" and self.cfg.camera.locked_focus is not None:
+        if code == "blurred" and severity != "ok" and self._focus_is_held():
             self._maybe_refocus()
         if severity == "ok":
             self._health_issues.pop(code, None)
@@ -818,15 +819,19 @@ class MainWindow(QMainWindow):
         elif not cam.focus_lock:
             text = "auto"
         else:
-            text = "locked" if cam.locked_focus is not None else "next vehicle…"
+            text = "locked" if self._focus_is_held() else "next vehicle…"
         self.focus_btn.setText(f"Focus: {text}")
         self.focus_lock_action.setChecked(cam.autofocus and cam.focus_lock)
         self.focus_auto_action.setChecked(cam.autofocus and not cam.focus_lock)
 
     def _focus_locked(self, value: float) -> None:
-        """The camera focused on the lane and the focus is now locked there: remember it."""
-        self.cfg.camera.locked_focus = value
-        save_config(self.cfg)
+        """The camera focused on a vehicle and the focus is now locked there: remember it. A camera
+        that doesn't report its focus (NaN) holds it until the scanner closes; it focuses again
+        on the first vehicle at the next start."""
+        self._focus_held = True
+        if not math.isnan(value):
+            self.cfg.camera.locked_focus = value
+            save_config(self.cfg)
         self._show_focus()
 
     def _set_focus_lock(self, on: bool) -> None:
@@ -835,11 +840,15 @@ class MainWindow(QMainWindow):
             return
         self.cfg.camera.autofocus, self.cfg.camera.focus_lock = True, on
         self.cfg.camera.locked_focus = None
+        self._focus_held = False
         save_config(self.cfg)
         self._show_focus()
         capture = getattr(self, "capture", None)
         if capture is not None:
             capture.switch_source(self.cfg.camera.source)  # reopened with the new focus setting
+
+    def _focus_is_held(self) -> bool:
+        return getattr(self, "_focus_held", False) or self.cfg.camera.locked_focus is not None
 
     def _refocus(self, automatic: bool = False) -> None:
         """Forget the locked focus: the camera focuses on the next vehicle in view, then locks there."""
@@ -856,6 +865,7 @@ class MainWindow(QMainWindow):
         self._last_refocus = time.monotonic()
         self._unreadable_in_a_row = 0
         cam.locked_focus = None
+        self._focus_held = False
         save_config(self.cfg)
         self._show_focus()
         capture = getattr(self, "capture", None)
@@ -925,6 +935,7 @@ class MainWindow(QMainWindow):
         """Switch the gate camera now and remember it for the next start."""
         if source != self.cfg.camera.source.strip():
             self.cfg.camera.locked_focus = None  # another camera: it focuses afresh
+            self._focus_held = False
             self._show_focus()
         self.capture.switch_source(source)
         save_config(self.cfg)
@@ -1162,6 +1173,8 @@ class MainWindow(QMainWindow):
         self._sign_in()
 
     def _refresh_sync_label(self, error: str | None = None) -> None:
+        if getattr(self, "_closing", False):  # (a sync result arriving while the window closes)
+            return
         last = db.get_state(self.conn, "last_sync_at")
         c = db.counts(self.conn)
         self._set_status(self.db_status,
@@ -1353,7 +1366,7 @@ class MainWindow(QMainWindow):
 
     def _on_no_plate(self, ev: NoPlateEvent) -> None:
         self._unreadable_in_a_row = getattr(self, "_unreadable_in_a_row", 0) + 1
-        if self._unreadable_in_a_row >= self.REFOCUS_AFTER_UNREADABLE and self.cfg.camera.locked_focus is not None:
+        if self._unreadable_in_a_row >= self.REFOCUS_AFTER_UNREADABLE and self._focus_is_held():
             self._maybe_refocus()  # the locked focus may be off: let it focus on the next vehicle
         saw = ", ".join(ev.ocr_saw[:6]) if ev.ocr_saw else "no text at all"
         self.statusBar().showMessage(f"Motion detected but no plate read (OCR saw: {saw})", 10000)
@@ -1565,6 +1578,9 @@ class MainWindow(QMainWindow):
             save_config(self.cfg)
         self.reminder.stop()
         self.sound.cancel()
+        self._closing = True  # the database closes below: late timers and sync results must not use it
+        for timer in (self.label_timer, self.sync_timer, self.retry_timer):
+            timer.stop()
         self.capture.stop()
         self.recognizer.stop()
         self.sync_thread.quit()

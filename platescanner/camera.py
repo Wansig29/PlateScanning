@@ -15,6 +15,8 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -106,19 +108,76 @@ def list_names() -> list[str]:
         return []
 
 
+# A camera giving fewer pictures a second than this is too slow for moving vehicles (the Live
+# Feed jumps and plates are missed). Many webcams send 1080p uncompressed (YUY2) when MJPG isn't
+# taken, and USB 2 then carries only about 5 pictures a second, while the driver still says 30.
+MIN_GOOD_FPS = 12.0
+FALLBACK_SIZE = (1280, 720)
+# Per camera number, the video mode (width, height, format set after the size) that was fast
+# enough, so reopening the camera (another shutter, a lost signal) doesn't test again.
+_good_modes: dict[int, tuple[int, int, bool]] = {}
+
+
+def measure_fps(cap: Any, seconds: float = 1.0, max_frames: int = 15) -> float:
+    """Pictures per second the camera really delivers (drivers often report a speed they don't give)."""
+    start, frames = time.monotonic(), 0
+    while frames < max_frames and time.monotonic() - start < seconds:
+        ok, _frame = cap.read()
+        if not ok:
+            break
+        frames += 1
+    elapsed = time.monotonic() - start
+    return frames / elapsed if elapsed > 0 else 0.0
+
+
 def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | None:
     """Open camera number `index` (DirectShow on Windows) with the configured settings; return it
     and what the driver accepted, or None unless it gives a picture. The test read matters: Windows
     "opens" some absent or busy cameras and then returns no frames. The settings go first, as some
-    drivers ignore a change of video format once the picture is flowing."""
-    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-    if cap.isOpened():
-        got = apply_settings(cap, cfg)
-        ok, frame = cap.read()
-        if ok and frame is not None:
-            return cap, got
-    cap.release()
-    return None
+    drivers ignore a change of video format once the picture is flowing.
+
+    The speed is then measured. When the camera is slow (it didn't take MJPG), the format is asked
+    for again after the size (some drivers only take it that way round), and as a last resort
+    FALLBACK_SIZE is used: a sharp picture 5 times a second misses moving vehicles."""
+    modes = [(cfg.width, cfg.height, False), (cfg.width, cfg.height, True)]
+    if cfg.fourcc and cfg.width * cfg.height > FALLBACK_SIZE[0] * FALLBACK_SIZE[1]:
+        modes += [(*FALLBACK_SIZE, False)]
+    if not cfg.fourcc:
+        modes = modes[:1]  # the camera's own choice was asked for: nothing to try
+    if index in _good_modes and _good_modes[index] in modes:
+        modes.remove(_good_modes[index])
+        modes.insert(0, _good_modes[index])
+    best: tuple[Any, dict[str, Any], tuple[int, int, bool]] | None = None
+    for mode in modes:
+        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+        got = None
+        if cap.isOpened():
+            got = apply_settings(cap, replace(cfg, width=mode[0], height=mode[1]), fourcc_last=mode[2])
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                got = None
+        if got is None:
+            cap.release()
+            if best is None:
+                return None  # no picture at all: absent or busy
+            continue
+        got["measured_fps"] = measure_fps(cap)
+        if best is None or got["measured_fps"] > best[1]["measured_fps"]:
+            if best is not None:
+                best[0].release()
+            best = (cap, got, mode)
+        else:
+            cap.release()
+        if got["measured_fps"] >= MIN_GOOD_FPS:
+            break
+        log.warning("Camera %d gives only %.1f pictures/s at %dx%d %s: trying another way",
+                    index, got["measured_fps"], got["width"], got["height"], got["format"] or "?")
+    assert best is not None
+    cap, got, mode = best
+    _good_modes[index] = mode
+    if (mode[0], mode[1]) != (cfg.width, cfg.height):
+        got["note"] = f"{mode[0]}x{mode[1]}: the camera gives too few pictures/s at {cfg.width}x{cfg.height}"
+    return cap, got
 
 
 def find_webcam(skip: int, cfg: CameraConfig, names: list[str]) -> tuple[Any, dict[str, Any], int] | None:
@@ -313,14 +372,15 @@ class AutoShutter:
 FOCUS_SETTLE_SECONDS = 1.5  # time autofocus gets on a vehicle in view before the focus is locked
 
 
-def lock_focus(cap: Any) -> float | None:
-    """Turn autofocus off where it has focused, keeping that focus; return it (None if the
-    camera doesn't report its focus, as some webcams don't: autofocus then stays on)."""
+def lock_focus(cap: Any) -> float:
+    """Turn autofocus off where it has focused, keeping that focus. Returns the focus, or NaN when
+    the camera doesn't report it (many webcams don't): turning autofocus off still holds the lens
+    where it is, but the value can't be remembered for the next start."""
     value = cap.get(cv2.CAP_PROP_FOCUS)
-    if value is None or value < 0:
-        log.info("Camera does not report its focus (%s): autofocus stays on", value)
-        return None
     cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+    if value is None or value < 0:
+        log.info("Focus held where autofocus left it (the camera does not report its focus: %s)", value)
+        return float("nan")
     cap.set(cv2.CAP_PROP_FOCUS, value)
     log.info("Focus locked at %s", value)
     return float(value)
@@ -349,23 +409,31 @@ def fourcc_text(value: float) -> str:
     return text if text.isprintable() and text.strip() else ""
 
 
-def apply_settings(cap: Any, cfg: CameraConfig) -> dict[str, Any]:
+def apply_settings(cap: Any, cfg: CameraConfig, fourcc_last: bool = False) -> dict[str, Any]:
     """Ask the camera for the configured mode, exposure and focus; return what it reports.
 
-    The video format must be set before the size, or the driver may pick the
-    slow uncompressed mode for the requested size.
+    The video format is normally set before the size, or the driver may pick the slow
+    uncompressed mode for the requested size; a few drivers only take it after the size
+    (`fourcc_last`, tried by open_index when the first way gives a slow camera).
     """
-    if cfg.fourcc:
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*cfg.fourcc[:4].ljust(4)))
+    fourcc = cv2.VideoWriter_fourcc(*cfg.fourcc[:4].ljust(4)) if cfg.fourcc else None
+    if fourcc is not None and not fourcc_last:
+        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.height)
+    if fourcc is not None and fourcc_last:
+        cap.set(cv2.CAP_PROP_FOURCC, fourcc)
     if cfg.fps:
         cap.set(cv2.CAP_PROP_FPS, cfg.fps)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # always the newest frame, not a backlog
 
-    if cfg.exposure is not None:  # a short, fixed shutter: sharper plates, darker picture
+    # Auto-sharp starts at its own shutter at once: auto-exposure in a dim scene also slows the
+    # camera down (a long shutter allows fewer pictures a second), which open_index would take
+    # for a slow video mode.
+    exposure = AutoShutter.START if cfg.auto_shutter else cfg.exposure
+    if exposure is not None:  # a short, fixed shutter: sharper plates, darker picture
         cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_MANUAL)
-        cap.set(cv2.CAP_PROP_EXPOSURE, cfg.exposure)
+        cap.set(cv2.CAP_PROP_EXPOSURE, exposure)
     else:  # back to Auto: the driver keeps a manual shutter set earlier unless told otherwise
         cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_AUTO)
     if cfg.gain is not None:
@@ -387,7 +455,7 @@ def apply_settings(cap: Any, cfg: CameraConfig) -> dict[str, Any]:
         "format": fourcc_text(cap.get(cv2.CAP_PROP_FOURCC) or 0),
         "exposure": cap.get(cv2.CAP_PROP_EXPOSURE),
     }
-    _warn_if_ignored(cfg, got)
+    _warn_if_ignored(replace(cfg, exposure=exposure), got)
     return got
 
 
@@ -404,4 +472,5 @@ def _warn_if_ignored(cfg: CameraConfig, got: dict[str, Any]) -> None:
 
 def describe(got: dict[str, Any]) -> str:
     fmt = f" {got['format']}" if got.get("format") else ""
-    return f"{got['width']}x{got['height']}{fmt} at {got['fps']:.0f} fps (as reported by the driver)"
+    measured = f", {got['measured_fps']:.1f} pictures/s measured" if "measured_fps" in got else ""
+    return f"{got['width']}x{got['height']}{fmt} at {got['fps']:.0f} fps (as reported by the driver){measured}"

@@ -263,3 +263,28 @@ def test_refocuses_by_itself_when_plates_come_out_unreadable_or_blurred(window, 
     assert refocused == [1, 1]
     w._on_health("blurred", "ok", "Recovered")
     del w.capture
+
+
+def test_a_focus_the_camera_does_not_report_is_held_but_not_saved(window):
+    import math
+
+    from platescanner.config import load_config as reload
+    w, _ = window
+    refocused = []
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: None,
+                               "refocus": lambda s: refocused.append(1)})()
+    w._focus_locked(math.nan)
+    assert w.focus_btn.text() == "Focus: locked" and reload().camera.locked_focus is None
+    w._on_health("blurred", "warn", "Camera image is blurred")   # still refocuses when plates blur
+    assert refocused == [1] and w.focus_btn.text() == "Focus: next vehicle…"
+    del w.capture
+
+
+def test_a_sync_result_arriving_while_closing_does_not_touch_the_closed_database(window):
+    w, _ = window
+    w._closing = True
+    w.conn.close()
+    w._refresh_sync_label()                                   # used to raise "closed database"
+    w._closing = False
+    from platescanner import db
+    w.conn = db.connect(w.cfg.db_path)

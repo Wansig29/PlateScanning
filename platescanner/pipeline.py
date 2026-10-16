@@ -20,6 +20,7 @@ import os
 import sqlite3
 import threading
 import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -223,6 +224,7 @@ class CaptureWorker(QThread):
         self.read_speed = 1.0
         self._calm_since = 0.0
         self._pauses: list[float] = []      # stutters since the last log line
+        self._gaps: deque[float] = deque(maxlen=60)  # recent times between pictures: the camera's own pace
         self._frames = 0                    # camera pictures since the last log line
         self._next_report = time.monotonic() + 60.0
 
@@ -232,7 +234,11 @@ class CaptureWorker(QThread):
     def _pace(self, gap: float, now: float) -> None:
         """Follow how smoothly pictures arrive; slow plate reading down while they don't."""
         self._frames += 1
-        if gap > STUTTER_SECONDS:
+        # A pause is a gap well beyond the camera's own pace: a camera giving 5 pictures a second
+        # is slow, but that is not the computer falling behind (see camera.MIN_GOOD_FPS for that).
+        normal = sorted(self._gaps)[len(self._gaps) // 2] if len(self._gaps) >= 10 else 0.0
+        self._gaps.append(gap)
+        if gap > max(STUTTER_SECONDS, 2.5 * normal):
             self._pauses.append(gap)
             self.read_speed = max(MIN_READ_SPEED, self.read_speed / 2)
             self._calm_since = now
@@ -241,9 +247,11 @@ class CaptureWorker(QThread):
             self._calm_since = now
         if now >= self._next_report:  # once a minute, and only if something happened: for the log
             if self._pauses:
-                log.warning("Live Feed: %d pauses over %.1f s in the last minute (longest %.0f ms); camera "
-                            "%.1f pictures/s; plate reading at %.0f%% speed", len(self._pauses), STUTTER_SECONDS,
+                log.warning("Live Feed: %d pauses in the last minute (longest %.0f ms); camera "
+                            "%.1f pictures/s; plate reading at %.0f%% speed", len(self._pauses),
                             max(self._pauses) * 1000, self._frames / 60.0, self.read_speed * 100)
+            elif self._frames < camera.MIN_GOOD_FPS * 60:
+                log.warning("Live Feed: camera gives only %.1f pictures/s", self._frames / 60.0)
             self._pauses, self._frames, self._next_report = [], 0, now + 60.0
 
     def refocus(self) -> None:
@@ -277,6 +285,9 @@ class CaptureWorker(QThread):
             if opened is None:
                 return None, False
             log.info("Camera opened: %s", camera.describe(opened[1]))
+            if opened[1].get("note"):  # a smaller video mode, as the camera was too slow at the configured one
+                log.warning("Camera: using %s", opened[1]["note"])
+                self.note = f"{self.note}; {opened[1]['note']}" if self.note else opened[1]["note"]
             return opened[0], False
         cap = camera.open_stream(src) if camera.is_stream(src) else cv2.VideoCapture(src)
         is_file = Path(src).is_file()
@@ -287,9 +298,7 @@ class CaptureWorker(QThread):
 
     def _lock_focus(self, cap) -> None:
         """(On the camera reader thread.)"""
-        value = camera.lock_focus(cap)
-        if value is not None:
-            self.focus_locked.emit(value)
+        self.focus_locked.emit(camera.lock_focus(cap))  # (NaN: held, but no value to remember)
 
     def _roi(self, frame: np.ndarray) -> tuple[int, int, int, int]:
         h, w = frame.shape[:2]
@@ -414,7 +423,7 @@ class CaptureWorker(QThread):
                 self.shutter_changed.emit(shutter.exposure)
             cam = self.cfg.camera
             # Focus lock: autofocus focuses on a vehicle, then the focus stays there (see camera.py).
-            manage_focus = (reader is not None and self.in_use.isdigit() and not self.note
+            manage_focus = (reader is not None and self.in_use.isdigit() and self.in_use == cam.source.strip()
                             and cam.autofocus and cam.focus_lock)
             learning = manage_focus and cam.locked_focus is None  # waiting for a vehicle to focus on
             vehicle_since: float | None = None
