@@ -387,6 +387,9 @@ def test_latest_frame_reader_skips_frames_that_piled_up():
     assert reader.read(1.0)[0, 0, 0] == 5              # it gets the newest, not the oldest
     assert reader.read(0.1) is None and not reader.failed   # nothing newer yet
     cap.go.set()                                       # the camera stops giving pictures
+    deadline = time.monotonic() + 3.0
+    while not reader.failed and time.monotonic() < deadline:   # (a few failed reads in a row first)
+        time.sleep(0.01)
     reader.release()
     assert reader.failed and cap.released
 
@@ -427,7 +430,7 @@ def test_live_camera_that_stops_giving_pictures_is_reopened(monkeypatch):
     w.status.connect(statuses.append, Qt.ConnectionType.DirectConnection)
     t = threading.Thread(target=w.run, daemon=True)
     t.start()
-    time.sleep(0.4)
+    time.sleep(1.5)                       # 10 failed reads in a row (0.5 s), then reopened
     w.stop()
     t.join(5)
     assert "Camera signal lost, reconnecting…" in statuses and len(opened) >= 2
@@ -763,3 +766,79 @@ def test_a_burst_too_quick_for_the_clock_measures_as_fast_not_as_zero(monkeypatc
     assert camera.measure_fps(cap) > camera.MIN_GOOD_FPS
     dead = type("C", (), {"read": lambda s: (False, None)})()
     assert camera.measure_fps(dead) == 0.0
+
+
+def test_a_dropped_picture_is_not_a_lost_camera():
+    import time
+
+    import numpy as np
+
+    class Cap:
+        def __init__(self): self.n, self.released = 0, False
+        def read(self):
+            self.n += 1
+            time.sleep(0.005)
+            if self.n in (3, 4):                       # two pictures dropped
+                return False, None
+            return True, np.zeros((2, 2, 3), np.uint8)
+        def release(self): self.released = True
+
+    reader = camera.LatestFrameReader(Cap())
+    time.sleep(0.3)
+    assert not reader.failed and reader.read(0.5) is not None
+    reader.release()
+
+
+class ExclusiveCam:
+    """A DirectShow webcam: a second connection while one is open breaks the first, which
+    then stops giving pictures (what made v1.1.9 report "camera signal lost")."""
+    open_now: list = []
+
+    def __init__(self, speed_of):
+        self.speed_of, self.props, self.order, self.broken, self.closed = speed_of, {}, [], False, False
+        for other in ExclusiveCam.open_now:
+            other.broken = True
+        ExclusiveCam.open_now.append(self)
+
+    def isOpened(self): return True
+    def get(self, prop): return self.props.get(prop, 0)
+
+    def set(self, prop, value):
+        self.props[prop] = value
+        self.order.append(prop)
+        return True
+
+    def release(self):
+        self.closed = True
+        if self in ExclusiveCam.open_now:
+            ExclusiveCam.open_now.remove(self)
+
+    def read(self):
+        import time
+
+        import numpy as np
+        if self.broken or self.closed:
+            return False, None
+        time.sleep(1 / self.speed_of(self))
+        return True, np.zeros((4, 4, 3), np.uint8)
+
+
+@pytest.mark.parametrize("fast_mode", ["first", "fourcc_after_size", "720p", "none", "first_of_slow"])
+def test_trying_video_modes_never_opens_the_camera_twice(monkeypatch, fast_mode):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    ExclusiveCam.open_now = []
+
+    def speed(c):
+        w = c.props.get(cv2.CAP_PROP_FRAME_WIDTH)
+        if fast_mode == "first_of_slow":                         # all slow, the first way least slow
+            return 4.0 if w == 1280 else (3.0 if _fourcc_after_size(c) else 9.0)
+        fast = {"first": True, "fourcc_after_size": _fourcc_after_size(c), "720p": w == 1280, "none": False}
+        return 100.0 if fast[fast_mode] else (8.0 if w == 1280 else 5.0)
+
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: ExclusiveCam(speed))
+    cap, got = camera.open_index(0, CameraConfig())
+    assert ExclusiveCam.open_now == [cap] and not cap.broken   # the one kept is the only one open
+    ok, _ = cap.read()
+    assert ok                                                   # ...and still gives pictures
+    if fast_mode == "none":                                     # all slow: the fastest (720p, 8/s) reopened
+        assert cap.props[cv2.CAP_PROP_FRAME_WIDTH] == 1280 and got["measured_fps"] < camera.MIN_GOOD_FPS

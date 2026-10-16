@@ -103,6 +103,15 @@ class ImageSlot(QLabel):
         super().resizeEvent(e)
         self._rescale()
 
+    # A QLabel asks for at least the size of its picture. The picture is scaled to the label, so
+    # once shown big it could never get smaller again: on a narrow screen the card stayed too wide
+    # and its right side was cut off. The slot asks only for its minimum and fills what it gets.
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        return self.minimumSize()
+
     def mousePressEvent(self, e) -> None:  # noqa: N802
         if self._pixmap is not None:
             ImageViewer(self._pixmap, self.placeholder, self.window()).exec()
@@ -652,6 +661,9 @@ class IdentityCard(QFrame):
         self.banner = QLabel("Waiting for vehicle…")
         self.banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.banner.setMinimumHeight(50)
+        # Wraps onto a second line on a narrow panel: unwrapped, "VIOLATION · VEHICLE #4" in large
+        # type made the card wider than the panel on a laptop screen, and its right side was cut off.
+        self.banner.setWordWrap(True)
         lay.addWidget(self.banner)
         self.ack_btn = QPushButton("✓  Acknowledge violation")
         self.ack_btn.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -681,8 +693,8 @@ class IdentityCard(QFrame):
         pics = QHBoxLayout(self.pics_w)
         pics.setContentsMargins(0, 0, 0, 0)
         pics.setSpacing(8)
-        self.vehicle_img = ImageSlot("Photo of the vehicle", QSize(140, 100))
-        self.where_img = ImageSlot("Where it was", QSize(140, 100))
+        self.vehicle_img = ImageSlot("Photo of the vehicle", QSize(120, 90))
+        self.where_img = ImageSlot("Where it was", QSize(120, 90))
         self.where_col = QWidget()  # hidden in compact mode (several vehicles on screen)
         self.pic_captions: list[QLabel] = []
         for caption, slot, holder in (("THIS VEHICLE", self.vehicle_img, None),
@@ -713,6 +725,7 @@ class IdentityCard(QFrame):
         self.looks.setWordWrap(True)
         self.live = QLabel()
         self.live.setObjectName("Muted")
+        self.live.setWordWrap(True)  # beside the plate chip: unwrapped, the card got too wide
         desc.addWidget(self.looks)
         desc.addWidget(self.live)
         facts.addLayout(desc, 1)
@@ -783,6 +796,7 @@ class IdentityCard(QFrame):
             b.setCursor(Qt.CursorShape.PointingHandCursor)
         self.pager_label = QLabel()
         self.pager_label.setObjectName("Muted")
+        self.pager_label.setWordWrap(True)  # (the widest line of the card: unwrapped, it was cut off)
         pl.addWidget(self.pager_label, 1)
         pl.addWidget(self.prev_btn)
         pl.addWidget(self.next_btn)
@@ -841,14 +855,26 @@ class IdentityCard(QFrame):
         self._flash_left = times
         self._flash.start()
 
+    # Narrower than this (a small laptop screen), the card shows one picture, not two side by side.
+    NARROW_WIDTH = 400
+
     def set_compact(self, compact: bool) -> None:
         """Several vehicles on screen: keep the photo of the vehicle, drop the wide scene picture."""
-        self.where_col.setVisible(not compact)
-        for cap in self.pic_captions:
-            cap.setVisible(not compact)
+        self._compact = compact
         self.banner.setMinimumHeight(38 if compact else 50)
         self.pics_w.setMaximumHeight(76 if compact else 16777215)
-        self.vehicle_img.setMinimumSize(QSize(100, 60) if compact else QSize(140, 100))
+        self.vehicle_img.setMinimumSize(QSize(100, 60) if compact else QSize(120, 90))
+        self._show_pictures()
+
+    def _show_pictures(self) -> None:
+        one = getattr(self, "_compact", False) or self.width() < self.NARROW_WIDTH
+        self.where_col.setVisible(not one)
+        for cap in self.pic_captions:
+            cap.setVisible(not getattr(self, "_compact", False))
+
+    def resizeEvent(self, e) -> None:  # noqa: N802
+        super().resizeEvent(e)
+        self._show_pictures()
 
     def _open_evidence(self) -> None:
         dlg = QDialog(self.window())

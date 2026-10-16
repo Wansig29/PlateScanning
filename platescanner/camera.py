@@ -151,37 +151,53 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
     if index in _good_modes and _good_modes[index] in modes:
         modes.remove(_good_modes[index])
         modes.insert(0, _good_modes[index])
-    best: tuple[Any, dict[str, Any], tuple[int, int, bool]] | None = None
+    # Only one connection to the camera at a time: on Windows a second one makes the first stop
+    # giving pictures ("camera signal lost"). So each mode is opened, measured and closed before
+    # the next is tried, and the fastest is opened again at the end if it isn't the last one.
+    speeds: dict[tuple[int, int, bool], float] = {}
+    current: tuple[Any, dict[str, Any], tuple[int, int, bool]] | None = None
     for mode in modes:
-        cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
-        got = None
-        if cap.isOpened():
-            got = apply_settings(cap, replace(cfg, width=mode[0], height=mode[1]), fourcc_last=mode[2])
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                got = None
-        if got is None:
-            cap.release()
-            if best is None:
+        if current is not None:
+            current[0].release()
+            current = None
+        opened = _open_mode(index, cfg, mode)
+        if opened is None:
+            if not speeds:
                 return None  # no picture at all: absent or busy
             continue
-        got["measured_fps"] = measure_fps(cap)
-        if best is None or got["measured_fps"] > best[1]["measured_fps"]:
-            if best is not None:
-                best[0].release()
-            best = (cap, got, mode)
-        else:
-            cap.release()
+        cap, got = opened
+        got["measured_fps"] = speeds[mode] = measure_fps(cap)
+        current = (cap, got, mode)
         if got["measured_fps"] >= MIN_GOOD_FPS:
             break
         log.warning("Camera %d gives only %.1f pictures/s at %dx%d %s: trying another way",
                     index, got["measured_fps"], got["width"], got["height"], got["format"] or "?")
-    assert best is not None
-    cap, got, mode = best
+    fastest = max(speeds, key=speeds.get)
+    if current is None or current[2] != fastest:  # none fast enough: back to the fastest one
+        if current is not None:
+            current[0].release()
+        opened = _open_mode(index, cfg, fastest)
+        if opened is None:
+            return None
+        opened[1]["measured_fps"] = speeds[fastest]
+        current = (opened[0], opened[1], fastest)
+    cap, got, mode = current
     _good_modes[index] = mode
     if (mode[0], mode[1]) != (cfg.width, cfg.height):
         got["note"] = f"{mode[0]}x{mode[1]}: the camera gives too few pictures/s at {cfg.width}x{cfg.height}"
     return cap, got
+
+
+def _open_mode(index: int, cfg: CameraConfig, mode: tuple[int, int, bool]) -> tuple[Any, dict[str, Any]] | None:
+    """Camera `index` opened in video mode (width, height, format after size), if it gives a picture."""
+    cap = cv2.VideoCapture(index, cv2.CAP_DSHOW)
+    if cap.isOpened():
+        got = apply_settings(cap, replace(cfg, width=mode[0], height=mode[1]), fourcc_last=mode[2])
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return cap, got
+    cap.release()
+    return None
 
 
 def find_webcam(skip: int, cfg: CameraConfig, names: list[str]) -> tuple[Any, dict[str, Any], int] | None:
@@ -195,6 +211,9 @@ def find_webcam(skip: int, cfg: CameraConfig, names: list[str]) -> tuple[Any, di
         if opened is not None:
             return opened[0], opened[1], n
     return None
+
+
+READ_RETRIES = 10  # failed reads in a row (0.05 s apart) before a camera counts as lost
 
 
 class LatestFrameReader:
@@ -221,6 +240,7 @@ class LatestFrameReader:
         self._thread.start()
 
     def _run(self) -> None:
+        misses = 0  # failed reads in a row
         try:
             while not self._stop.is_set():
                 with self._cond:
@@ -231,11 +251,19 @@ class LatestFrameReader:
                     except Exception:  # noqa: BLE001 - a driver refusing a setting must not stop the picture
                         log.warning("Camera setting failed", exc_info=True)
                 ok, frame = self._cap.read()
-                with self._cond:
-                    if not ok or frame is None:
+                if not ok or frame is None:
+                    # A webcam drops a picture now and then: only several failed reads in a row
+                    # mean it is gone (unplugged), which the scanner then reports and reopens.
+                    misses += 1
+                    if misses < READ_RETRIES:
+                        self._stop.wait(0.05)
+                        continue
+                    with self._cond:
                         self.failed = True
                         self._cond.notify_all()
-                        return
+                    return
+                misses = 0
+                with self._cond:
                     self._frame, self._seq = frame, self._seq + 1
                     self._cond.notify_all()
         finally:

@@ -7,7 +7,7 @@ import sys
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLockFile, Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import QApplication, QDialog, QMessageBox
 
@@ -27,6 +27,18 @@ def _setup_logging(home: Path) -> None:
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 
+LOCK_WAIT_MS = 10_000  # an updated scanner may start while the old one is still closing
+
+
+def single_instance_lock(home: Path, wait_ms: int = LOCK_WAIT_MS) -> QLockFile | None:
+    """The lock that says this scanner is the one running, or None if another holds it. A lock
+    left by a scanner that crashed (its process is gone) is taken over. Keep it for as long as
+    the scanner runs: it is released when the object goes away or the process ends."""
+    lock = QLockFile(str(home / "scanner.lock"))
+    lock.setStaleLockTime(0)  # stale only when its process is gone, however long it has run
+    return lock if lock.tryLock(wait_ms) else None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="PSAU gate camera plate scanner")
     parser.add_argument("--config", type=Path, help="path to config.json")
@@ -43,11 +55,20 @@ def main() -> None:
         logging.getLogger(__name__).warning("config.json: %s", w)
     sys.excepthook = lambda t, v, tb: logging.getLogger("uncaught").error("Uncaught exception", exc_info=(t, v, tb))
 
+    app = QApplication(sys.argv)
+    # One scanner at a time: a second copy fights the first for the webcam (Windows gives it to only
+    # one program, so the other shows "Camera signal lost") and for the database.
+    lock = single_instance_lock(cfg.home)
+    if lock is None:
+        logging.getLogger(__name__).warning("Another PlateScanner is already running: not starting a second one")
+        QMessageBox.information(None, "PSAU Gate Plate Scanner",
+                                "PlateScanner is already running.\n\nLook for its window on the taskbar.")
+        sys.exit(0)
+
     conn = db.connect(cfg.db_path)
     db.init_schema(conn)
     conn.close()
 
-    app = QApplication(sys.argv)
     app.setApplicationName("PSAU Gate Plate Scanner")
     icon = bundle_dir() / "platescanner" / "assets" / "app.ico"
     if icon.exists():

@@ -17,7 +17,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import (
     QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
-    QSlider, QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
+    QSizePolicy, QSlider, QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import __version__, camera, db, purge, retention, timefmt, updates
@@ -339,9 +339,9 @@ class MainWindow(QMainWindow):
         self.video = VideoView()
         self.video.pan_to.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
+        self._build_shutter_menu()
+        self._build_focus_menu()
         self._build_camera_button(feed_header)
-        self._build_shutter_button(feed_header)
-        self._build_focus_button(feed_header)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
         left.addWidget(feed_frame)
@@ -350,14 +350,14 @@ class MainWindow(QMainWindow):
         self.logs.scan_selected.connect(self._show_scan_from_log)
         left.addWidget(self.logs)
         left.setStretchFactor(0, 3)
-        left.setStretchFactor(1, 1)
-        left.setSizes([600, 220])
+        left.setStretchFactor(1, 2)
+        left.setSizes([520, 300])  # (the picture is 16:9: more height mostly added black bars)
         outer.addWidget(left)
 
         right = QSplitter(Qt.Orientation.Vertical)
         right.setChildrenCollapsible(False)
         right.setHandleWidth(10)
-        right.setMinimumWidth(300)
+        right.setMinimumWidth(350)  # what its cards need: narrower, their right side was cut off
         right.setMaximumWidth(760)
         self.identity = IdentityPanel()
         self.identity.acknowledged.connect(self._acknowledged)
@@ -366,11 +366,13 @@ class MainWindow(QMainWindow):
         self.captured.setMinimumHeight(170)
         self.captured.history_clicked.connect(self._show_scan_from_log)
         right.addWidget(self.captured)
-        right.setSizes([660, 200])
+        right.setSizes([560, 260])  # room for two captured plates, not one and a half
         outer.addWidget(right)
-        outer.setStretchFactor(0, 1)
-        outer.setStretchFactor(1, 0)
-        outer.setSizes([940, 480])
+        # Both sides give way on a small screen (the right one used to keep its width while the
+        # Live Feed kept all of its, so the Identity Dashboard was cut off).
+        outer.setStretchFactor(0, 2)
+        outer.setStretchFactor(1, 1)
+        outer.setSizes([900, 460])
 
         self.setCentralWidget(root)
         self.alert_frame = AlertFrame(root)
@@ -710,35 +712,37 @@ class MainWindow(QMainWindow):
         self.close()                                          # installer relaunches the app when done
 
     def _build_camera_button(self, header: QHBoxLayout) -> None:
-        """'Camera' picker in the Live Feed header. It sits with the other picture controls, not in
-        the account menu: switching cameras is local to this laptop and works signed out and offline."""
+        """'Camera' menu in the Live Feed header: which camera, and its Shutter and Focus (submenus
+        whose titles show the current state). One button, so the header fits a small laptop screen.
+        It sits with the other picture controls, not in the account menu: all of it is local to this
+        laptop and works signed out and offline."""
         self.camera_btn = QToolButton()
         self.camera_btn.setText("Camera")
         self.camera_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.camera_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.camera_btn.setToolTip("Choose which connected camera the scanner uses.\n"
+        self.camera_btn.setToolTip("Which camera, its shutter and its focus.\n"
                                    "No internet connection or sign-in is needed.")
         self._camera_menu = QMenu(self.camera_btn)
+        self._camera_menu.setToolTipsVisible(True)
         # Listed again each time the menu opens, so a webcam plugged in later shows up.
         self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
         self._fill_camera_menu()
         self.camera_btn.setMenu(self._camera_menu)
+        self.camera_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
         header.addWidget(self.camera_btn)
 
     SHARP = "sharp"  # the Auto-sharp entry of the Shutter menu
 
-    def _build_shutter_button(self, header: QHBoxLayout) -> None:
-        """'Shutter' picker in the Live Feed header. Auto-exposure picks a slow shutter, so a moving
+    def _build_shutter_menu(self) -> None:
+        """'Shutter' submenu of the Camera menu. Auto-exposure picks a slow shutter, so a moving
         vehicle smears; Auto-sharp (camera.auto_shutter) or a fixed short one keeps its plate sharp."""
-        self.shutter_btn = QToolButton()
-        self.shutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.shutter_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.shutter_btn.setToolTip("Auto-sharp (recommended): the scanner picks the shortest shutter at which\n"
+        self.shutter_menu = QMenu(self)
+        self.shutter_menu.menuAction().setToolTip("Auto-sharp (recommended): the scanner picks the shortest shutter at which\n"
                                     "the lane is still bright enough, so moving plates stay sharp, and adjusts\n"
                                     "it as the light changes. Works offline. Or pick a fixed shutter: shorter\n"
                                     "is sharper but darker. USB webcams only: for a phone, set it in the\n"
                                     "phone camera app.")
-        menu = QMenu(self.shutter_btn)
+        menu = self.shutter_menu
         group = QActionGroup(menu)
         self._shutter_actions = {}
         choices = [(self.SHARP, "Auto-sharp (recommended)")]
@@ -749,19 +753,17 @@ class MainWindow(QMainWindow):
             act.triggered.connect(lambda _c=False, v=value: self._set_shutter(v))
             group.addAction(act)
             self._shutter_actions[value] = act
-        self.shutter_btn.setMenu(menu)
         self._sharp_now: float | None = None  # the shutter Auto-sharp is using right now
         self._show_shutter()
-        header.addWidget(self.shutter_btn)
 
     def _show_shutter(self) -> None:
         cam = self.cfg.camera
         chosen = self.SHARP if cam.auto_shutter else cam.exposure
         if cam.auto_shutter:
             now = f" {camera.shutter_label(self._sharp_now)}" if self._sharp_now is not None else ""
-            self.shutter_btn.setText(f"Shutter: Auto-sharp{now}")
+            self.shutter_menu.setTitle(f"Shutter: Auto-sharp{now}")
         else:
-            self.shutter_btn.setText(f"Shutter: {camera.shutter_label(cam.exposure)}")
+            self.shutter_menu.setTitle(f"Shutter: {camera.shutter_label(cam.exposure)}")
         for value, act in self._shutter_actions.items():
             act.setChecked(value == chosen)
 
@@ -788,17 +790,15 @@ class MainWindow(QMainWindow):
             capture.switch_source(self.cfg.camera.source)  # reopened: the settings apply at open
             self._set_status(self.cam_status, "Camera: applying the new shutter", theme.AMBER)
 
-    def _build_focus_button(self, header: QHBoxLayout) -> None:
-        """'Focus' picker in the Live Feed header. Autofocus hunts each time a vehicle passes, so by
+    def _build_focus_menu(self) -> None:
+        """'Focus' submenu of the Camera menu. Autofocus hunts each time a vehicle passes, so by
         default the focus is locked once the camera has focused on a vehicle (camera.focus_lock)."""
-        self.focus_btn = QToolButton()
-        self.focus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.focus_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.focus_btn.setToolTip("Lock after focusing (recommended): the camera focuses on a vehicle in view,\n"
+        self.focus_menu = QMenu(self)
+        self.focus_menu.menuAction().setToolTip("Lock after focusing (recommended): the camera focuses on a vehicle in view,\n"
                                   "then keeps that focus, so it doesn't hunt (and blur) for every vehicle.\n"
                                   "It refocuses by itself when plates come out blurred or unreadable.\n"
                                   "USB webcams only: for a phone, set the focus in the phone camera app.")
-        menu = QMenu(self.focus_btn)
+        menu = self.focus_menu
         group = QActionGroup(menu)
         self.focus_lock_action = menu.addAction("Lock after focusing (recommended)")
         self.focus_auto_action = menu.addAction("Autofocus always on (can hunt)")
@@ -808,9 +808,7 @@ class MainWindow(QMainWindow):
             group.addAction(act)
         menu.addSeparator()
         menu.addAction("Refocus now").triggered.connect(self._refocus)
-        self.focus_btn.setMenu(menu)
         self._show_focus()
-        header.addWidget(self.focus_btn)
 
     def _show_focus(self) -> None:
         cam = self.cfg.camera
@@ -820,7 +818,7 @@ class MainWindow(QMainWindow):
             text = "auto"
         else:
             text = "locked" if self._focus_is_held() else "next vehicle…"
-        self.focus_btn.setText(f"Focus: {text}")
+        self.focus_menu.setTitle(f"Focus: {text}")
         self.focus_lock_action.setChecked(cam.autofocus and cam.focus_lock)
         self.focus_auto_action.setChecked(cam.autofocus and not cam.focus_lock)
 
@@ -901,6 +899,9 @@ class MainWindow(QMainWindow):
         self._camera_menu.addAction("Phone or IP camera…").triggered.connect(self._ask_phone_camera)
         if not current.isdigit():  # a stream URL or video file
             self._camera_menu.addAction(f"In use: {camera.safe_source(current)}").setEnabled(False)
+        self._camera_menu.addSeparator()
+        self._camera_menu.addMenu(self.shutter_menu)  # (clear() above drops only these entries, not the menus)
+        self._camera_menu.addMenu(self.focus_menu)
 
     def _ask_phone_camera(self) -> None:
         """Use a phone camera app (DroidCam, IP Webcam) or an IP camera: the guard types its address."""
@@ -951,7 +952,9 @@ class MainWindow(QMainWindow):
         self.zoom_slider.setRange(10, int(camera.MAX_ZOOM * 10))
         self.zoom_slider.setSingleStep(1)
         self.zoom_slider.setPageStep(5)
-        self.zoom_slider.setFixedWidth(140)
+        # Shrinks first on a small screen, so the buttons beside it keep their full labels.
+        self.zoom_slider.setMinimumWidth(70)
+        self.zoom_slider.setMaximumWidth(140)
         self.zoom_slider.setToolTip("Enlarge the middle of the picture so small plates are found more easily.\n"
                                     "Above 1×, drag the Live Feed to move around in it.")
         self.zoom_value = QLabel()
@@ -1018,6 +1021,8 @@ class MainWindow(QMainWindow):
         self.video.set_roi(self.cfg.camera.roi)
         self.video.roi_drawn.connect(self._set_lane)
         self.video.drawing_ended.connect(lambda: self.lane_button.setChecked(False))
+        for b in (self.lane_button, self.lane_clear):
+            b.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)  # never cut ("Whol…ture")
         header.addWidget(self.lane_button)
         header.addWidget(self.lane_clear)
 
