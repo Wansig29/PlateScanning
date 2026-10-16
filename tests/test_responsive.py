@@ -197,17 +197,17 @@ def test_shutter_button_saves_the_exposure_and_reopens_the_camera(window, monkey
     w, _ = window
     reopened = []
     w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src)})()
-    assert w.cfg.camera.auto_shutter and w.shutter_btn.text() == "Shutter: Auto-sharp"   # the default
+    assert w.cfg.camera.auto_shutter and w.shutter_menu.title() == "Shutter: Auto-sharp"   # the default
     w._sharp_shutter(-8.0)                                       # the camera thread picked 1/256 s
-    assert w.shutter_btn.text() == "Shutter: Auto-sharp 1/256 s" and w._shutter_actions[w.SHARP].isChecked()
+    assert w.shutter_menu.title() == "Shutter: Auto-sharp 1/256 s" and w._shutter_actions[w.SHARP].isChecked()
     w._shutter_actions[-8].trigger()                             # a fixed shutter
     assert not w.cfg.camera.auto_shutter and w.cfg.camera.exposure == -8
     assert reload().camera.exposure == -8 and not reload().camera.auto_shutter
-    assert w.shutter_btn.text() == "Shutter: 1/256 s" and reopened == [w.cfg.camera.source]
+    assert w.shutter_menu.title() == "Shutter: 1/256 s" and reopened == [w.cfg.camera.source]
     w._shutter_actions[None].trigger()                           # the camera's own auto-exposure
     assert w.cfg.camera.exposure is None and w._shutter_actions[None].isChecked()
     w._shutter_actions[w.SHARP].trigger()
-    assert reload().camera.auto_shutter and w.shutter_btn.text() == "Shutter: Auto-sharp"
+    assert reload().camera.auto_shutter and w.shutter_menu.title() == "Shutter: Auto-sharp"
     # a phone stream: its shutter is set in the phone app, nothing changes here
     told = []
     monkeypatch.setattr(mw.QMessageBox, "information", lambda *a: told.append(a[2]))
@@ -224,14 +224,14 @@ def test_focus_button_remembers_the_locked_focus_and_refocuses(window, monkeypat
     reopened, refocused = [], []
     w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src),
                                "refocus": lambda s: refocused.append(1)})()
-    assert w.focus_btn.text() == "Focus: next vehicle…" and w.focus_lock_action.isChecked()
+    assert w.focus_menu.title() == "Focus: next vehicle…" and w.focus_lock_action.isChecked()
     w._focus_locked(42.0)                                     # the camera thread locked it on a vehicle
-    assert w.focus_btn.text() == "Focus: locked" and reload().camera.locked_focus == 42.0
-    w.focus_btn.menu().actions()[-1].trigger()                # Refocus now: no camera reopen needed
+    assert w.focus_menu.title() == "Focus: locked" and reload().camera.locked_focus == 42.0
+    w.focus_menu.actions()[-1].trigger()                # Refocus now: no camera reopen needed
     assert reload().camera.locked_focus is None and refocused == [1] and not reopened
-    assert w.focus_btn.text() == "Focus: next vehicle…"
+    assert w.focus_menu.title() == "Focus: next vehicle…"
     w.focus_auto_action.trigger()                             # autofocus always on
-    assert not reload().camera.focus_lock and w.focus_btn.text() == "Focus: auto" and len(reopened) == 1
+    assert not reload().camera.focus_lock and w.focus_menu.title() == "Focus: auto" and len(reopened) == 1
     w.focus_lock_action.trigger()
     assert reload().camera.focus_lock
     w._focus_locked(42.0)
@@ -274,9 +274,9 @@ def test_a_focus_the_camera_does_not_report_is_held_but_not_saved(window):
     w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: None,
                                "refocus": lambda s: refocused.append(1)})()
     w._focus_locked(math.nan)
-    assert w.focus_btn.text() == "Focus: locked" and reload().camera.locked_focus is None
+    assert w.focus_menu.title() == "Focus: locked" and reload().camera.locked_focus is None
     w._on_health("blurred", "warn", "Camera image is blurred")   # still refocuses when plates blur
-    assert refocused == [1] and w.focus_btn.text() == "Focus: next vehicle…"
+    assert refocused == [1] and w.focus_menu.title() == "Focus: next vehicle…"
     del w.capture
 
 
@@ -288,3 +288,31 @@ def test_a_sync_result_arriving_while_closing_does_not_touch_the_closed_database
     w._closing = False
     from platescanner import db
     w.conn = db.connect(w.cfg.db_path)
+
+
+def test_a_shown_photo_does_not_stop_its_slot_from_shrinking(window):
+    from PySide6.QtCore import QSize
+    from PySide6.QtGui import QPixmap
+
+    from platescanner.ui.widgets import ImageSlot
+    slot = ImageSlot("Photo", QSize(120, 90))
+    slot.resize(600, 400)
+    pm = QPixmap(1920, 1080)
+    pm.fill()
+    slot.set_pixmap(pm)                                       # scaled to 594 px wide
+    assert slot.minimumSizeHint() == QSize(120, 90)           # but it still asks for its minimum only
+
+
+def test_small_laptop_screen_nothing_is_cut_off(window):
+    from PySide6.QtWidgets import QToolButton
+
+    from platescanner.ui.widgets import IdentityCard
+    w, app = window
+    w.resize(1024, 600)
+    app.processEvents()
+    for card in w.identity.findChildren(IdentityCard):       # each card fits its panel
+        assert card.minimumSizeHint().width() <= w.identity.scroll.viewport().width()
+    header = [b for b in w.findChildren(QToolButton) if b.isVisible() and b.parent() is w.camera_btn.parent()]
+    assert w.camera_btn in header
+    for b in (w.camera_btn, w.lane_button):                   # the Live Feed controls are not squeezed
+        assert b.width() >= b.sizeHint().width()
