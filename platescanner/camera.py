@@ -152,6 +152,7 @@ class LatestFrameReader:
         self._seq = 0        # pictures read from the camera
         self._returned = 0   # ...of which the newest handed out by read()
         self.failed = False  # the camera stopped giving pictures
+        self._settings: list[tuple[int, float]] = []  # applied between two reads, on the reader thread
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name="camera-reader")
         self._thread.start()
@@ -159,6 +160,10 @@ class LatestFrameReader:
     def _run(self) -> None:
         try:
             while not self._stop.is_set():
+                with self._cond:
+                    settings, self._settings = self._settings, []
+                for prop, value in settings:
+                    self._cap.set(prop, value)
                 ok, frame = self._cap.read()
                 with self._cond:
                     if not ok or frame is None:
@@ -179,6 +184,16 @@ class LatestFrameReader:
                 return None
             self._returned = self._seq
             return self._frame
+
+    def set(self, prop: int, value: float) -> None:
+        """Change a camera setting while it runs. Done by the reader itself between two reads:
+        some drivers misbehave when a setting changes during a read on another thread."""
+        with self._cond:
+            self._settings.append((prop, value))
+
+    def set_exposure(self, exposure: float) -> None:
+        self.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_MANUAL)
+        self.set(cv2.CAP_PROP_EXPOSURE, exposure)
 
     def release(self) -> None:
         self._stop.set()
@@ -255,6 +270,47 @@ AUTO_EXPOSURE_AUTO = 0.75
 # seconds) and its label. Shorter = sharper moving plates but a darker picture.
 SHUTTER_CHOICES: list[tuple[float | None, str]] = [
     (None, "Auto"), (-6, "1/64 s"), (-7, "1/128 s"), (-8, "1/256 s"), (-9, "1/512 s"), (-10, "1/1024 s")]
+
+
+class AutoShutter:
+    """Auto-sharp: the shortest shutter at which the lane is still bright enough.
+
+    Auto-exposure makes the picture bright by keeping the shutter open long, so a moving vehicle
+    smears. This starts at 1/256 s and, about once a second while nothing is passing, looks at
+    how bright the lane is: too dark -> one step longer, comfortably bright -> one step shorter.
+    It never changes while a vehicle is in view (the plate being read must not change brightness
+    halfway). Needs nothing but the camera: works offline and signed out.
+    """
+    SHORTEST, LONGEST, START = -10.0, -4.0, -8.0  # 1/1024 s ... 1/16 s, starting at 1/256 s
+    DARK, BRIGHT = 75.0, 160.0  # mean grey level (0-255) of the lane: below = too dark, above = room to spare
+    EVERY = 1.0  # seconds between two looks (the camera needs a moment to show a new shutter)
+
+    def __init__(self, start: float | None = None):
+        self.exposure = min(self.LONGEST, max(self.SHORTEST, float(start if start is not None else self.START)))
+        self._next = 0.0
+
+    def update(self, brightness: float, now: float, vehicle_in_view: bool) -> float | None:
+        """The new shutter to use, or None to keep the current one."""
+        if vehicle_in_view or now < self._next:
+            return None
+        self._next = now + self.EVERY
+        if brightness < self.DARK and self.exposure < self.LONGEST:
+            self.exposure += 1
+        elif brightness > self.BRIGHT and self.exposure > self.SHORTEST:
+            self.exposure -= 1
+        else:
+            return None
+        return self.exposure
+
+
+def brightness(image: Any) -> float:
+    """Mean grey level (0-255) of a picture, from every 8th pixel (fast at 1080p)."""
+    sample = image[::8, ::8]
+    if sample.size == 0:
+        return 0.0
+    if sample.ndim == 3:
+        sample = cv2.cvtColor(sample, cv2.COLOR_BGR2GRAY)
+    return float(sample.mean())
 
 
 def shutter_label(exposure: float | None) -> str:

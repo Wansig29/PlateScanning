@@ -197,6 +197,7 @@ class CaptureWorker(QThread):
     frame_ready = Signal(QImage)
     status = Signal(str)
     motion_changed = Signal(bool)
+    shutter_changed = Signal(float)  # Auto-sharp picked this shutter (camera.exposure units)
 
     def __init__(self, cfg: Config, slot: FrameSlot):
         super().__init__()
@@ -363,6 +364,11 @@ class CaptureWorker(QThread):
             # A live camera is read on its own thread so frames never queue up behind slow work here.
             reader = None if is_file else camera.LatestFrameReader(cap)
             last_frame = time.monotonic()
+            shutter = None
+            if reader is not None and self.in_use.isdigit() and self.cfg.camera.auto_shutter:
+                shutter = camera.AutoShutter()
+                reader.set_exposure(shutter.exposure)
+                self.shutter_changed.emit(shutter.exposure)
 
             while not self._stop.is_set() and not self._reopen.is_set():
                 t0 = time.monotonic()
@@ -417,6 +423,11 @@ class CaptureWorker(QThread):
                     motion_on = active
                     self.motion_changed.emit(active)
                 self.slot.put(frame, read_area, active, t0, moving_box)
+                if shutter is not None:
+                    new_shutter = shutter.update(camera.brightness(frame[ry:ry + rh, rx:rx + rw]), t0, active)
+                    if new_shutter is not None:
+                        reader.set_exposure(new_shutter)
+                        self.shutter_changed.emit(new_shutter)
 
                 if t0 - last_preview >= preview_interval:
                     last_preview = t0

@@ -462,3 +462,85 @@ def test_missing_adb_does_not_stop_the_stream_from_being_tried(monkeypatch):
     monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(a[0]) or Webcam(False))
     camera.open_stream("http://127.0.0.1:4747/video")
     assert opened == ["http://127.0.0.1:4747/video"]
+
+
+def test_auto_shutter_finds_the_shortest_bright_enough_shutter():
+    s = camera.AutoShutter()
+    assert s.exposure == -8                                   # starts at 1/256 s
+    assert s.update(40, 0.0, False) == -7                     # too dark: one step longer
+    assert s.update(40, 0.5, False) is None                   # waits for the camera to show it
+    assert s.update(40, 1.0, True) is None                    # never while a vehicle is in view
+    assert s.update(40, 1.0, False) == -6
+    assert s.update(110, 2.0, False) is None                  # bright enough, no room to spare: stays
+    assert s.update(200, 3.0, False) == -7                    # brighter (sun came out): shorter again
+    for t in range(4, 20):
+        s.update(250, float(t), False)
+    assert s.exposure == camera.AutoShutter.SHORTEST          # never shorter than 1/1024 s
+    for t in range(20, 40):
+        s.update(0, float(t), False)
+    assert s.exposure == camera.AutoShutter.LONGEST           # never longer than 1/16 s (night)
+
+
+def test_brightness_of_a_picture():
+    import numpy as np
+    assert camera.brightness(np.full((80, 80, 3), 100, np.uint8)) == 100
+    assert camera.brightness(np.zeros((0, 0, 3), np.uint8)) == 0
+
+
+def test_reader_changes_settings_between_reads():
+    import threading
+    import time
+
+    import numpy as np
+
+    log = []
+
+    class Cap:
+        def read(self):
+            log.append("read")
+            time.sleep(0.005)
+            return True, np.zeros((2, 2, 3), np.uint8)
+        def set(self, prop, value):
+            log.append(("set", prop, value))
+        def release(self): pass
+
+    reader = camera.LatestFrameReader(Cap())
+    reader.set_exposure(-8)
+    time.sleep(0.1)
+    reader.release()
+    sets = [e for e in log if e != "read"]
+    assert sets == [("set", camera.cv2.CAP_PROP_AUTO_EXPOSURE, camera.AUTO_EXPOSURE_MANUAL),
+                    ("set", camera.cv2.CAP_PROP_EXPOSURE, -8)]
+
+
+def test_a_shutter_chosen_before_auto_sharp_is_kept(tmp_path):
+    import json
+
+    from platescanner.config import load_config
+    path = tmp_path / "config.json"
+    path.write_text(json.dumps({"camera": {"exposure": -7}}), encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.camera.exposure == -7 and not cfg.camera.auto_shutter
+    path.write_text(json.dumps({"camera": {"exposure": None}}), encoding="utf-8")
+    assert load_config(path).camera.auto_shutter                 # nothing chosen: Auto-sharp
+
+
+@pytest.mark.parametrize("auto", [True, False])
+def test_capture_starts_auto_sharp_on_a_usb_camera_only_when_on(monkeypatch, auto):
+    import threading
+    import time
+
+    from PySide6.QtCore import Qt
+    w, caps = _capture_with(monkeypatch, plugged={0})
+    w.cfg.camera.auto_shutter = auto
+    picked = []
+    w.shutter_changed.connect(picked.append, Qt.ConnectionType.DirectConnection)
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.3)
+    w.stop()
+    t.join(5)
+    if auto:   # starts at 1/256 s; the test camera's pictures are black, so it then goes longer
+        assert picked[:2] == [-8.0, -7.0]
+    else:
+        assert picked == []
