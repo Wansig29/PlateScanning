@@ -722,13 +722,79 @@ def _fourcc_after_size(cam):
 def test_a_slow_camera_is_asked_for_mjpg_the_other_way_round(monkeypatch):
     monkeypatch.setattr(camera, "_good_modes", {})
     opened = []
-    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(ModeCam(_fourcc_after_size)) or opened[-1])
+    fourcc_first = lambda c: not _fourcc_after_size(c)          # a driver that takes MJPG only before the size
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(ModeCam(fourcc_first)) or opened[-1])
     cap, got = camera.open_index(0, CameraConfig())
     assert cap is opened[1] and got["measured_fps"] > camera.MIN_GOOD_FPS and "note" not in got
-    assert camera._good_modes[0] == (1920, 1080, True)
+    assert camera._good_modes[0] == (1920, 1080, False)
     opened.clear()
     cap, _ = camera.open_index(0, CameraConfig())             # reopened: the mode that worked goes first
-    assert len(opened) == 1 and _fourcc_after_size(cap)
+    assert len(opened) == 1 and not _fourcc_after_size(cap)
+
+
+class DirectShowCam(ModeCam):
+    """OpenCV's DirectShow reader as the gate laptop's log showed it: a new size or frame rate
+    restarts the camera in its default format (YUY2), so MJPG set before either is lost, and
+    1080p YUY2 gives 5 pictures/s over USB (MJPG: 30)."""
+    MJPG = cv2.VideoWriter_fourcc(*"MJPG")
+
+    def __init__(self):
+        super().__init__(lambda c: c.format == DirectShowCam.MJPG)
+        self.format = 0
+
+    def set(self, prop, value):
+        if prop in (cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FPS):
+            self.format = 0
+        elif prop == cv2.CAP_PROP_FOURCC:
+            self.format = value
+        return super().set(prop, value)
+
+
+def test_mjpg_is_kept_by_directshow_and_the_camera_opens_once(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    opened = []
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(DirectShowCam()) or opened[-1])
+    cap, got = camera.open_index(0, CameraConfig())
+    assert len(opened) == 1 and cap.format == DirectShowCam.MJPG and got["measured_fps"] > camera.MIN_GOOD_FPS
+
+
+def test_a_camera_tested_before_the_scanner_restarted_is_not_tested_again(monkeypatch):
+    from platescanner.config import Config, _merge, _to_json
+    monkeypatch.setattr(camera, "_good_modes", {})
+    monkeypatch.setattr(camera, "_good_speeds", {})
+    opened = []
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(ModeCam(lambda c: False)) or opened[-1])
+    cfg = Config()
+    camera.open_index(1, cfg.camera)                           # first ever use: every mode tried
+    assert len(opened) > 1 and "1" in cfg.camera.video_modes
+    saved = _merge(Config, _to_json(cfg), [])                  # as saved in config.json and read back
+    monkeypatch.setattr(camera, "_good_modes", {})             # the scanner restarted
+    monkeypatch.setattr(camera, "_good_speeds", {})
+    opened.clear()
+    cap, _ = camera.open_index(1, saved.camera)
+    assert len(opened) == 1 and cap is opened[0]
+
+
+def test_a_nonsense_saved_video_mode_only_means_testing_again(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: ModeCam(lambda c: True))
+    cfg = CameraConfig(video_modes={"0": ["wide", None, 3, "fast"], "1": "x"})
+    for n in (0, 1):
+        cap, got = camera.open_index(n, cfg)
+        assert cap is not None and got["measured_fps"] > camera.MIN_GOOD_FPS
+
+
+def test_a_laptop_camera_at_720p_is_not_asked_for_720p_again(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    opened = []
+
+    class LaptopCam(ModeCam):                                  # gives 1280x720 whatever is asked, slowly
+        def get(self, prop):
+            return {cv2.CAP_PROP_FRAME_WIDTH: 1280, cv2.CAP_PROP_FRAME_HEIGHT: 720}.get(prop, 0)
+
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(LaptopCam(lambda c: False)) or opened[-1])
+    camera.open_index(0, CameraConfig())
+    assert all(c.props[cv2.CAP_PROP_FRAME_WIDTH] == 1920 for c in opened)   # 1080p asked two ways, no 720p try
 
 
 def test_a_camera_too_slow_at_1080p_falls_back_to_720p(monkeypatch):
@@ -757,6 +823,21 @@ def test_a_slow_camera_reopens_in_its_chosen_mode_without_testing_the_others(mon
     opened.clear()
     cap, got = camera.open_index(0, CameraConfig())            # switched back to it: one open, no retesting
     assert len(opened) == 1 and cap is opened[0] and got["measured_fps"] < camera.MIN_GOOD_FPS
+
+
+def test_a_camera_picked_in_the_menu_is_not_swapped_for_another(monkeypatch):
+    from platescanner import pipeline
+    from platescanner.config import Config
+    w = pipeline.CaptureWorker(Config(), pipeline.FrameSlot())
+    monkeypatch.setattr(camera, "open_index", lambda n, cfg: None)          # camera 2 doesn't open (yet)
+    searched = []
+    monkeypatch.setattr(camera, "find_webcam", lambda *a: searched.append(a))
+    monkeypatch.setattr(camera, "list_names", lambda: [])
+    w.switch_source("2", picked=True)
+    assert w._open() == (None, False) and searched == []                    # it is retried, not replaced
+    w.switch_source("0")                                                    # at start-up: any webcam will do
+    w._open()
+    assert len(searched) == 1
 
 
 def test_picking_another_camera_ends_the_retry_wait_at_once():

@@ -102,6 +102,10 @@ class CameraConfig:
     # Optional [x, y] fractions of the picture the zoom is aimed at (click the
     # Live Feed to move it). None = the middle.
     zoom_center: list[float] | None = None
+    # Filled in by the scanner: per camera number, the video mode that worked
+    # [width, height, format asked for after the size, pictures/s], so switching
+    # to a camera doesn't test its speed in every mode again. Delete to retest.
+    video_modes: dict[str, list] = field(default_factory=dict)
 
 
 @dataclass

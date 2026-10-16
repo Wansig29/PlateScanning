@@ -102,6 +102,9 @@ def list_names() -> list[str]:
     missing); the caller then falls back to plain numbers."""
     try:
         from pygrabber.dshow_graph import FilterGraph
+        if sys.platform == "win32":  # (COM must be started on each thread; harmless if it already is)
+            import ctypes
+            ctypes.windll.ole32.CoInitialize(None)
         return list(FilterGraph().get_input_devices())
     except Exception:  # noqa: BLE001 - a missing library or COM error must never stop the app
         log.info("Could not list camera names", exc_info=True)
@@ -115,9 +118,30 @@ MIN_GOOD_FPS = 12.0
 FALLBACK_SIZE = (1280, 720)
 # Per camera number, the video mode (width, height, format set after the size) that was chosen
 # and how fast it was, so reopening the camera (switching back to it, another shutter, a lost
-# signal) tries that mode alone instead of testing every mode again.
+# signal) tries that mode alone instead of testing every mode again. Also saved in config.json
+# (camera.video_modes), so the full test happens only the first time a camera is ever used:
+# on some webcam drivers each try restarts the camera, and testing every mode took 15-30 s.
 _good_modes: dict[int, tuple[int, int, bool]] = {}
 _good_speeds: dict[int, float] = {}
+
+
+def _remembered(index: int, cfg: CameraConfig) -> None:
+    """Take camera `index`'s mode from config.json when this session hasn't opened it yet.
+    A hand-edited entry that makes no sense is ignored (the camera is then tested again)."""
+    entry = (cfg.video_modes or {}).get(str(index)) if isinstance(cfg.video_modes, dict) else None
+    if index in _good_modes or not isinstance(entry, list) or len(entry) != 4:
+        return
+    w, h, fourcc_last, fps = entry
+    if all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (w, h)) \
+            and isinstance(fourcc_last, bool) and isinstance(fps, (int, float)) and not isinstance(fps, bool):
+        _good_modes[index], _good_speeds[index] = (w, h, fourcc_last), float(fps)
+
+
+def _remember(index: int, cfg: CameraConfig, mode: tuple[int, int, bool], fps: float) -> None:
+    _good_modes[index], _good_speeds[index] = mode, fps
+    known = cfg.video_modes if isinstance(cfg.video_modes, dict) else {}
+    # A new dict, not a change to the old one: the window may be saving config.json meanwhile.
+    cfg.video_modes = {**known, str(index): [mode[0], mode[1], mode[2], round(min(fps, 1000.0), 1)]}
 # A remembered mode is kept on reopening unless it is now clearly slower than it measured before.
 STILL_AS_FAST = 0.75
 
@@ -150,13 +174,16 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
     drivers ignore a change of video format once the picture is flowing.
 
     The speed is then measured. When the camera is slow (it didn't take MJPG), the format is asked
-    for again after the size (some drivers only take it that way round), and as a last resort
-    FALLBACK_SIZE is used: a sharp picture 5 times a second misses moving vehicles."""
-    modes = [(cfg.width, cfg.height, False), (cfg.width, cfg.height, True)]
+    for again before the size (some drivers only take it that way round), and as a last resort
+    FALLBACK_SIZE is used: a sharp picture 5 times a second misses moving vehicles. A camera that
+    already gives FALLBACK_SIZE or less (most laptop cameras) isn't asked for it again. A mode that
+    worked before (this session, or saved in config.json) is tried first and only checked briefly."""
+    modes = [(cfg.width, cfg.height, True), (cfg.width, cfg.height, False)]
     if cfg.fourcc and cfg.width * cfg.height > FALLBACK_SIZE[0] * FALLBACK_SIZE[1]:
-        modes += [(*FALLBACK_SIZE, False)]
+        modes += [(*FALLBACK_SIZE, True)]
     if not cfg.fourcc:
         modes = modes[:1]  # the camera's own choice was asked for: nothing to try
+    _remembered(index, cfg)
     if index in _good_modes and _good_modes[index] in modes:
         modes.remove(_good_modes[index])
         modes.insert(0, _good_modes[index])
@@ -165,7 +192,10 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
     # the next is tried, and the fastest is opened again at the end if it isn't the last one.
     speeds: dict[tuple[int, int, bool], float] = {}
     current: tuple[Any, dict[str, Any], tuple[int, int, bool]] | None = None
+    small = False  # the camera already gave FALLBACK_SIZE or less (a laptop camera): no need to ask for it
     for mode in modes:
+        if small and mode[:2] == FALLBACK_SIZE:
+            continue
         if current is not None:
             current[0].release()
             current = None
@@ -175,12 +205,14 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
                 return None  # no picture at all: absent or busy
             continue
         cap, got = opened
-        got["measured_fps"] = speeds[mode] = measure_fps(cap)
+        check_only = mode == _good_modes.get(index) and not speeds  # the mode that worked: a short check
+        got["measured_fps"] = speeds[mode] = measure_fps(cap, max_frames=5 if check_only else 10)
         current = (cap, got, mode)
         if got["measured_fps"] >= MIN_GOOD_FPS:
             break
         if mode == _good_modes.get(index) and got["measured_fps"] >= STILL_AS_FAST * _good_speeds.get(index, 0.0):
             break  # the mode chosen last time, as fast as then: the others were slower, no need to retry them
+        small = small or got["width"] * got["height"] <= FALLBACK_SIZE[0] * FALLBACK_SIZE[1]
         log.warning("Camera %d gives only %.1f pictures/s at %dx%d %s: trying another way",
                     index, got["measured_fps"], got["width"], got["height"], got["format"] or "?")
     fastest = max(speeds, key=speeds.get)
@@ -193,7 +225,7 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
         opened[1]["measured_fps"] = speeds[fastest]
         current = (opened[0], opened[1], fastest)
     cap, got, mode = current
-    _good_modes[index], _good_speeds[index] = mode, got["measured_fps"]
+    _remember(index, cfg, mode, got["measured_fps"])
     if (mode[0], mode[1]) != (cfg.width, cfg.height):
         got["note"] = f"{mode[0]}x{mode[1]}: the camera gives too few pictures/s at {cfg.width}x{cfg.height}"
     return cap, got
@@ -455,19 +487,21 @@ def fourcc_text(value: float) -> str:
 def apply_settings(cap: Any, cfg: CameraConfig, fourcc_last: bool = False) -> dict[str, Any]:
     """Ask the camera for the configured mode, exposure and focus; return what it reports.
 
-    The video format is normally set before the size, or the driver may pick the slow
-    uncompressed mode for the requested size; a few drivers only take it after the size
-    (`fourcc_last`, tried by open_index when the first way gives a slow camera).
+    The video format is set after the size (`fourcc_last`, what open_index tries first): OpenCV's
+    DirectShow reader forgets a format set before the size when the size changes. Some drivers
+    only take it before the size, so open_index tries that way next when the first gives a slow camera.
     """
     fourcc = cv2.VideoWriter_fourcc(*cfg.fourcc[:4].ljust(4)) if cfg.fourcc else None
+    # The frame rate goes first: OpenCV's DirectShow reader restarts the camera in its default
+    # (uncompressed, slow) format when the frame rate changes, which undid MJPG set before it.
+    if cfg.fps:
+        cap.set(cv2.CAP_PROP_FPS, cfg.fps)
     if fourcc is not None and not fourcc_last:
         cap.set(cv2.CAP_PROP_FOURCC, fourcc)
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.height)
     if fourcc is not None and fourcc_last:
         cap.set(cv2.CAP_PROP_FOURCC, fourcc)
-    if cfg.fps:
-        cap.set(cv2.CAP_PROP_FPS, cfg.fps)
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # always the newest frame, not a backlog
 
     # Auto-sharp starts at its own shutter at once: auto-exposure in a dim scene also slows the

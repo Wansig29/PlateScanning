@@ -207,6 +207,7 @@ class CaptureWorker(QThread):
     motion_changed = Signal(bool)
     shutter_changed = Signal(float)  # Auto-sharp picked this shutter (camera.exposure units)
     focus_locked = Signal(float)     # the camera focused on the lane and the focus was locked there
+    video_mode_learned = Signal()    # camera.video_modes changed: worth saving to config.json
 
     def __init__(self, cfg: Config, slot: FrameSlot):
         super().__init__()
@@ -214,6 +215,8 @@ class CaptureWorker(QThread):
         self.slot = slot
         self._stop = threading.Event()
         self._reopen = threading.Event()  # set when the operator picks another camera
+        self._picked = False  # the operator chose this camera: never scan with another one instead
+        self._switch_asked = 0.0  # time.monotonic() of the last switch, to log how long it took
         self._refocus = threading.Event()  # set to let autofocus focus on the next vehicle, then lock again
         self._overlays: list[Overlay] = []
         self._lock = threading.Lock()
@@ -265,9 +268,14 @@ class CaptureWorker(QThread):
         while not self._stop.is_set() and not self._reopen.is_set() and time.monotonic() < end:
             self._reopen.wait(0.1)
 
-    def switch_source(self, source: str) -> None:
-        """Use another camera (or stream) from now on: the current one is closed and the new one opened."""
+    def switch_source(self, source: str, picked: bool = False) -> None:
+        """Use another camera (or stream) from now on: the current one is closed and the new one opened.
+        `picked`: the operator chose it in the Camera menu, so if it doesn't open the scanner keeps
+        trying that camera instead of testing every other one and scanning with whichever answers."""
         self.cfg.camera.source = source
+        self._picked = picked or (self._picked and source == self.in_use)
+        self._switch_asked = time.monotonic()
+        log.info("Camera: switching to %s", camera.safe_source(source))
         self._reopen.set()
 
     def set_overlays(self, overlays: list[Overlay]) -> None:
@@ -279,8 +287,9 @@ class CaptureWorker(QThread):
         src = self.cfg.camera.source.strip()
         self.in_use, self.note = src, ""
         if src.isdigit():
+            known = dict(self.cfg.camera.video_modes) if isinstance(self.cfg.camera.video_modes, dict) else {}
             opened = camera.open_index(int(src), self.cfg.camera)
-            if opened is None and self.cfg.camera.use_any_webcam:
+            if opened is None and self.cfg.camera.use_any_webcam and not self._picked:
                 names = camera.list_names()
                 found = camera.find_webcam(int(src), self.cfg.camera, names)
                 if found is not None:
@@ -291,7 +300,9 @@ class CaptureWorker(QThread):
                     log.warning("Camera %s could not be opened; scanning with camera %d%s instead", src, n, name)
             if opened is None:
                 return None, False
-            log.info("Camera opened: %s", camera.describe(opened[1]))
+            log.info("Camera %s opened: %s", self.in_use, camera.describe(opened[1]))
+            if self.cfg.camera.video_modes != known:
+                self.video_mode_learned.emit()
             if opened[1].get("note"):  # a smaller video mode, as the camera was too slow at the configured one
                 log.warning("Camera: using %s", opened[1]["note"])
                 self.note = f"{self.note}; {opened[1]['note']}" if self.note else opened[1]["note"]
@@ -417,6 +428,9 @@ class CaptureWorker(QThread):
                 self._wait(3.0)
                 continue
             self.status.emit(f"Camera running: {self.note}" if self.note else "Camera running")
+            if self._switch_asked:
+                log.info("Camera: switched in %.1f s", time.monotonic() - self._switch_asked)
+                self._switch_asked = 0.0
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             started, index = time.monotonic(), 0
             got_frame = False  # a video that never yields a frame must not be rewound in a tight loop
