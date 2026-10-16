@@ -63,7 +63,8 @@ class CameraConfig:
     use_any_webcam: bool = True
     width: int = 1920
     height: int = 1080
-    preview_fps: int = 20
+    # Live Feed pictures per second; at most what the camera gives (30 = every picture of most webcams).
+    preview_fps: int = 30
     # Webcam video format. MJPG is what lets most USB webcams deliver full speed
     # at 1080p (uncompressed modes are often limited to a few frames per second).
     # "" = leave the camera's own choice.
@@ -338,7 +339,7 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     # Bumped when defaults change in a way an old config.json must pick up (see _migrate).
-    settings_version: int = 3
+    settings_version: int = 4
 
     home: Path = field(default_factory=app_home, repr=False)
     # Problems found in config.json when it was loaded (shown to the operator at start-up; not saved).
@@ -446,9 +447,16 @@ def _migrate(data: dict[str, Any]) -> None:
     installed app. Move only values still equal to the old default; a value someone chose stays.
     The file is then marked as up to date, so this runs once."""
     version = data.get("settings_version", 1)
-    if not isinstance(version, int) or version >= 3:
+    if not isinstance(version, int) or version >= 4:
         return
-    data["settings_version"] = 3
+    data["settings_version"] = 4
+    # v3 -> v4: the Live Feed shows every picture of a 30 fps webcam. 20 showed only every other
+    # one (15 per second), which looked choppy.
+    cam = data.get("camera")
+    if isinstance(cam, dict) and cam.get("preview_fps") == 20:
+        cam["preview_fps"] = 30
+    if version >= 3:
+        return
     ocr = data.get("ocr")
     if not isinstance(ocr, dict):
         return

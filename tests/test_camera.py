@@ -628,3 +628,52 @@ def test_a_remembered_focus_is_kept_until_asked_to_refocus(monkeypatch):
     assert got == []                                          # sharp at once: no autofocus at all
     got, locks, _ = _run_focus_capture(monkeypatch, 40.0, moving=True, refocus_after=0.2)
     assert got == [33.0]                                      # refocused on the vehicle, then locked again
+
+
+def test_plate_reading_slows_down_while_the_live_feed_stutters(caplog):
+    from platescanner import pipeline
+    from platescanner.config import Config
+    w = pipeline.CaptureWorker(Config(), pipeline.FrameSlot())
+    w._pace(0.033, 1.0)
+    assert w.read_speed == 1.0                                # smooth: full speed
+    w._pace(0.4, 2.0)
+    w._pace(0.4, 2.1)
+    assert w.read_speed == 0.25                               # stuttered twice: a quarter of the speed
+    w._pace(0.4, 2.2)
+    assert w.read_speed == pipeline.MIN_READ_SPEED           # never stops reading plates
+    w._pace(0.033, 3.0)
+    assert w.read_speed == 0.25                               # not smooth for long enough yet
+    for t in range(5, 30, 2):
+        w._pace(0.033, float(t))
+    assert w.read_speed == 1.0                                # back to full speed, step by step
+    w._next_report = 0.0
+    with caplog.at_level(logging.WARNING):
+        w._pace(0.033, 31.0)
+    assert "3 pauses over 0.2 s" in caplog.text and "longest 400 ms" in caplog.text
+
+
+def test_recognizer_reads_less_often_while_the_capture_says_so(monkeypatch):
+    import threading
+    import time
+
+    import numpy as np
+
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    class Engine:
+        device = "CPU"
+
+    capture = type("C", (), {"read_speed": 0.25, "set_overlays": lambda s, o: None})()
+    w = pipeline.RecognizerWorker(Config(), pipeline.FrameSlot(), capture, Engine())
+    looked = []
+    w._detect = lambda f, hints=(): looked.append(f.ts) or []
+    w._apply = lambda conn, f, dets: None
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    for i in range(31):                                       # one second of a vehicle moving
+        w.slot.put(np.zeros((90, 160, 3), np.uint8), (0, 0, 160, 90), True, i / 30)
+        time.sleep(0.01)
+    w.stop()
+    t.join(5)
+    assert 1 <= len(looked) <= 3                              # 8/s at a quarter: 2 per second
