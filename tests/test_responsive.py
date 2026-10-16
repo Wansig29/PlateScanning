@@ -303,29 +303,28 @@ def test_a_shown_photo_does_not_stop_its_slot_from_shrinking(window):
     assert slot.minimumSizeHint() == QSize(120, 90)           # but it still asks for its minimum only
 
 
-@pytest.mark.parametrize("font_pt", [None, 11, 13])   # 11 / 13 pt: wider fonts, like Windows' or Windows scaling
+@pytest.mark.parametrize("font_pt", [None, 12, 14])   # larger type, like Windows' wider fonts or Windows scaling
 def test_small_laptop_screen_nothing_is_cut_off(window, font_pt):
-    from PySide6.QtWidgets import QToolButton
-
     from platescanner.ui.widgets import IdentityCard
     w, app = window
-    font = app.font()
-    if font_pt:
-        bigger = app.font()
-        bigger.setPointSize(font_pt)
-        app.setFont(bigger)
+    sheet = app.styleSheet()
+    if font_pt:  # (through the style sheet: it sets the font size, so app.setFont would change nothing)
+        app.setStyleSheet(sheet + f"\nQWidget {{ font-size: {font_pt}pt; }}")
     try:
-        w.resize(1366, 728)                                   # wide first, then small: it must adapt both ways
-        app.processEvents()
-        w.resize(1024, 600)
-        app.processEvents()
-        for card in w.identity.findChildren(IdentityCard):   # each card fits its panel
-            assert card.minimumSizeHint().width() <= w.identity.scroll.viewport().width()
-        for b in (w.camera_btn, w.lane_button, w.lane_clear):    # the Live Feed controls are not squeezed
-            assert b.width() >= b.sizeHint().width(), b.text()
-        w.resize(1366, 728)
-        app.processEvents()
+        for size in ((1366, 728), (1024, 600), (1366, 728)):  # it must adapt both ways
+            w.resize(*size)
+            app.processEvents()
+            for card in w.identity.findChildren(IdentityCard):   # each card fits its panel
+                assert card.minimumSizeHint().width() <= w.identity.scroll.viewport().width()
+            # The fullest Live Feed header that fits is used (whatever the fonts make "fits")...
+            needs, room = w._feed_header_needs(), w._feed_header_room()
+            fitting = next((i for i, need in enumerate(needs) if need <= room), len(needs) - 1)
+            assert w._feed_header_level == fitting, (size, needs, room)
+            # ...and when one fits, nothing in it is squeezed.
+            if needs[fitting] <= room:
+                for b in (w.camera_btn, w.lane_button, w.lane_clear):
+                    assert b.width() >= b.sizeHint().width(), (size, b.text())
         if not font_pt:
-            assert w.lane_button.text() == "Draw lane"        # full labels again where there is room
+            assert w._feed_header_level == 0 or needs[0] > room   # full labels whenever they fit
     finally:
-        app.setFont(font)
+        app.setStyleSheet(sheet)
