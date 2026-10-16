@@ -216,3 +216,50 @@ def test_shutter_button_saves_the_exposure_and_reopens_the_camera(window, monkey
     assert w.cfg.camera.auto_shutter and told and len(reopened) == 3
     assert camera.shutter_label(-6.5) == "-6.5"
     del w.capture
+
+
+def test_focus_button_remembers_the_locked_focus_and_refocuses(window, monkeypatch):
+    from platescanner.config import load_config as reload
+    w, _ = window
+    reopened, refocused = [], []
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src),
+                               "refocus": lambda s: refocused.append(1)})()
+    assert w.focus_btn.text() == "Focus: next vehicle…" and w.focus_lock_action.isChecked()
+    w._focus_locked(42.0)                                     # the camera thread locked it on a vehicle
+    assert w.focus_btn.text() == "Focus: locked" and reload().camera.locked_focus == 42.0
+    w.focus_btn.menu().actions()[-1].trigger()                # Refocus now: no camera reopen needed
+    assert reload().camera.locked_focus is None and refocused == [1] and not reopened
+    assert w.focus_btn.text() == "Focus: next vehicle…"
+    w.focus_auto_action.trigger()                             # autofocus always on
+    assert not reload().camera.focus_lock and w.focus_btn.text() == "Focus: auto" and len(reopened) == 1
+    w.focus_lock_action.trigger()
+    assert reload().camera.focus_lock
+    w._focus_locked(42.0)
+    w._set_camera("1")                                        # another camera focuses afresh
+    assert w.cfg.camera.locked_focus is None
+    del w.capture
+
+
+def test_refocuses_by_itself_when_plates_come_out_unreadable_or_blurred(window, monkeypatch):
+    import datetime as dt
+
+    from platescanner.pipeline import NoPlateEvent
+    w, _ = window
+    refocused = []
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: None,
+                               "refocus": lambda s: refocused.append(1)})()
+    no_plate = NoPlateEvent(None, dt.datetime.now(), None, [])
+    w._focus_locked(42.0)
+    w._on_no_plate(no_plate)
+    w._on_no_plate(no_plate)
+    assert refocused == []                                    # two unreadable vehicles: could be the plates
+    w._on_no_plate(no_plate)
+    assert refocused == [1] and w.cfg.camera.locked_focus is None
+    w._focus_locked(42.0)
+    w._on_health("blurred", "warn", "Camera image is blurred")
+    assert refocused == [1]                                   # at most once every 2 minutes
+    w._last_refocus -= w.REFOCUS_EVERY
+    w._on_health("blurred", "warn", "Camera image is blurred")
+    assert refocused == [1, 1]
+    w._on_health("blurred", "ok", "Recovered")
+    del w.capture
