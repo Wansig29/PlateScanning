@@ -671,9 +671,16 @@ def test_recognizer_reads_less_often_while_the_capture_says_so(monkeypatch):
     w._apply = lambda conn, f, dets: None
     t = threading.Thread(target=w.run, daemon=True)
     t.start()
-    for i in range(31):                                       # one second of a vehicle moving
-        w.slot.put(np.zeros((90, 160, 3), np.uint8), (0, 0, 160, 90), True, i / 30)
+    image = np.zeros((90, 160, 3), np.uint8)
+    # The worker may start slowly (a CI machine): offer the first picture until it is looked at.
+    deadline = time.monotonic() + 10.0
+    while not looked and time.monotonic() < deadline:
+        w.slot.put(image, (0, 0, 160, 90), True, 100.0)       # (camera clock: well past 0)
+        time.sleep(0.01)
+    for i in range(1, 31):                                    # the rest of one second of a vehicle moving
+        w.slot.put(image, (0, 0, 160, 90), True, 100 + i / 30)
         time.sleep(0.01)
     w.stop()
     t.join(5)
     assert 1 <= len(looked) <= 3                              # 8/s at a quarter: 2 per second
+    assert all(b - a >= 0.5 - 1e-9 for a, b in zip(looked, looked[1:]))
