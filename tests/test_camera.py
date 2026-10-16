@@ -584,25 +584,47 @@ def test_a_remembered_focus_is_set_at_once_when_the_camera_opens():
     assert (AF, 1) in cam.sets and not any(p == F for p, _ in cam.sets)
 
 
-@pytest.mark.parametrize("locked", [None, 40.0])
-def test_capture_locks_the_focus_on_the_empty_lane_once(monkeypatch, locked):
+def _run_focus_capture(monkeypatch, locked, moving, refocus_after=None, seconds=0.6):
     import threading
     import time
 
     from PySide6.QtCore import Qt
+
+    from platescanner import pipeline
     monkeypatch.setattr(camera, "FOCUS_SETTLE_SECONDS", 0.1)
+
+    class Motion:  # a vehicle in view (or not) the whole time
+        def __init__(self, *_): pass
+        def apply(self, _frame): return (moving, (0, 0, 2, 2) if moving else None)
+
+    monkeypatch.setattr(pipeline, "MotionDetector", Motion)
     w, caps = _capture_with(monkeypatch, plugged={0})
     w.cfg.camera.locked_focus = locked
-    caps_focus = []
-    monkeypatch.setattr(camera, "lock_focus", lambda cap: caps_focus.append(cap) or 33.0)
+    w.cfg.camera.auto_shutter = False
+    locks = []
+    monkeypatch.setattr(camera, "lock_focus", lambda cap: locks.append(cap) or 33.0)
     got = []
     w.focus_locked.connect(got.append, Qt.ConnectionType.DirectConnection)
     t = threading.Thread(target=w.run, daemon=True)
     t.start()
-    time.sleep(0.5)
+    if refocus_after is not None:
+        time.sleep(refocus_after)
+        w.refocus()
+    time.sleep(seconds)
     w.stop()
     t.join(5)
-    if locked is None:
-        assert got == [33.0] and caps_focus == [caps[0]]
-    else:                                   # remembered from before: no autofocus wait at all
-        assert got == [] and caps_focus == []
+    return got, locks, caps
+
+
+def test_focus_is_locked_on_a_vehicle_in_view_not_on_the_empty_lane(monkeypatch):
+    got, locks, caps = _run_focus_capture(monkeypatch, None, moving=True)
+    assert got == [33.0] and locks == [caps[0]]               # locked once, while the vehicle was in view
+    got, locks, _ = _run_focus_capture(monkeypatch, None, moving=False)
+    assert got == [] and locks == []                          # empty lane: keeps waiting for a vehicle
+
+
+def test_a_remembered_focus_is_kept_until_asked_to_refocus(monkeypatch):
+    got, locks, _ = _run_focus_capture(monkeypatch, 40.0, moving=True)
+    assert got == []                                          # sharp at once: no autofocus at all
+    got, locks, _ = _run_focus_capture(monkeypatch, 40.0, moving=True, refocus_after=0.2)
+    assert got == [33.0]                                      # refocused on the vehicle, then locked again

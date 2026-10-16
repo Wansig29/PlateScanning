@@ -84,10 +84,11 @@ class CameraConfig:
     # camera is mounted (tools/camera_probe.py shows which value is sharpest).
     autofocus: bool = True
     focus: float | None = None
-    # Focus lock: with autofocus on, the camera focuses once on the empty lane, then the focus is
+    # Focus lock: with autofocus on, the camera focuses on a vehicle in view, then the focus is
     # locked there, so it no longer hunts (and blurs) each time a vehicle passes. The locked value
-    # is remembered, so the picture is sharp at once the next time the camera opens. The Focus
-    # button on the Live Feed refocuses (after moving the camera) or turns the lock off.
+    # is remembered, so the picture is sharp at once the next time the camera opens. It refocuses
+    # by itself when plates come out unreadable or the picture blurred; the Focus button on the
+    # Live Feed can also refocus or turn the lock off.
     focus_lock: bool = True
     locked_focus: float | None = None
     # Optional [x, y, w, h] as fractions of the frame: only this region is

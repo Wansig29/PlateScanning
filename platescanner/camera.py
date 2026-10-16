@@ -310,7 +310,7 @@ class AutoShutter:
         return self.exposure
 
 
-FOCUS_SETTLE_SECONDS = 3.0  # autofocus time before the focus is locked
+FOCUS_SETTLE_SECONDS = 1.5  # time autofocus gets on a vehicle in view before the focus is locked
 
 
 def lock_focus(cap: Any) -> float | None:

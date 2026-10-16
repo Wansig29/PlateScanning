@@ -515,6 +515,8 @@ class MainWindow(QMainWindow):
 
     def _on_health(self, code: str, severity: str, msg: str) -> None:
         """The scanner noticed the camera or the plate reading getting worse (or recovering)."""
+        if code == "blurred" and severity != "ok" and self.cfg.camera.locked_focus is not None:
+            self._maybe_refocus()
         if severity == "ok":
             self._health_issues.pop(code, None)
         else:
@@ -787,14 +789,14 @@ class MainWindow(QMainWindow):
 
     def _build_focus_button(self, header: QHBoxLayout) -> None:
         """'Focus' picker in the Live Feed header. Autofocus hunts each time a vehicle passes, so by
-        default the focus is locked once the camera has focused on the empty lane (camera.focus_lock)."""
+        default the focus is locked once the camera has focused on a vehicle (camera.focus_lock)."""
         self.focus_btn = QToolButton()
         self.focus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.focus_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.focus_btn.setToolTip("Lock after focusing (recommended): the camera focuses once on the empty lane,\n"
-                                  "then keeps that focus, so it doesn't refocus (and blur) for every vehicle.\n"
-                                  "Refocus now after moving or turning the camera. USB webcams only: for a\n"
-                                  "phone, set the focus in the phone camera app.")
+        self.focus_btn.setToolTip("Lock after focusing (recommended): the camera focuses on a vehicle in view,\n"
+                                  "then keeps that focus, so it doesn't hunt (and blur) for every vehicle.\n"
+                                  "It refocuses by itself when plates come out blurred or unreadable.\n"
+                                  "USB webcams only: for a phone, set the focus in the phone camera app.")
         menu = QMenu(self.focus_btn)
         group = QActionGroup(menu)
         self.focus_lock_action = menu.addAction("Lock after focusing (recommended)")
@@ -816,7 +818,7 @@ class MainWindow(QMainWindow):
         elif not cam.focus_lock:
             text = "auto"
         else:
-            text = "locked" if cam.locked_focus is not None else "focusing…"
+            text = "locked" if cam.locked_focus is not None else "next vehicle…"
         self.focus_btn.setText(f"Focus: {text}")
         self.focus_lock_action.setChecked(cam.autofocus and cam.focus_lock)
         self.focus_auto_action.setChecked(cam.autofocus and not cam.focus_lock)
@@ -828,25 +830,49 @@ class MainWindow(QMainWindow):
         self._show_focus()
 
     def _set_focus_lock(self, on: bool) -> None:
-        self.cfg.camera.autofocus, self.cfg.camera.focus_lock = True, on
-        save_config(self.cfg)
-        self._refocus()
-
-    def _refocus(self) -> None:
-        """Forget the locked focus and let the camera focus again (then lock it, if the lock is on)."""
         if camera.is_stream(self.cfg.camera.source.strip()):
-            QMessageBox.information(self, "Focus", "This is a phone or IP camera: set its focus in the "
-                                    "camera app on the phone (tap to focus, or a fixed focus mode).")
+            self._refocus()  # (explains that a phone's focus is set on the phone)
             return
-        self.cfg.camera.autofocus = True
+        self.cfg.camera.autofocus, self.cfg.camera.focus_lock = True, on
         self.cfg.camera.locked_focus = None
         save_config(self.cfg)
         self._show_focus()
         capture = getattr(self, "capture", None)
         if capture is not None:
-            capture.switch_source(self.cfg.camera.source)  # reopened with autofocus on
-            self._set_status(self.cam_status, "Camera: focusing (keep the lane clear for a few seconds)",
-                             theme.AMBER)
+            capture.switch_source(self.cfg.camera.source)  # reopened with the new focus setting
+
+    def _refocus(self, automatic: bool = False) -> None:
+        """Forget the locked focus: the camera focuses on the next vehicle in view, then locks there."""
+        cam = self.cfg.camera
+        if camera.is_stream(cam.source.strip()):
+            if not automatic:
+                QMessageBox.information(self, "Focus", "This is a phone or IP camera: set its focus in the "
+                                        "camera app on the phone (tap to focus, or a fixed focus mode).")
+            return
+        if not (cam.autofocus and cam.focus_lock):
+            if not automatic:
+                self._set_focus_lock(True)
+            return
+        self._last_refocus = time.monotonic()
+        self._unreadable_in_a_row = 0
+        cam.locked_focus = None
+        save_config(self.cfg)
+        self._show_focus()
+        capture = getattr(self, "capture", None)
+        if capture is not None:
+            capture.refocus()
+        self.statusBar().showMessage(
+            ("Plates are coming out blurred: " if automatic else "") +
+            "the camera will focus on the next vehicle, then keep that focus", 10000)
+
+    # Refocus by itself after this many vehicles in a row whose plate could not be read,
+    # or when the picture turns blurred; at most once per REFOCUS_EVERY seconds.
+    REFOCUS_AFTER_UNREADABLE = 3
+    REFOCUS_EVERY = 120.0
+
+    def _maybe_refocus(self) -> None:
+        if time.monotonic() - getattr(self, "_last_refocus", -1e9) >= self.REFOCUS_EVERY:
+            self._refocus(automatic=True)
 
     def _fill_camera_menu(self) -> None:
         """One entry per connected camera, by name; the one in use is ticked."""
@@ -1322,9 +1348,13 @@ class MainWindow(QMainWindow):
 
     def _on_scan(self, scan: ScanResult) -> None:
         # (The live feed labels every tracked vehicle itself.)
+        self._unreadable_in_a_row = 0
         self._display(scan)
 
     def _on_no_plate(self, ev: NoPlateEvent) -> None:
+        self._unreadable_in_a_row = getattr(self, "_unreadable_in_a_row", 0) + 1
+        if self._unreadable_in_a_row >= self.REFOCUS_AFTER_UNREADABLE and self.cfg.camera.locked_focus is not None:
+            self._maybe_refocus()  # the locked focus may be off: let it focus on the next vehicle
         saw = ", ".join(ev.ocr_saw[:6]) if ev.ocr_saw else "no text at all"
         self.statusBar().showMessage(f"Motion detected but no plate read (OCR saw: {saw})", 10000)
         if ev.scan_id is not None:

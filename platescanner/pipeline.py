@@ -206,6 +206,7 @@ class CaptureWorker(QThread):
         self.slot = slot
         self._stop = threading.Event()
         self._reopen = threading.Event()  # set when the operator picks another camera
+        self._refocus = threading.Event()  # set to let autofocus focus on the next vehicle, then lock again
         self._overlays: list[Overlay] = []
         self._lock = threading.Lock()
         # The camera actually scanned, and why it isn't the configured one (when it isn't).
@@ -213,6 +214,10 @@ class CaptureWorker(QThread):
 
     def stop(self) -> None:
         self._stop.set()
+
+    def refocus(self) -> None:
+        """Focus again on the next vehicle in view, then lock there (focus lock only)."""
+        self._refocus.set()
 
     def switch_source(self, source: str) -> None:
         """Use another camera (or stream) from now on: the current one is closed and the new one opened."""
@@ -377,10 +382,12 @@ class CaptureWorker(QThread):
                 reader.set_exposure(shutter.exposure)
                 self.shutter_changed.emit(shutter.exposure)
             cam = self.cfg.camera
-            lock_focus_at = None  # when to lock the focus, once autofocus has had time to focus
-            if (reader is not None and self.in_use.isdigit() and not self.note and cam.autofocus
-                    and cam.focus_lock and cam.locked_focus is None):
-                lock_focus_at = time.monotonic() + camera.FOCUS_SETTLE_SECONDS
+            # Focus lock: autofocus focuses on a vehicle, then the focus stays there (see camera.py).
+            manage_focus = (reader is not None and self.in_use.isdigit() and not self.note
+                            and cam.autofocus and cam.focus_lock)
+            learning = manage_focus and cam.locked_focus is None  # waiting for a vehicle to focus on
+            vehicle_since: float | None = None
+            self._refocus.clear()
 
             while not self._stop.is_set() and not self._reopen.is_set():
                 t0 = time.monotonic()
@@ -440,10 +447,20 @@ class CaptureWorker(QThread):
                     if new_shutter is not None:
                         reader.set_exposure(new_shutter)
                         self.shutter_changed.emit(new_shutter)
-                # Locked on the empty lane: autofocus would lock onto a passing vehicle instead.
-                if lock_focus_at is not None and t0 >= lock_focus_at and not active:
-                    lock_focus_at = None
-                    reader.call(self._lock_focus)
+                if manage_focus and self._refocus.is_set():  # asked to focus again (blurred plates)
+                    self._refocus.clear()
+                    reader.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+                    learning, vehicle_since = True, None
+                if learning:
+                    # Autofocus aims at the vehicle while it is in view; once it has had time to
+                    # settle on it, lock: the next vehicles stop at about the same place.
+                    if not active:
+                        vehicle_since = None
+                    elif vehicle_since is None:
+                        vehicle_since = t0
+                    elif t0 - vehicle_since >= camera.FOCUS_SETTLE_SECONDS:
+                        learning = False
+                        reader.call(self._lock_focus)
 
                 if t0 - last_preview >= preview_interval:
                     last_preview = t0
