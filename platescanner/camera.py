@@ -247,8 +247,21 @@ def open_stream(source: str) -> Any:
     return cap
 
 
-# DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).
+# DirectShow / V4L: 0.25 asks for manual exposure, 0.75 for automatic.
 AUTO_EXPOSURE_MANUAL = 0.25
+AUTO_EXPOSURE_AUTO = 0.75
+
+# The Shutter choices on the Live Feed: camera.exposure (DirectShow: a power of two in
+# seconds) and its label. Shorter = sharper moving plates but a darker picture.
+SHUTTER_CHOICES: list[tuple[float | None, str]] = [
+    (None, "Auto"), (-6, "1/64 s"), (-7, "1/128 s"), (-8, "1/256 s"), (-9, "1/512 s"), (-10, "1/1024 s")]
+
+
+def shutter_label(exposure: float | None) -> str:
+    for value, label in SHUTTER_CHOICES:
+        if value == exposure:
+            return label
+    return f"{exposure:g}"  # a value typed into config.json
 
 
 def fourcc_text(value: float) -> str:
@@ -274,6 +287,8 @@ def apply_settings(cap: Any, cfg: CameraConfig) -> dict[str, Any]:
     if cfg.exposure is not None:  # a short, fixed shutter: sharper plates, darker picture
         cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_MANUAL)
         cap.set(cv2.CAP_PROP_EXPOSURE, cfg.exposure)
+    else:  # back to Auto: the driver keeps a manual shutter set earlier unless told otherwise
+        cap.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_AUTO)
     if cfg.gain is not None:
         cap.set(cv2.CAP_PROP_GAIN, cfg.gain)
     if not cfg.autofocus:

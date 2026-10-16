@@ -504,3 +504,31 @@ def test_a_violation_with_one_doubtful_character_still_alerts_but_asks_to_verify
     _, conn, got = _stand_at_gate(OneDoubtfulCharacterEngine(), violation_plate="ABC 1234")
     assert got and got[0].lookup.status == db.RESULT_VIOLATION and got[0].verify
     conn.close()
+
+
+@pytest.mark.parametrize("rate, most", [(8.0, 9), (0, 31)])
+def test_plates_are_looked_for_at_most_max_scans_per_second_while_moving(rate, most):
+    import threading
+    import time
+
+    engine = FakeEngine()
+    engine.device = "CPU"
+    w = worker(engine)
+    w.cfg.motion.max_scans_per_second = rate
+    looked = []
+    w._detect = lambda f, hints=(): looked.append(f.ts) or []
+    w._apply = lambda conn, f, dets: None
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    image = np.zeros((90, 160, 3), np.uint8)
+    for i in range(31):                      # one second of a vehicle moving, at 30 fps
+        w.slot.put(image, (0, 0, 160, 90), True, i / 30)
+        deadline = time.monotonic() + 1.0
+        while len(looked) < 1 and time.monotonic() < deadline:
+            time.sleep(0.001)
+        time.sleep(0.01)
+    w.stop()
+    t.join(5)
+    assert 2 <= len(looked) <= most
+    if rate:
+        assert all(b - a >= 1 / rate - 1e-9 for a, b in zip(looked, looked[1:]))

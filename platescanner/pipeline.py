@@ -584,7 +584,11 @@ class RecognizerWorker(QThread):
                 # Only real plates keep it busy, not the classical finder's static
                 # guesses (signs, lane marks, windows).
                 following = any(t.neural_hits or t.reads for t in self.tracker.tracks.values())
-                idle = not f.motion and not following and f.ts - last_detect < self.cfg.motion.idle_check_seconds
+                since = f.ts - last_detect
+                idle = not f.motion and not following and since < self.cfg.motion.idle_check_seconds
+                # Busy: leave the CPU some room for the camera and the Live Feed.
+                rate = self.cfg.motion.max_scans_per_second
+                idle = idle or (rate > 0 and since < 1.0 / rate)
                 self._feed_health(f, not idle)
                 if idle:
                     drain()

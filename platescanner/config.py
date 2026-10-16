@@ -120,6 +120,9 @@ class MotionConfig:
     # The motion gate takes a moment to be sure a shape is a vehicle travelling (up to ~1 s);
     # this look catches a plate before that, so it bounds how late a violator can be noticed.
     idle_check_seconds: float = 0.25
+    # While a vehicle moves, look for plates at most this many times a second (0 = as fast as
+    # the computer can). Unlimited, plate reading takes every core and the Live Feed stutters.
+    max_scans_per_second: float = 8.0
 
 
 @dataclass

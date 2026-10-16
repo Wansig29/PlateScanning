@@ -339,6 +339,7 @@ class MainWindow(QMainWindow):
         self.video.pan_to.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
         self._build_camera_button(feed_header)
+        self._build_shutter_button(feed_header)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
         left.addWidget(feed_frame)
@@ -717,6 +718,50 @@ class MainWindow(QMainWindow):
         self._fill_camera_menu()
         self.camera_btn.setMenu(self._camera_menu)
         header.addWidget(self.camera_btn)
+
+    def _build_shutter_button(self, header: QHBoxLayout) -> None:
+        """'Shutter' picker in the Live Feed header (camera.exposure). Auto-exposure picks a slow
+        shutter, so a moving vehicle smears; a shorter one keeps its plate sharp."""
+        self.shutter_btn = QToolButton()
+        self.shutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.shutter_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.shutter_btn.setToolTip("Moving vehicles look blurred? Pick a shorter shutter (e.g. 1/256 s):\n"
+                                    "plates stay sharp, but the picture gets darker. Use the shortest one\n"
+                                    "that is still bright enough. USB webcams only: for a phone, set it\n"
+                                    "in the phone camera app.")
+        menu = QMenu(self.shutter_btn)
+        group = QActionGroup(menu)
+        self._shutter_actions = {}
+        for value, label in camera.SHUTTER_CHOICES:
+            act = menu.addAction(label)
+            act.setCheckable(True)
+            act.triggered.connect(lambda _c=False, v=value: self._set_shutter(v))
+            group.addAction(act)
+            self._shutter_actions[value] = act
+        self.shutter_btn.setMenu(menu)
+        self._show_shutter()
+        header.addWidget(self.shutter_btn)
+
+    def _show_shutter(self) -> None:
+        exposure = self.cfg.camera.exposure
+        self.shutter_btn.setText(f"Shutter: {camera.shutter_label(exposure)}")
+        for value, act in self._shutter_actions.items():
+            act.setChecked(value == exposure)
+
+    def _set_shutter(self, exposure: float | None) -> None:
+        """Use this shutter from now on (the camera is reopened with it) and remember it."""
+        if camera.is_stream(self.cfg.camera.source.strip()):
+            self._show_shutter()
+            QMessageBox.information(self, "Shutter", "This is a phone or IP camera: set its shutter "
+                                    "(exposure) in the camera app on the phone.")
+            return
+        self.cfg.camera.exposure = exposure
+        save_config(self.cfg)
+        self._show_shutter()
+        capture = getattr(self, "capture", None)
+        if capture is not None:
+            capture.switch_source(self.cfg.camera.source)  # reopened: the settings apply at open
+            self._set_status(self.cam_status, "Camera: applying the new shutter", theme.AMBER)
 
     def _fill_camera_menu(self) -> None:
         """One entry per connected camera, by name; the one in use is ticked."""
