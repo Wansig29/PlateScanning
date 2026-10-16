@@ -196,7 +196,7 @@ def restore(conn: sqlite3.Connection, source: Path, backups_dir: Path, keep: int
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     if "permanently_revoked" not in {r["name"] for r in conn.execute("PRAGMA table_info(vehicles)")}:
-        conn.execute("ALTER TABLE vehicles ADD COLUMN permanently_revoked INTEGER")
+        _add_column(conn, "vehicles", "permanently_revoked", "INTEGER")
     # Databases created before these columns existed.
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(scan_log)")}
     for name, kind in (("snapshot_path", "TEXT"), ("vehicle_path", "TEXT"), ("track_id", "INTEGER"),
@@ -205,8 +205,19 @@ def init_schema(conn: sqlite3.Connection) -> None:
                        ("verify", "INTEGER NOT NULL DEFAULT 0"),
                        ("archived_year", "TEXT")):  # e.g. "2025-2026": set when that academic year was archived
         if name not in cols:
-            conn.execute(f"ALTER TABLE scan_log ADD COLUMN {name} {kind}")
+            _add_column(conn, "scan_log", name, kind)
     conn.commit()
+
+
+def _add_column(conn: sqlite3.Connection, table: str, name: str, kind: str) -> None:
+    """Add a column a database from an older version lacks. Two scanners starting at the same
+    moment both find it missing and both add it: the second then finds it there, which is fine
+    (it used to stop the scanner from starting: "duplicate column name")."""
+    try:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {kind}")
+    except sqlite3.OperationalError as e:
+        if "duplicate column" not in str(e).lower():
+            raise
 
 
 # --- school years ---------------------------------------------------------
