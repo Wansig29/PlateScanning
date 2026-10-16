@@ -198,6 +198,7 @@ class CaptureWorker(QThread):
     status = Signal(str)
     motion_changed = Signal(bool)
     shutter_changed = Signal(float)  # Auto-sharp picked this shutter (camera.exposure units)
+    focus_locked = Signal(float)     # the camera focused on the lane and the focus was locked there
 
     def __init__(self, cfg: Config, slot: FrameSlot):
         super().__init__()
@@ -247,6 +248,12 @@ class CaptureWorker(QThread):
             cap.release()
             return None, is_file
         return cap, is_file
+
+    def _lock_focus(self, cap) -> None:
+        """(On the camera reader thread.)"""
+        value = camera.lock_focus(cap)
+        if value is not None:
+            self.focus_locked.emit(value)
 
     def _roi(self, frame: np.ndarray) -> tuple[int, int, int, int]:
         h, w = frame.shape[:2]
@@ -369,6 +376,11 @@ class CaptureWorker(QThread):
                 shutter = camera.AutoShutter()
                 reader.set_exposure(shutter.exposure)
                 self.shutter_changed.emit(shutter.exposure)
+            cam = self.cfg.camera
+            lock_focus_at = None  # when to lock the focus, once autofocus has had time to focus
+            if (reader is not None and self.in_use.isdigit() and not self.note and cam.autofocus
+                    and cam.focus_lock and cam.locked_focus is None):
+                lock_focus_at = time.monotonic() + camera.FOCUS_SETTLE_SECONDS
 
             while not self._stop.is_set() and not self._reopen.is_set():
                 t0 = time.monotonic()
@@ -428,6 +440,10 @@ class CaptureWorker(QThread):
                     if new_shutter is not None:
                         reader.set_exposure(new_shutter)
                         self.shutter_changed.emit(new_shutter)
+                # Locked on the empty lane: autofocus would lock onto a passing vehicle instead.
+                if lock_focus_at is not None and t0 >= lock_focus_at and not active:
+                    lock_focus_at = None
+                    reader.call(self._lock_focus)
 
                 if t0 - last_preview >= preview_interval:
                     last_preview = t0

@@ -340,6 +340,7 @@ class MainWindow(QMainWindow):
         feed_lay.addWidget(self.video)
         self._build_camera_button(feed_header)
         self._build_shutter_button(feed_header)
+        self._build_focus_button(feed_header)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
         left.addWidget(feed_frame)
@@ -488,6 +489,7 @@ class MainWindow(QMainWindow):
         self.capture.motion_changed.connect(self.video.set_motion)
         self.capture.status.connect(self._camera_status)
         self.capture.shutter_changed.connect(self._sharp_shutter)
+        self.capture.focus_locked.connect(self._focus_locked)
         self.recognizer = RecognizerWorker(self.cfg, slot, self.capture)
         self.recognizer.status.connect(lambda m: self._set_status(self.ocr_status, f"OCR: {m}", theme.AMBER))
         self.recognizer.ready.connect(lambda m: self._set_status(self.ocr_status, m, theme.GREEN))
@@ -783,6 +785,69 @@ class MainWindow(QMainWindow):
             capture.switch_source(self.cfg.camera.source)  # reopened: the settings apply at open
             self._set_status(self.cam_status, "Camera: applying the new shutter", theme.AMBER)
 
+    def _build_focus_button(self, header: QHBoxLayout) -> None:
+        """'Focus' picker in the Live Feed header. Autofocus hunts each time a vehicle passes, so by
+        default the focus is locked once the camera has focused on the empty lane (camera.focus_lock)."""
+        self.focus_btn = QToolButton()
+        self.focus_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.focus_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.focus_btn.setToolTip("Lock after focusing (recommended): the camera focuses once on the empty lane,\n"
+                                  "then keeps that focus, so it doesn't refocus (and blur) for every vehicle.\n"
+                                  "Refocus now after moving or turning the camera. USB webcams only: for a\n"
+                                  "phone, set the focus in the phone camera app.")
+        menu = QMenu(self.focus_btn)
+        group = QActionGroup(menu)
+        self.focus_lock_action = menu.addAction("Lock after focusing (recommended)")
+        self.focus_auto_action = menu.addAction("Autofocus always on (can hunt)")
+        for act, lock in ((self.focus_lock_action, True), (self.focus_auto_action, False)):
+            act.setCheckable(True)
+            act.triggered.connect(lambda _c=False, on=lock: self._set_focus_lock(on))
+            group.addAction(act)
+        menu.addSeparator()
+        menu.addAction("Refocus now").triggered.connect(self._refocus)
+        self.focus_btn.setMenu(menu)
+        self._show_focus()
+        header.addWidget(self.focus_btn)
+
+    def _show_focus(self) -> None:
+        cam = self.cfg.camera
+        if not cam.autofocus:
+            text = "manual"  # camera.focus set in config.json
+        elif not cam.focus_lock:
+            text = "auto"
+        else:
+            text = "locked" if cam.locked_focus is not None else "focusing…"
+        self.focus_btn.setText(f"Focus: {text}")
+        self.focus_lock_action.setChecked(cam.autofocus and cam.focus_lock)
+        self.focus_auto_action.setChecked(cam.autofocus and not cam.focus_lock)
+
+    def _focus_locked(self, value: float) -> None:
+        """The camera focused on the lane and the focus is now locked there: remember it."""
+        self.cfg.camera.locked_focus = value
+        save_config(self.cfg)
+        self._show_focus()
+
+    def _set_focus_lock(self, on: bool) -> None:
+        self.cfg.camera.autofocus, self.cfg.camera.focus_lock = True, on
+        save_config(self.cfg)
+        self._refocus()
+
+    def _refocus(self) -> None:
+        """Forget the locked focus and let the camera focus again (then lock it, if the lock is on)."""
+        if camera.is_stream(self.cfg.camera.source.strip()):
+            QMessageBox.information(self, "Focus", "This is a phone or IP camera: set its focus in the "
+                                    "camera app on the phone (tap to focus, or a fixed focus mode).")
+            return
+        self.cfg.camera.autofocus = True
+        self.cfg.camera.locked_focus = None
+        save_config(self.cfg)
+        self._show_focus()
+        capture = getattr(self, "capture", None)
+        if capture is not None:
+            capture.switch_source(self.cfg.camera.source)  # reopened with autofocus on
+            self._set_status(self.cam_status, "Camera: focusing (keep the lane clear for a few seconds)",
+                             theme.AMBER)
+
     def _fill_camera_menu(self) -> None:
         """One entry per connected camera, by name; the one in use is ticked."""
         self._camera_menu.clear()
@@ -832,6 +897,9 @@ class MainWindow(QMainWindow):
 
     def _set_camera(self, source: str) -> None:
         """Switch the gate camera now and remember it for the next start."""
+        if source != self.cfg.camera.source.strip():
+            self.cfg.camera.locked_focus = None  # another camera: it focuses afresh
+            self._show_focus()
         self.capture.switch_source(source)
         save_config(self.cfg)
         self._set_status(self.cam_status, f"Camera: opening camera {camera.safe_source(source)}", theme.AMBER)

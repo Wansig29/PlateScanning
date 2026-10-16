@@ -30,7 +30,8 @@ def test_format_is_set_before_the_size_and_exposure_only_when_asked():
     cap = FakeCap()
     camera.apply_settings(cap, CameraConfig())
     assert cap.calls.index(cv2.CAP_PROP_FOURCC) < cap.calls.index(cv2.CAP_PROP_FRAME_WIDTH)
-    assert cv2.CAP_PROP_EXPOSURE not in cap.calls and cv2.CAP_PROP_AUTOFOCUS not in cap.calls
+    assert cv2.CAP_PROP_EXPOSURE not in cap.calls and cv2.CAP_PROP_FOCUS not in cap.calls
+    assert cap.values[cv2.CAP_PROP_AUTOFOCUS] == 1   # focusing by itself (undoes a focus locked earlier)
 
 
 def test_manual_exposure_and_fixed_focus_are_applied():
@@ -544,3 +545,64 @@ def test_capture_starts_auto_sharp_on_a_usb_camera_only_when_on(monkeypatch, aut
         assert picked[:2] == [-8.0, -7.0]
     else:
         assert picked == []
+
+
+class FocusCam:
+    """Records what the scanner asks of the camera's focus."""
+
+    def __init__(self, focus=35.0):
+        self.focus, self.sets = focus, []
+
+    def get(self, prop):
+        return self.focus if prop == camera.cv2.CAP_PROP_FOCUS else 0
+
+    def set(self, prop, value):
+        self.sets.append((prop, value))
+        return True
+
+
+def test_lock_focus_keeps_where_autofocus_focused():
+    cam = FocusCam(35.0)
+    assert camera.lock_focus(cam) == 35.0
+    assert cam.sets == [(camera.cv2.CAP_PROP_AUTOFOCUS, 0), (camera.cv2.CAP_PROP_FOCUS, 35.0)]
+    cam = FocusCam(-1)                       # a webcam that doesn't report its focus
+    assert camera.lock_focus(cam) is None and cam.sets == []   # autofocus stays on
+
+
+def test_a_remembered_focus_is_set_at_once_when_the_camera_opens():
+    from platescanner.config import CameraConfig
+    AF, F = camera.cv2.CAP_PROP_AUTOFOCUS, camera.cv2.CAP_PROP_FOCUS
+    cfg = CameraConfig(locked_focus=40.0)
+    cam = FocusCam()
+    camera.apply_settings(cam, cfg)
+    assert (AF, 0) in cam.sets and (F, 40.0) in cam.sets
+    cam = FocusCam()
+    camera.apply_settings(cam, CameraConfig())          # nothing locked yet: let it focus by itself
+    assert (AF, 1) in cam.sets and not any(p == F for p, _ in cam.sets)
+    cam = FocusCam()
+    camera.apply_settings(cam, CameraConfig(focus_lock=False, locked_focus=40.0))   # lock off
+    assert (AF, 1) in cam.sets and not any(p == F for p, _ in cam.sets)
+
+
+@pytest.mark.parametrize("locked", [None, 40.0])
+def test_capture_locks_the_focus_on_the_empty_lane_once(monkeypatch, locked):
+    import threading
+    import time
+
+    from PySide6.QtCore import Qt
+    monkeypatch.setattr(camera, "FOCUS_SETTLE_SECONDS", 0.1)
+    w, caps = _capture_with(monkeypatch, plugged={0})
+    w.cfg.camera.locked_focus = locked
+    caps_focus = []
+    monkeypatch.setattr(camera, "lock_focus", lambda cap: caps_focus.append(cap) or 33.0)
+    got = []
+    w.focus_locked.connect(got.append, Qt.ConnectionType.DirectConnection)
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.5)
+    w.stop()
+    t.join(5)
+    if locked is None:
+        assert got == [33.0] and caps_focus == [caps[0]]
+    else:                                   # remembered from before: no autofocus wait at all
+        assert got == [] and caps_focus == []

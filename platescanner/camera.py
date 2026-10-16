@@ -16,7 +16,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import cv2
@@ -152,7 +152,7 @@ class LatestFrameReader:
         self._seq = 0        # pictures read from the camera
         self._returned = 0   # ...of which the newest handed out by read()
         self.failed = False  # the camera stopped giving pictures
-        self._settings: list[tuple[int, float]] = []  # applied between two reads, on the reader thread
+        self._actions: list[Callable[[Any], None]] = []  # run between two reads, on the reader thread
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name="camera-reader")
         self._thread.start()
@@ -161,9 +161,12 @@ class LatestFrameReader:
         try:
             while not self._stop.is_set():
                 with self._cond:
-                    settings, self._settings = self._settings, []
-                for prop, value in settings:
-                    self._cap.set(prop, value)
+                    actions, self._actions = self._actions, []
+                for action in actions:
+                    try:
+                        action(self._cap)
+                    except Exception:  # noqa: BLE001 - a driver refusing a setting must not stop the picture
+                        log.warning("Camera setting failed", exc_info=True)
                 ok, frame = self._cap.read()
                 with self._cond:
                     if not ok or frame is None:
@@ -188,8 +191,12 @@ class LatestFrameReader:
     def set(self, prop: int, value: float) -> None:
         """Change a camera setting while it runs. Done by the reader itself between two reads:
         some drivers misbehave when a setting changes during a read on another thread."""
+        self.call(lambda cap: cap.set(prop, value))
+
+    def call(self, action: Callable[[Any], None]) -> None:
+        """Run action(capture) on the reader thread, between two reads."""
         with self._cond:
-            self._settings.append((prop, value))
+            self._actions.append(action)
 
     def set_exposure(self, exposure: float) -> None:
         self.set(cv2.CAP_PROP_AUTO_EXPOSURE, AUTO_EXPOSURE_MANUAL)
@@ -303,6 +310,22 @@ class AutoShutter:
         return self.exposure
 
 
+FOCUS_SETTLE_SECONDS = 3.0  # autofocus time before the focus is locked
+
+
+def lock_focus(cap: Any) -> float | None:
+    """Turn autofocus off where it has focused, keeping that focus; return it (None if the
+    camera doesn't report its focus, as some webcams don't: autofocus then stays on)."""
+    value = cap.get(cv2.CAP_PROP_FOCUS)
+    if value is None or value < 0:
+        log.info("Camera does not report its focus (%s): autofocus stays on", value)
+        return None
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+    cap.set(cv2.CAP_PROP_FOCUS, value)
+    log.info("Focus locked at %s", value)
+    return float(value)
+
+
 def brightness(image: Any) -> float:
     """Mean grey level (0-255) of a picture, from every 8th pixel (fast at 1080p)."""
     sample = image[::8, ::8]
@@ -351,6 +374,11 @@ def apply_settings(cap: Any, cfg: CameraConfig) -> dict[str, Any]:
         cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
         if cfg.focus is not None:
             cap.set(cv2.CAP_PROP_FOCUS, cfg.focus)
+    elif cfg.focus_lock and cfg.locked_focus is not None:  # focused before: sharp at once, no hunting
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+        cap.set(cv2.CAP_PROP_FOCUS, cfg.locked_focus)
+    else:  # the driver keeps a focus locked earlier unless told to focus by itself again
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
 
     got = {
         "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),

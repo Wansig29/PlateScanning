@@ -216,3 +216,23 @@ def test_shutter_button_saves_the_exposure_and_reopens_the_camera(window, monkey
     assert w.cfg.camera.auto_shutter and told and len(reopened) == 3
     assert camera.shutter_label(-6.5) == "-6.5"
     del w.capture
+
+
+def test_focus_button_remembers_the_locked_focus_and_refocuses(window, monkeypatch):
+    from platescanner.config import load_config as reload
+    w, _ = window
+    reopened = []
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src)})()
+    assert w.focus_btn.text() == "Focus: focusing…" and w.focus_lock_action.isChecked()
+    w._focus_locked(42.0)                                     # the camera thread locked it
+    assert w.focus_btn.text() == "Focus: locked" and reload().camera.locked_focus == 42.0
+    w.focus_btn.menu().actions()[-1].trigger()                # Refocus now
+    assert reload().camera.locked_focus is None and reopened and w.focus_btn.text() == "Focus: focusing…"
+    w.focus_auto_action.trigger()                             # autofocus always on
+    assert not reload().camera.focus_lock and w.focus_btn.text() == "Focus: auto"
+    w.focus_lock_action.trigger()
+    assert reload().camera.focus_lock
+    w._focus_locked(42.0)
+    w._set_camera("1")                                        # another camera focuses afresh
+    assert w.cfg.camera.locked_focus is None
+    del w.capture
