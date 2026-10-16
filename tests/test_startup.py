@@ -59,7 +59,9 @@ def test_only_one_scanner_runs_at_a_time(tmp_path):
 
 def test_a_lock_left_by_a_crashed_scanner_is_taken_over(tmp_path):
     # A lock file naming a process that no longer exists (the scanner crashed or was killed).
-    (tmp_path / "scanner.lock").write_text("999999\nPlateScanner\n" + os.uname().nodename + "\n", encoding="utf-8")
+    from PySide6.QtCore import QSysInfo
+    host = QSysInfo.machineHostName()                        # (os.uname doesn't exist on Windows)
+    (tmp_path / "scanner.lock").write_text(f"999999\nPlateScanner\n{host}\n", encoding="utf-8")
     lock = single_instance_lock(tmp_path, wait_ms=0)
     assert lock is not None
     lock.unlock()

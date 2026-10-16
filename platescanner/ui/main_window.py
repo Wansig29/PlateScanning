@@ -11,7 +11,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
+from PySide6.QtCore import QEvent, QObject, QSize, Qt, QThread, QTimer, QUrl, Signal, Slot
 from PySide6.QtGui import (
     QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
 )
@@ -181,6 +181,20 @@ def _ago(iso: str | None) -> str:
     return f"{local:%b %d} {timefmt.clock(local, seconds=False)}"
 
 
+class _OnResize(QObject):
+    """Calls `callback` after `widget` changes size."""
+
+    def __init__(self, widget: QWidget, callback):
+        super().__init__(widget)
+        self._callback = callback
+        widget.installEventFilter(self)
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if event.type() == QEvent.Type.Resize:
+            self._callback()
+        return False
+
+
 class MainWindow(QMainWindow):
     request_sync = Signal(bool)
     token_changed = Signal(str)
@@ -344,6 +358,8 @@ class MainWindow(QMainWindow):
         self._build_camera_button(feed_header)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
+        self._feed_frame, self._feed_header = feed_frame, feed_header
+        self._feed_watch = _OnResize(feed_frame, self._fit_feed_header)
         left.addWidget(feed_frame)
         self.logs = LogsPanel()
         self.logs.show_ack = self.cfg.scan.require_acknowledge
@@ -974,6 +990,27 @@ class MainWindow(QMainWindow):
         self._show_zoom()
         for w in (label, self.zoom_slider, self.zoom_value, reset):
             header.addWidget(w)
+        self._zoom_label, self._zoom_reset = label, reset
+
+    # The Live Feed header at each level: (Draw lane text, Whole picture text, show "Zoom", show 1x and value).
+    _FEED_HEADER_LEVELS = (("Draw lane", "Whole picture", True, True),
+                           ("Lane", "Whole", False, True),
+                           ("Lane", "Whole", False, False))
+
+    def _fit_feed_header(self) -> None:
+        """Use the fullest Live Feed header that fits the panel. It measures itself, so it fits
+        whatever fonts and Windows scaling the laptop has (Windows' fonts are wider than they look
+        in a screenshot taken elsewhere: fixed sizes left "Draw lane" cut off)."""
+        room = self._feed_frame.contentsRect().width() - 28  # (the panel's side margins)
+        for i, (lane, whole, caption, extras) in enumerate(self._FEED_HEADER_LEVELS):
+            self.lane_button.setText(lane)
+            self.lane_clear.setText(whole)
+            self._zoom_label.setVisible(caption)
+            self.zoom_value.setVisible(extras)
+            self._zoom_reset.setVisible(extras)
+            self._feed_header.invalidate()
+            if self._feed_header.minimumSize().width() <= room or i == len(self._FEED_HEADER_LEVELS) - 1:
+                return
 
     def _show_zoom(self) -> None:
         zoom = self.zoom_slider.value() / 10
