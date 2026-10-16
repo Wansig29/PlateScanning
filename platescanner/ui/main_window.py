@@ -204,6 +204,7 @@ class MainWindow(QMainWindow):
     update_message = Signal(str)
     update_progress = Signal(int)        # download percent, 0-100
     update_failed = Signal(str)          # shown in a message box, not only in the status bar
+    _names_listed = Signal(list)         # camera names, listed on another thread (Camera menu)
 
     def __init__(self, cfg: Config, session: dict | None, offline_user: dict | None = None):
         super().__init__()
@@ -509,6 +510,7 @@ class MainWindow(QMainWindow):
         self.capture.status.connect(self._camera_status)
         self.capture.shutter_changed.connect(self._sharp_shutter)
         self.capture.focus_locked.connect(self._focus_locked)
+        self.capture.video_mode_learned.connect(lambda: save_config(self.cfg))
         self.recognizer = RecognizerWorker(self.cfg, slot, self.capture)
         self.recognizer.status.connect(lambda m: self._set_status(self.ocr_status, f"OCR: {m}", theme.AMBER))
         self.recognizer.ready.connect(lambda m: self._set_status(self.ocr_status, m, theme.GREEN))
@@ -740,8 +742,14 @@ class MainWindow(QMainWindow):
                                    "No internet connection or sign-in is needed.")
         self._camera_menu = QMenu(self.camera_btn)
         self._camera_menu.setToolTipsVisible(True)
-        # Listed again each time the menu opens, so a webcam plugged in later shows up.
+        # Listed again each time the menu opens, so a webcam plugged in later shows up. Windows can
+        # take seconds to list them, so that happens on another thread: the menu opens at once with
+        # the last list and is updated when the new one arrives.
+        self._camera_names: list[str] = camera.list_names()
+        self._names_listing = False
+        self._names_listed.connect(self._got_camera_names)
         self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
+        self._camera_menu.aboutToShow.connect(self._list_cameras)
         self._fill_camera_menu()
         self.camera_btn.setMenu(self._camera_menu)
         self.camera_btn.setSizePolicy(QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Fixed)
@@ -898,11 +906,32 @@ class MainWindow(QMainWindow):
         if time.monotonic() - getattr(self, "_last_refocus", -1e9) >= self.REFOCUS_EVERY:
             self._refocus(automatic=True)
 
+    def _list_cameras(self) -> None:
+        if self._names_listing:
+            return
+        self._names_listing = True
+
+        def run() -> None:
+            names = camera.list_names()
+            try:
+                self._names_listed.emit(names)
+            except RuntimeError:  # the window closed meanwhile
+                pass
+
+        threading.Thread(target=run, daemon=True, name="camera-names").start()
+
+    @Slot(list)
+    def _got_camera_names(self, names: list) -> None:
+        self._names_listing = False
+        if names != self._camera_names:
+            self._camera_names = names
+            self._fill_camera_menu()
+
     def _fill_camera_menu(self) -> None:
         """One entry per connected camera, by name; the one in use is ticked."""
         self._camera_menu.clear()
         group = QActionGroup(self._camera_menu)
-        names = camera.list_names()
+        names = self._camera_names
         capture = getattr(self, "capture", None)  # the menu is first built before the camera starts
         current = capture.in_use if capture else self.cfg.camera.source.strip()
         for n, name in enumerate(names or [f"Camera {n}" for n in range(5)]):
@@ -954,7 +983,7 @@ class MainWindow(QMainWindow):
             self.cfg.camera.locked_focus = None  # another camera: it focuses afresh
             self._focus_held = False
             self._show_focus()
-        self.capture.switch_source(source)
+        self.capture.switch_source(source, picked=True)
         save_config(self.cfg)
         self._set_status(self.cam_status, f"Camera: opening camera {camera.safe_source(source)}", theme.AMBER)
 

@@ -176,7 +176,7 @@ def test_backup_message_names_the_file_and_opens_the_folder(window, monkeypatch)
 def test_phone_camera_address_switches_the_camera(window, monkeypatch):
     w, _ = window
     switched = []
-    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: switched.append(src)})()
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src, picked=False: switched.append(src)})()
     monkeypatch.setattr(mw.camera, "find_adb", lambda: "adb")
     monkeypatch.setattr(mw.QInputDialog, "getText", lambda *a, **k: (" http://127.0.0.1:4747/video ", True))
     w._ask_phone_camera()
@@ -196,7 +196,7 @@ def test_shutter_button_saves_the_exposure_and_reopens_the_camera(window, monkey
     from platescanner.config import load_config as reload
     w, _ = window
     reopened = []
-    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src)})()
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src, picked=False: reopened.append(src)})()
     assert w.cfg.camera.auto_shutter and w.shutter_menu.title() == "Shutter: Auto-sharp"   # the default
     w._sharp_shutter(-8.0)                                       # the camera thread picked 1/256 s
     assert w.shutter_menu.title() == "Shutter: Auto-sharp 1/256 s" and w._shutter_actions[w.SHARP].isChecked()
@@ -222,7 +222,7 @@ def test_focus_button_remembers_the_locked_focus_and_refocuses(window, monkeypat
     from platescanner.config import load_config as reload
     w, _ = window
     reopened, refocused = [], []
-    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src),
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src, picked=False: reopened.append(src),
                                "refocus": lambda s: refocused.append(1)})()
     assert w.focus_menu.title() == "Focus: next vehicle…" and w.focus_lock_action.isChecked()
     w._focus_locked(42.0)                                     # the camera thread locked it on a vehicle
@@ -246,7 +246,7 @@ def test_refocuses_by_itself_when_plates_come_out_unreadable_or_blurred(window, 
     from platescanner.pipeline import NoPlateEvent
     w, _ = window
     refocused = []
-    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: None,
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src, picked=False: None,
                                "refocus": lambda s: refocused.append(1)})()
     no_plate = NoPlateEvent(None, dt.datetime.now(), None, [])
     w._focus_locked(42.0)
@@ -271,7 +271,7 @@ def test_a_focus_the_camera_does_not_report_is_held_but_not_saved(window):
     from platescanner.config import load_config as reload
     w, _ = window
     refocused = []
-    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: None,
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src, picked=False: None,
                                "refocus": lambda s: refocused.append(1)})()
     w._focus_locked(math.nan)
     assert w.focus_menu.title() == "Focus: locked" and reload().camera.locked_focus is None
