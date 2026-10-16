@@ -753,3 +753,13 @@ def test_a_slow_camera_is_not_taken_for_a_busy_computer():
     assert w.read_speed == 1.0 and w._pauses == []
     w._pace(0.6, 7.0)                                         # a real pause, 3x its pace
     assert w.read_speed == 0.5 and w._pauses == [0.6]
+
+
+def test_a_burst_too_quick_for_the_clock_measures_as_fast_not_as_zero(monkeypatch):
+    import numpy as np
+    ticks = iter([5.0] * 100)                                  # a clock that doesn't move (Windows' 15.6 ms tick)
+    monkeypatch.setattr(camera.time, "perf_counter", lambda: next(ticks))
+    cap = type("C", (), {"read": lambda s: (True, np.zeros((2, 2, 3), np.uint8))})()
+    assert camera.measure_fps(cap) > camera.MIN_GOOD_FPS
+    dead = type("C", (), {"read": lambda s: (False, None)})()
+    assert camera.measure_fps(dead) == 0.0
