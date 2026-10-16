@@ -42,6 +42,7 @@ from .vision.tracker import PlateTracker, Track, center, iou
 log = logging.getLogger(__name__)
 
 PREVIEW_MAX_WIDTH = 1280
+CAMERA_STALL_SECONDS = 5.0  # a live camera giving no picture this long is reopened
 
 # A vehicle not reported after this many read attempts (e.g. parked in view, its plate never
 # clear) is then only re-read every SLOW_READ_EVERY frames: the others in view get the time.
@@ -359,15 +360,27 @@ class CaptureWorker(QThread):
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
             started, index = time.monotonic(), 0
             got_frame = False  # a video that never yields a frame must not be rewound in a tight loop
+            # A live camera is read on its own thread so frames never queue up behind slow work here.
+            reader = None if is_file else camera.LatestFrameReader(cap)
+            last_frame = time.monotonic()
 
             while not self._stop.is_set() and not self._reopen.is_set():
                 t0 = time.monotonic()
-                if is_file:
+                if reader is not None:
+                    frame = reader.read(0.5)
+                    if frame is None:
+                        if reader.failed or time.monotonic() - last_frame > CAMERA_STALL_SECONDS:
+                            self.status.emit("Camera signal lost, reconnecting…")
+                            break
+                        continue  # no new picture yet: check for stop / camera switch, then wait again
+                    last_frame = t0 = time.monotonic()
+                    ok = True
+                else:
                     # Play in real time like a live camera: when behind, drop frames.
                     target = int((t0 - started) * fps)
                     while index < target - 1 and cap.grab():
                         index += 1
-                ok, frame = cap.read()
+                    ok, frame = cap.read()
                 index += 1
                 if not ok or frame is None:
                     if is_file and not got_frame:
@@ -411,7 +424,7 @@ class CaptureWorker(QThread):
 
                 if is_file:
                     self._stop.wait(max(0.0, started + index / fps - time.monotonic()))
-            cap.release()
+            (reader or cap).release()
 
 
 class RecognizerWorker(QThread):

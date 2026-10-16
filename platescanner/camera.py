@@ -10,6 +10,7 @@ since drivers often ignore a request without saying so.
 from __future__ import annotations
 
 import logging
+import threading
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -120,6 +121,57 @@ def find_webcam(skip: int, cfg: CameraConfig, names: list[str]) -> tuple[Any, di
         if opened is not None:
             return opened[0], opened[1], n
     return None
+
+
+class LatestFrameReader:
+    """Reads a live camera on its own thread and keeps only the newest picture.
+
+    DirectShow ignores CAP_PROP_BUFFERSIZE, so when the scanner takes longer per
+    frame than the camera does (a vehicle or the camera itself moving makes it do
+    more work), unread frames pile up in the driver and the Live Feed falls
+    further and further behind: it lags. Reading without pause and dropping the
+    old pictures keeps the preview and the plate reading on what the camera
+    sees now. The reader owns the capture and releases it when it stops.
+    """
+
+    def __init__(self, cap: Any):
+        self._cap = cap
+        self._cond = threading.Condition()
+        self._frame: Any = None
+        self._seq = 0        # pictures read from the camera
+        self._returned = 0   # ...of which the newest handed out by read()
+        self.failed = False  # the camera stopped giving pictures
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="camera-reader")
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                ok, frame = self._cap.read()
+                with self._cond:
+                    if not ok or frame is None:
+                        self.failed = True
+                        self._cond.notify_all()
+                        return
+                    self._frame, self._seq = frame, self._seq + 1
+                    self._cond.notify_all()
+        finally:
+            self._cap.release()  # here, never while a read is still running on this thread
+
+    def read(self, timeout: float) -> Any:
+        """The newest picture not handed out yet, waiting up to `timeout` seconds for one; None if
+        there is none yet (see `failed` for whether the camera stopped)."""
+        with self._cond:
+            self._cond.wait_for(lambda: self._seq > self._returned or self.failed, timeout)
+            if self._seq <= self._returned:
+                return None
+            self._returned = self._seq
+            return self._frame
+
+    def release(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
 
 
 # DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).

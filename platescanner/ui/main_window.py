@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         self.video = VideoView()
         self.video.pan_to.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
+        self._build_camera_button(feed_header)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
         left.addWidget(feed_frame)
@@ -413,11 +414,6 @@ class MainWindow(QMainWindow):
         self.account_action.triggered.connect(self._account_clicked)
         self.offline_action = menu.addAction("Work offline")
         self.offline_action.triggered.connect(self._toggle_offline)
-        menu.addSeparator()
-        # Listed again each time the menu opens, so a webcam plugged in later shows up.
-        self._camera_menu = menu.addMenu("Camera")
-        self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
-        self._fill_camera_menu()
         menu.addSeparator()
         menu.addAction("Software updates").setEnabled(False)
         group = QActionGroup(menu)
@@ -705,6 +701,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Update", f"The installer could not be started:\n\n{e}\n\nThe file is at:\n{path}")
             return
         self.close()                                          # installer relaunches the app when done
+
+    def _build_camera_button(self, header: QHBoxLayout) -> None:
+        """'Camera' picker in the Live Feed header. It sits with the other picture controls, not in
+        the account menu: switching cameras is local to this laptop and works signed out and offline."""
+        self.camera_btn = QToolButton()
+        self.camera_btn.setText("Camera")
+        self.camera_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.camera_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.camera_btn.setToolTip("Choose which connected camera the scanner uses.\n"
+                                   "No internet connection or sign-in is needed.")
+        self._camera_menu = QMenu(self.camera_btn)
+        # Listed again each time the menu opens, so a webcam plugged in later shows up.
+        self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
+        self._fill_camera_menu()
+        self.camera_btn.setMenu(self._camera_menu)
+        header.addWidget(self.camera_btn)
 
     def _fill_camera_menu(self) -> None:
         """One entry per connected camera, by name; the one in use is ticked."""

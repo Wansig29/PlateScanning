@@ -357,3 +357,75 @@ def test_motion_detector_starts_fresh_when_the_zoom_changes(monkeypatch):
     frame, _ = _run_capture(monkeypatch, cfg)
     assert frame.roi == (320, 180, 640, 360)
     assert len(made) == 2  # one per area watched: the whole picture, then the zoomed part
+
+
+def test_latest_frame_reader_skips_frames_that_piled_up():
+    import threading
+    import time
+
+    import numpy as np
+
+    class Cap:
+        def __init__(self):
+            self.n, self.released = 0, False
+            self.go = threading.Event()
+
+        def read(self):
+            if self.n >= 5:
+                self.go.wait(2)  # the camera has given 5 pictures and waits for the next one
+                return False, None
+            self.n += 1
+            return True, np.full((2, 2, 3), self.n, np.uint8)
+
+        def release(self): self.released = True
+
+    cap = Cap()
+    reader = camera.LatestFrameReader(cap)
+    time.sleep(0.2)                                    # the scanner was busy while 5 pictures came in
+    assert reader.read(1.0)[0, 0, 0] == 5              # it gets the newest, not the oldest
+    assert reader.read(0.1) is None and not reader.failed   # nothing newer yet
+    cap.go.set()                                       # the camera stops giving pictures
+    reader.release()
+    assert reader.failed and cap.released
+
+
+def test_live_camera_that_stops_giving_pictures_is_reopened(monkeypatch):
+    import threading
+    import time
+
+    import numpy as np
+
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    opened = []
+
+    class Cap:
+        def __init__(self):
+            self.frames = 3
+            opened.append(self)
+
+        def isOpened(self): return True
+        def get(self, _): return 30.0
+        def set(self, *_): pass
+        def release(self): pass
+
+        def read(self):
+            if self.frames == 0:
+                return False, None  # unplugged
+            self.frames -= 1
+            return True, np.zeros((72, 128, 3), np.uint8)
+
+    monkeypatch.setattr(pipeline.cv2, "VideoCapture", lambda *_: Cap())
+    cfg = Config()
+    cfg.camera.source = "rtsp://cam/live"
+    w = pipeline.CaptureWorker(cfg, pipeline.FrameSlot())
+    statuses = []
+    from PySide6.QtCore import Qt
+    w.status.connect(statuses.append, Qt.ConnectionType.DirectConnection)
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.4)
+    w.stop()
+    t.join(5)
+    assert "Camera signal lost, reconnecting…" in statuses and len(opened) >= 2
