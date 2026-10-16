@@ -119,15 +119,19 @@ _good_modes: dict[int, tuple[int, int, bool]] = {}
 
 
 def measure_fps(cap: Any, seconds: float = 1.0, max_frames: int = 15) -> float:
-    """Pictures per second the camera really delivers (drivers often report a speed they don't give)."""
-    start, frames = time.monotonic(), 0
-    while frames < max_frames and time.monotonic() - start < seconds:
+    """Pictures per second the camera really delivers (drivers often report a speed they don't give).
+    perf_counter, not monotonic: on Windows monotonic ticks only every 15.6 ms, so a quick burst of
+    pictures could measure as taking no time at all, which read as 0 pictures/s."""
+    start, frames = time.perf_counter(), 0
+    while frames < max_frames and time.perf_counter() - start < seconds:
         ok, _frame = cap.read()
         if not ok:
             break
         frames += 1
-    elapsed = time.monotonic() - start
-    return frames / elapsed if elapsed > 0 else 0.0
+    elapsed = time.perf_counter() - start
+    if frames == 0:
+        return 0.0
+    return frames / elapsed if elapsed > 0 else float("inf")  # too quick to time: certainly fast
 
 
 def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | None:
