@@ -197,17 +197,22 @@ def test_shutter_button_saves_the_exposure_and_reopens_the_camera(window, monkey
     w, _ = window
     reopened = []
     w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src)})()
-    assert w.shutter_btn.text() == "Shutter: Auto"
-    w._shutter_actions[-8].trigger()
-    assert w.cfg.camera.exposure == -8 and reload().camera.exposure == -8
+    assert w.cfg.camera.auto_shutter and w.shutter_btn.text() == "Shutter: Auto-sharp"   # the default
+    w._sharp_shutter(-8.0)                                       # the camera thread picked 1/256 s
+    assert w.shutter_btn.text() == "Shutter: Auto-sharp 1/256 s" and w._shutter_actions[w.SHARP].isChecked()
+    w._shutter_actions[-8].trigger()                             # a fixed shutter
+    assert not w.cfg.camera.auto_shutter and w.cfg.camera.exposure == -8
+    assert reload().camera.exposure == -8 and not reload().camera.auto_shutter
     assert w.shutter_btn.text() == "Shutter: 1/256 s" and reopened == [w.cfg.camera.source]
-    w._shutter_actions[None].trigger()
+    w._shutter_actions[None].trigger()                           # the camera's own auto-exposure
     assert w.cfg.camera.exposure is None and w._shutter_actions[None].isChecked()
+    w._shutter_actions[w.SHARP].trigger()
+    assert reload().camera.auto_shutter and w.shutter_btn.text() == "Shutter: Auto-sharp"
     # a phone stream: its shutter is set in the phone app, nothing changes here
     told = []
     monkeypatch.setattr(mw.QMessageBox, "information", lambda *a: told.append(a[2]))
     w.cfg.camera.source = "http://127.0.0.1:4747/video"
     w._shutter_actions[-9].trigger()
-    assert w.cfg.camera.exposure is None and told and len(reopened) == 2
-    assert w.shutter_btn.text() == "Shutter: Auto" and camera.shutter_label(-6.5) == "-6.5"
+    assert w.cfg.camera.auto_shutter and told and len(reopened) == 3
+    assert camera.shutter_label(-6.5) == "-6.5"
     del w.capture

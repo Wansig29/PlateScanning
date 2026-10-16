@@ -487,6 +487,7 @@ class MainWindow(QMainWindow):
         self.capture.frame_ready.connect(self.video.set_frame)
         self.capture.motion_changed.connect(self.video.set_motion)
         self.capture.status.connect(self._camera_status)
+        self.capture.shutter_changed.connect(self._sharp_shutter)
         self.recognizer = RecognizerWorker(self.cfg, slot, self.capture)
         self.recognizer.status.connect(lambda m: self._set_status(self.ocr_status, f"OCR: {m}", theme.AMBER))
         self.recognizer.ready.connect(lambda m: self._set_status(self.ocr_status, m, theme.GREEN))
@@ -719,43 +720,62 @@ class MainWindow(QMainWindow):
         self.camera_btn.setMenu(self._camera_menu)
         header.addWidget(self.camera_btn)
 
+    SHARP = "sharp"  # the Auto-sharp entry of the Shutter menu
+
     def _build_shutter_button(self, header: QHBoxLayout) -> None:
-        """'Shutter' picker in the Live Feed header (camera.exposure). Auto-exposure picks a slow
-        shutter, so a moving vehicle smears; a shorter one keeps its plate sharp."""
+        """'Shutter' picker in the Live Feed header. Auto-exposure picks a slow shutter, so a moving
+        vehicle smears; Auto-sharp (camera.auto_shutter) or a fixed short one keeps its plate sharp."""
         self.shutter_btn = QToolButton()
         self.shutter_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.shutter_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-        self.shutter_btn.setToolTip("Moving vehicles look blurred? Pick a shorter shutter (e.g. 1/256 s):\n"
-                                    "plates stay sharp, but the picture gets darker. Use the shortest one\n"
-                                    "that is still bright enough. USB webcams only: for a phone, set it\n"
-                                    "in the phone camera app.")
+        self.shutter_btn.setToolTip("Auto-sharp (recommended): the scanner picks the shortest shutter at which\n"
+                                    "the lane is still bright enough, so moving plates stay sharp, and adjusts\n"
+                                    "it as the light changes. Works offline. Or pick a fixed shutter: shorter\n"
+                                    "is sharper but darker. USB webcams only: for a phone, set it in the\n"
+                                    "phone camera app.")
         menu = QMenu(self.shutter_btn)
         group = QActionGroup(menu)
         self._shutter_actions = {}
-        for value, label in camera.SHUTTER_CHOICES:
+        choices = [(self.SHARP, "Auto-sharp (recommended)")]
+        choices += [(v, "Auto (camera's own, can blur)" if v is None else label) for v, label in camera.SHUTTER_CHOICES]
+        for value, label in choices:
             act = menu.addAction(label)
             act.setCheckable(True)
             act.triggered.connect(lambda _c=False, v=value: self._set_shutter(v))
             group.addAction(act)
             self._shutter_actions[value] = act
         self.shutter_btn.setMenu(menu)
+        self._sharp_now: float | None = None  # the shutter Auto-sharp is using right now
         self._show_shutter()
         header.addWidget(self.shutter_btn)
 
     def _show_shutter(self) -> None:
-        exposure = self.cfg.camera.exposure
-        self.shutter_btn.setText(f"Shutter: {camera.shutter_label(exposure)}")
+        cam = self.cfg.camera
+        chosen = self.SHARP if cam.auto_shutter else cam.exposure
+        if cam.auto_shutter:
+            now = f" {camera.shutter_label(self._sharp_now)}" if self._sharp_now is not None else ""
+            self.shutter_btn.setText(f"Shutter: Auto-sharp{now}")
+        else:
+            self.shutter_btn.setText(f"Shutter: {camera.shutter_label(cam.exposure)}")
         for value, act in self._shutter_actions.items():
-            act.setChecked(value == exposure)
+            act.setChecked(value == chosen)
 
-    def _set_shutter(self, exposure: float | None) -> None:
+    def _sharp_shutter(self, exposure: float) -> None:
+        """Auto-sharp moved the shutter: show which one it uses."""
+        self._sharp_now = exposure
+        self._show_shutter()
+
+    def _set_shutter(self, choice: str | float | None) -> None:
         """Use this shutter from now on (the camera is reopened with it) and remember it."""
         if camera.is_stream(self.cfg.camera.source.strip()):
             self._show_shutter()
             QMessageBox.information(self, "Shutter", "This is a phone or IP camera: set its shutter "
                                     "(exposure) in the camera app on the phone.")
             return
-        self.cfg.camera.exposure = exposure
+        self.cfg.camera.auto_shutter = choice == self.SHARP
+        if choice != self.SHARP:
+            self.cfg.camera.exposure = choice
+        self._sharp_now = None
         save_config(self.cfg)
         self._show_shutter()
         capture = getattr(self, "capture", None)

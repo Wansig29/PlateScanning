@@ -74,6 +74,10 @@ class CameraConfig:
     # in seconds: -6 = 1/64 s, -7 = 1/128, -8 = 1/256, -9 = 1/512. Shorter = sharper
     # but darker: find the shortest the picture can stand with tools/camera_probe.py.
     exposure: float | None = None
+    # Auto-sharp: the scanner picks the shutter itself, the shortest at which the lane is still
+    # bright enough, and adjusts it as the light changes (see camera.AutoShutter). It runs on
+    # this laptop only, online or offline. `exposure` above is then not used. USB webcams only.
+    auto_shutter: bool = True
     # Sensor gain, used with a manual exposure to brighten a short shutter (adds noise).
     gain: float | None = None
     # Autofocus can hunt as vehicles pass. Turn it off and set `focus` once the
@@ -423,6 +427,13 @@ def save_config(cfg: Config, path: Path | None = None) -> None:
     path.write_text(json.dumps(_to_json(cfg), indent=2), encoding="utf-8")
 
 
+def _keep_chosen_shutter(data: dict[str, Any]) -> None:
+    """A config.json from before Auto-sharp with a shutter someone chose keeps that shutter."""
+    cam = data.get("camera")
+    if isinstance(cam, dict) and "auto_shutter" not in cam and cam.get("exposure") is not None:
+        cam["auto_shutter"] = False
+
+
 def _migrate(data: dict[str, Any]) -> None:
     """The app writes its defaults into config.json, so tightened defaults would never reach an
     installed app. Move only values still equal to the old default; a value someone chose stays.
@@ -469,6 +480,7 @@ def load_config(path: Path | None = None) -> Config:
         except (OSError, ValueError) as e:  # (json's errors and bad encodings are ValueErrors)
             problems.append(f"{path.name} could not be read ({e}); all settings are at their defaults")
             data = {}
+    _keep_chosen_shutter(data)
     _migrate(data)
     cfg = _merge(Config, data, problems)
     cfg.home = home
