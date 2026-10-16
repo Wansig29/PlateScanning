@@ -189,3 +189,25 @@ def test_phone_camera_address_switches_the_camera(window, monkeypatch):
     w._ask_phone_camera()
     assert switched == ["http://127.0.0.1:4747/video"] and len(warned) == 2
     del w.capture
+
+
+def test_shutter_button_saves_the_exposure_and_reopens_the_camera(window, monkeypatch):
+    from platescanner import camera
+    from platescanner.config import load_config as reload
+    w, _ = window
+    reopened = []
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: reopened.append(src)})()
+    assert w.shutter_btn.text() == "Shutter: Auto"
+    w._shutter_actions[-8].trigger()
+    assert w.cfg.camera.exposure == -8 and reload().camera.exposure == -8
+    assert w.shutter_btn.text() == "Shutter: 1/256 s" and reopened == [w.cfg.camera.source]
+    w._shutter_actions[None].trigger()
+    assert w.cfg.camera.exposure is None and w._shutter_actions[None].isChecked()
+    # a phone stream: its shutter is set in the phone app, nothing changes here
+    told = []
+    monkeypatch.setattr(mw.QMessageBox, "information", lambda *a: told.append(a[2]))
+    w.cfg.camera.source = "http://127.0.0.1:4747/video"
+    w._shutter_actions[-9].trigger()
+    assert w.cfg.camera.exposure is None and told and len(reopened) == 2
+    assert w.shutter_btn.text() == "Shutter: Auto" and camera.shutter_label(-6.5) == "-6.5"
+    del w.capture
