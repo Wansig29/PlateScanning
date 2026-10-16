@@ -113,17 +113,26 @@ def list_names() -> list[str]:
 # taken, and USB 2 then carries only about 5 pictures a second, while the driver still says 30.
 MIN_GOOD_FPS = 12.0
 FALLBACK_SIZE = (1280, 720)
-# Per camera number, the video mode (width, height, format set after the size) that was fast
-# enough, so reopening the camera (another shutter, a lost signal) doesn't test again.
+# Per camera number, the video mode (width, height, format set after the size) that was chosen
+# and how fast it was, so reopening the camera (switching back to it, another shutter, a lost
+# signal) tries that mode alone instead of testing every mode again.
 _good_modes: dict[int, tuple[int, int, bool]] = {}
+_good_speeds: dict[int, float] = {}
+# A remembered mode is kept on reopening unless it is now clearly slower than it measured before.
+STILL_AS_FAST = 0.75
 
 
-def measure_fps(cap: Any, seconds: float = 1.0, max_frames: int = 15) -> float:
+def measure_fps(cap: Any, seconds: float = 1.0, max_frames: int = 10) -> float:
     """Pictures per second the camera really delivers (drivers often report a speed they don't give).
-    perf_counter, not monotonic: on Windows monotonic ticks only every 15.6 ms, so a quick burst of
-    pictures could measure as taking no time at all, which read as 0 pictures/s."""
+    The clock starts at the first picture, so a picture already waiting in the driver doesn't make
+    the camera look faster. 10 pictures take a third of a second at 30 a second: switching cameras
+    stays quick. perf_counter, not monotonic: on Windows monotonic ticks only every 15.6 ms, so a
+    quick burst of pictures could measure as taking no time at all, which read as 0 pictures/s."""
+    ok, _frame = cap.read()
+    if not ok:
+        return 0.0
     start, frames = time.perf_counter(), 0
-    while frames < max_frames and time.perf_counter() - start < seconds:
+    while frames < max_frames - 1 and time.perf_counter() - start < seconds:
         ok, _frame = cap.read()
         if not ok:
             break
@@ -170,6 +179,8 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
         current = (cap, got, mode)
         if got["measured_fps"] >= MIN_GOOD_FPS:
             break
+        if mode == _good_modes.get(index) and got["measured_fps"] >= STILL_AS_FAST * _good_speeds.get(index, 0.0):
+            break  # the mode chosen last time, as fast as then: the others were slower, no need to retry them
         log.warning("Camera %d gives only %.1f pictures/s at %dx%d %s: trying another way",
                     index, got["measured_fps"], got["width"], got["height"], got["format"] or "?")
     fastest = max(speeds, key=speeds.get)
@@ -182,7 +193,7 @@ def open_index(index: int, cfg: CameraConfig) -> tuple[Any, dict[str, Any]] | No
         opened[1]["measured_fps"] = speeds[fastest]
         current = (opened[0], opened[1], fastest)
     cap, got, mode = current
-    _good_modes[index] = mode
+    _good_modes[index], _good_speeds[index] = mode, got["measured_fps"]
     if (mode[0], mode[1]) != (cfg.width, cfg.height):
         got["note"] = f"{mode[0]}x{mode[1]}: the camera gives too few pictures/s at {cfg.width}x{cfg.height}"
     return cap, got

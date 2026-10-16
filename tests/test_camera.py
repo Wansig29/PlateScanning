@@ -747,6 +747,31 @@ def test_when_every_mode_is_slow_the_fastest_is_kept(monkeypatch):
     assert cap is not None and got["measured_fps"] < camera.MIN_GOOD_FPS   # still a picture, never none
 
 
+def test_a_slow_camera_reopens_in_its_chosen_mode_without_testing_the_others(monkeypatch):
+    monkeypatch.setattr(camera, "_good_modes", {})
+    monkeypatch.setattr(camera, "_good_speeds", {})
+    opened = []
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(ModeCam(lambda c: False)) or opened[-1])
+    camera.open_index(0, CameraConfig())                       # first time: every mode is tried
+    assert len(opened) > 1
+    opened.clear()
+    cap, got = camera.open_index(0, CameraConfig())            # switched back to it: one open, no retesting
+    assert len(opened) == 1 and cap is opened[0] and got["measured_fps"] < camera.MIN_GOOD_FPS
+
+
+def test_picking_another_camera_ends_the_retry_wait_at_once():
+    import threading
+    import time
+
+    from platescanner import pipeline
+    from platescanner.config import Config
+    w = pipeline.CaptureWorker(Config(), pipeline.FrameSlot())
+    threading.Timer(0.1, w.switch_source, args=("1",)).start()
+    start = time.monotonic()
+    w._wait(3.0)
+    assert time.monotonic() - start < 1.0
+
+
 def test_a_slow_camera_is_not_taken_for_a_busy_computer():
     from platescanner import pipeline
     from platescanner.config import Config
