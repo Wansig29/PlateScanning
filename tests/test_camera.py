@@ -357,3 +357,108 @@ def test_motion_detector_starts_fresh_when_the_zoom_changes(monkeypatch):
     frame, _ = _run_capture(monkeypatch, cfg)
     assert frame.roi == (320, 180, 640, 360)
     assert len(made) == 2  # one per area watched: the whole picture, then the zoomed part
+
+
+def test_latest_frame_reader_skips_frames_that_piled_up():
+    import threading
+    import time
+
+    import numpy as np
+
+    class Cap:
+        def __init__(self):
+            self.n, self.released = 0, False
+            self.go = threading.Event()
+
+        def read(self):
+            if self.n >= 5:
+                self.go.wait(2)  # the camera has given 5 pictures and waits for the next one
+                return False, None
+            self.n += 1
+            return True, np.full((2, 2, 3), self.n, np.uint8)
+
+        def release(self): self.released = True
+
+    cap = Cap()
+    reader = camera.LatestFrameReader(cap)
+    time.sleep(0.2)                                    # the scanner was busy while 5 pictures came in
+    assert reader.read(1.0)[0, 0, 0] == 5              # it gets the newest, not the oldest
+    assert reader.read(0.1) is None and not reader.failed   # nothing newer yet
+    cap.go.set()                                       # the camera stops giving pictures
+    reader.release()
+    assert reader.failed and cap.released
+
+
+def test_live_camera_that_stops_giving_pictures_is_reopened(monkeypatch):
+    import threading
+    import time
+
+    import numpy as np
+
+    from platescanner import pipeline
+    from platescanner.config import Config
+
+    opened = []
+
+    class Cap:
+        def __init__(self):
+            self.frames = 3
+            opened.append(self)
+
+        def isOpened(self): return True
+        def get(self, _): return 30.0
+        def set(self, *_): pass
+        def release(self): pass
+
+        def read(self):
+            if self.frames == 0:
+                return False, None  # unplugged
+            self.frames -= 1
+            return True, np.zeros((72, 128, 3), np.uint8)
+
+    monkeypatch.setattr(pipeline.cv2, "VideoCapture", lambda *_: Cap())
+    cfg = Config()
+    cfg.camera.source = "rtsp://cam/live"
+    w = pipeline.CaptureWorker(cfg, pipeline.FrameSlot())
+    statuses = []
+    from PySide6.QtCore import Qt
+    w.status.connect(statuses.append, Qt.ConnectionType.DirectConnection)
+    t = threading.Thread(target=w.run, daemon=True)
+    t.start()
+    time.sleep(0.4)
+    w.stop()
+    t.join(5)
+    assert "Camera signal lost, reconnecting…" in statuses and len(opened) >= 2
+
+
+def test_usb_phone_port_only_for_this_laptop():
+    assert camera.usb_phone_port("http://127.0.0.1:4747/video") == 4747
+    assert camera.usb_phone_port("http://localhost:8080/video") == 8080
+    assert camera.usb_phone_port("http://192.168.1.5:8080/video") is None   # phone on Wi-Fi
+    assert camera.usb_phone_port("0") is None
+    assert camera.is_stream("rtsp://cam/live") and not camera.is_stream("0")
+
+
+def test_phone_on_usb_cable_is_forwarded_before_opening(monkeypatch):
+    calls = []
+
+    class Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(camera, "find_adb", lambda: "adb")
+    monkeypatch.setattr(camera.subprocess, "run", lambda args, **_: calls.append(args) or Done())
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: calls.append(a[0]) or Webcam(True))
+    camera.open_stream("http://127.0.0.1:4747/video")
+    assert calls == [["adb", "forward", "tcp:4747", "tcp:4747"], "http://127.0.0.1:4747/video"]
+
+    calls.clear()
+    camera.open_stream("http://192.168.1.5:8080/video")          # Wi-Fi phone: no adb
+    assert calls == ["http://192.168.1.5:8080/video"]
+
+
+def test_missing_adb_does_not_stop_the_stream_from_being_tried(monkeypatch):
+    monkeypatch.setattr(camera, "find_adb", lambda: None)
+    opened = []
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(a[0]) or Webcam(False))
+    camera.open_stream("http://127.0.0.1:4747/video")
+    assert opened == ["http://127.0.0.1:4747/video"]

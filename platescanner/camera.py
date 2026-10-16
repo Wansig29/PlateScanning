@@ -10,10 +10,22 @@ since drivers often ignore a request without saying so.
 from __future__ import annotations
 
 import logging
+import os
+import shutil
+import subprocess
+import sys
+import threading
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import cv2
+
+# Phone and IP camera streams: OpenCV's FFmpeg reader otherwise keeps a buffer of
+# several seconds of video, so the Live Feed runs behind the phone. TCP for RTSP
+# because a dropped UDP packet smears the picture. OpenCV reads this each time a stream opens.
+os.environ.setdefault("OPENCV_FFMPEG_CAPTURE_OPTIONS",
+                      "rtsp_transport;tcp|fflags;nobuffer|flags;low_delay|max_delay;0")
 
 from .config import CameraConfig
 
@@ -120,6 +132,119 @@ def find_webcam(skip: int, cfg: CameraConfig, names: list[str]) -> tuple[Any, di
         if opened is not None:
             return opened[0], opened[1], n
     return None
+
+
+class LatestFrameReader:
+    """Reads a live camera on its own thread and keeps only the newest picture.
+
+    DirectShow ignores CAP_PROP_BUFFERSIZE, so when the scanner takes longer per
+    frame than the camera does (a vehicle or the camera itself moving makes it do
+    more work), unread frames pile up in the driver and the Live Feed falls
+    further and further behind: it lags. Reading without pause and dropping the
+    old pictures keeps the preview and the plate reading on what the camera
+    sees now. The reader owns the capture and releases it when it stops.
+    """
+
+    def __init__(self, cap: Any):
+        self._cap = cap
+        self._cond = threading.Condition()
+        self._frame: Any = None
+        self._seq = 0        # pictures read from the camera
+        self._returned = 0   # ...of which the newest handed out by read()
+        self.failed = False  # the camera stopped giving pictures
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True, name="camera-reader")
+        self._thread.start()
+
+    def _run(self) -> None:
+        try:
+            while not self._stop.is_set():
+                ok, frame = self._cap.read()
+                with self._cond:
+                    if not ok or frame is None:
+                        self.failed = True
+                        self._cond.notify_all()
+                        return
+                    self._frame, self._seq = frame, self._seq + 1
+                    self._cond.notify_all()
+        finally:
+            self._cap.release()  # here, never while a read is still running on this thread
+
+    def read(self, timeout: float) -> Any:
+        """The newest picture not handed out yet, waiting up to `timeout` seconds for one; None if
+        there is none yet (see `failed` for whether the camera stopped)."""
+        with self._cond:
+            self._cond.wait_for(lambda: self._seq > self._returned or self.failed, timeout)
+            if self._seq <= self._returned:
+                return None
+            self._returned = self._seq
+            return self._frame
+
+    def release(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=2.0)
+
+
+STREAM_TIMEOUT_MS = 5000  # a phone or IP camera that doesn't answer within this is retried
+
+
+def is_stream(source: str) -> bool:
+    return "://" in source
+
+
+def find_adb() -> str | None:
+    """adb.exe (Android platform-tools): next to the app, on PATH, or in the usual Android SDK folder."""
+    exe = "adb.exe" if sys.platform == "win32" else "adb"
+    local = os.environ.get("LOCALAPPDATA", "")
+    for candidate in (Path(sys.executable).parent / "platform-tools" / exe,
+                      Path(local) / "Android" / "Sdk" / "platform-tools" / exe if local else None):
+        if candidate is not None and candidate.is_file():
+            return str(candidate)
+    return shutil.which("adb")
+
+
+def usb_phone_port(source: str) -> int | None:
+    """The port of a phone camera reached over the USB cable: the stream address is this laptop
+    itself (127.0.0.1 / localhost), which adb forwards through the cable to the phone. None otherwise."""
+    try:
+        parts = urlsplit(source)
+        if parts.hostname in ("127.0.0.1", "localhost") and parts.port:
+            return parts.port
+    except ValueError:
+        pass
+    return None
+
+
+def forward_usb_phone(port: int) -> bool:
+    """`adb forward tcp:port tcp:port`: the phone camera app's stream reaches this laptop through the
+    USB cable, with no Wi-Fi. Repeated at every (re)connect, as unplugging the cable drops it."""
+    adb = find_adb()
+    if adb is None:
+        log.warning("Phone over USB: adb.exe (Android platform-tools) was not found")
+        return False
+    try:
+        done = subprocess.run([adb, "forward", f"tcp:{port}", f"tcp:{port}"], capture_output=True, text=True,
+                              timeout=10, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        log.warning("Phone over USB: adb forward failed: %s", e)
+        return False
+    if done.returncode != 0:
+        log.warning("Phone over USB: adb forward failed: %s", (done.stderr or done.stdout).strip())
+        return False
+    return True
+
+
+def open_stream(source: str) -> Any:
+    """Open a phone or IP camera stream (http://, rtsp://) with short timeouts and the smallest buffer,
+    forwarding it over the USB cable first when its address is this laptop."""
+    port = usb_phone_port(source)
+    if port is not None:
+        forward_usb_phone(port)
+    cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG, [cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, STREAM_TIMEOUT_MS,
+                                                    cv2.CAP_PROP_READ_TIMEOUT_MSEC, STREAM_TIMEOUT_MS])
+    if cap.isOpened():
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    return cap
 
 
 # DirectShow / V4L: 0.25 asks for manual exposure (0.75 would ask for automatic).

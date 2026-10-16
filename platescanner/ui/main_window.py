@@ -15,7 +15,7 @@ from PySide6.QtGui import (
     QActionGroup, QColor, QDesktopServices, QFont, QGuiApplication, QIcon, QKeySequence, QPainter, QPixmap, QShortcut,
 )
 from PySide6.QtWidgets import (
-    QApplication, QFrame, QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
+    QApplication, QFrame, QHBoxLayout, QInputDialog, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QSlider, QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         self.video = VideoView()
         self.video.pan_to.connect(self._aim_zoom)
         feed_lay.addWidget(self.video)
+        self._build_camera_button(feed_header)
         self._build_zoom_controls(feed_header)
         self._build_lane_controls(feed_header)
         left.addWidget(feed_frame)
@@ -413,11 +414,6 @@ class MainWindow(QMainWindow):
         self.account_action.triggered.connect(self._account_clicked)
         self.offline_action = menu.addAction("Work offline")
         self.offline_action.triggered.connect(self._toggle_offline)
-        menu.addSeparator()
-        # Listed again each time the menu opens, so a webcam plugged in later shows up.
-        self._camera_menu = menu.addMenu("Camera")
-        self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
-        self._fill_camera_menu()
         menu.addSeparator()
         menu.addAction("Software updates").setEnabled(False)
         group = QActionGroup(menu)
@@ -706,6 +702,22 @@ class MainWindow(QMainWindow):
             return
         self.close()                                          # installer relaunches the app when done
 
+    def _build_camera_button(self, header: QHBoxLayout) -> None:
+        """'Camera' picker in the Live Feed header. It sits with the other picture controls, not in
+        the account menu: switching cameras is local to this laptop and works signed out and offline."""
+        self.camera_btn = QToolButton()
+        self.camera_btn.setText("Camera")
+        self.camera_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.camera_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.camera_btn.setToolTip("Choose which connected camera the scanner uses.\n"
+                                   "No internet connection or sign-in is needed.")
+        self._camera_menu = QMenu(self.camera_btn)
+        # Listed again each time the menu opens, so a webcam plugged in later shows up.
+        self._camera_menu.aboutToShow.connect(self._fill_camera_menu)
+        self._fill_camera_menu()
+        self.camera_btn.setMenu(self._camera_menu)
+        header.addWidget(self.camera_btn)
+
     def _fill_camera_menu(self) -> None:
         """One entry per connected camera, by name; the one in use is ticked."""
         self._camera_menu.clear()
@@ -719,15 +731,45 @@ class MainWindow(QMainWindow):
             act.setChecked(str(n) == current)
             act.triggered.connect(lambda _c=False, s=str(n): self._set_camera(s))
             group.addAction(act)
-        if not current.isdigit():  # a stream URL or video file set in config.json
-            self._camera_menu.addSeparator()
+        self._camera_menu.addSeparator()
+        self._camera_menu.addAction("Phone or IP camera…").triggered.connect(self._ask_phone_camera)
+        if not current.isdigit():  # a stream URL or video file
             self._camera_menu.addAction(f"In use: {camera.safe_source(current)}").setEnabled(False)
+
+    def _ask_phone_camera(self) -> None:
+        """Use a phone camera app (DroidCam, IP Webcam) or an IP camera: the guard types its address."""
+        current = self.cfg.camera.source.strip()
+        # Never put a saved password on screen: an address with a login starts empty.
+        shown = current if camera.is_stream(current) and camera.safe_source(current) == current \
+            else "http://127.0.0.1:4747/video"
+        address, ok = QInputDialog.getText(
+            self, "Phone or IP camera",
+            "Address of the camera's video stream.\n\n"
+            "Phone by USB cable (no Wi-Fi): turn on USB debugging on the phone, plug it in and use\n"
+            "http://127.0.0.1:<port>/video, e.g. DroidCam http://127.0.0.1:4747/video,\n"
+            "IP Webcam http://127.0.0.1:8080/video. Needs adb.exe (Android platform-tools).\n\n"
+            "Phone on the same Wi-Fi: the address the camera app shows, e.g. http://192.168.1.5:8080/video",
+            text=shown)
+        address = address.strip()
+        if not ok or not address:
+            return
+        if not camera.is_stream(address):
+            QMessageBox.warning(self, "Phone or IP camera", "The address must start with http:// or rtsp://")
+            return
+        port = camera.usb_phone_port(address)
+        if port is not None and camera.find_adb() is None:
+            QMessageBox.warning(self, "Phone or IP camera",
+                                "A phone on the USB cable needs adb.exe (Android platform-tools), and it was "
+                                "not found. Put the platform-tools folder next to PlateScanner.exe or add it "
+                                "to PATH, or use the phone's Wi-Fi address instead.")
+            return
+        self._set_camera(address)
 
     def _set_camera(self, source: str) -> None:
         """Switch the gate camera now and remember it for the next start."""
         self.capture.switch_source(source)
         save_config(self.cfg)
-        self._set_status(self.cam_status, f"Camera: opening camera {source}", theme.AMBER)
+        self._set_status(self.cam_status, f"Camera: opening camera {camera.safe_source(source)}", theme.AMBER)
 
     # --- zoom -------------------------------------------------------------------
 

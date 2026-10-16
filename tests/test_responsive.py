@@ -171,3 +171,21 @@ def test_backup_message_names_the_file_and_opens_the_folder(window, monkeypatch)
     assert name in shown[0] and "\\" not in shown[0]   # the file name, not a path that wraps
     assert opened == [1]
     w.db_window.hide()
+
+
+def test_phone_camera_address_switches_the_camera(window, monkeypatch):
+    w, _ = window
+    switched = []
+    w.capture = type("C", (), {"in_use": "0", "switch_source": lambda s, src: switched.append(src)})()
+    monkeypatch.setattr(mw.camera, "find_adb", lambda: "adb")
+    monkeypatch.setattr(mw.QInputDialog, "getText", lambda *a, **k: (" http://127.0.0.1:4747/video ", True))
+    w._ask_phone_camera()
+    assert switched == ["http://127.0.0.1:4747/video"]
+    warned = []
+    monkeypatch.setattr(mw.QMessageBox, "warning", lambda *a: warned.append(a[2]))
+    monkeypatch.setattr(mw.camera, "find_adb", lambda: None)  # USB phone but no adb: say so, don't switch
+    w._ask_phone_camera()
+    monkeypatch.setattr(mw.QInputDialog, "getText", lambda *a, **k: ("192.168.1.5", True))
+    w._ask_phone_camera()
+    assert switched == ["http://127.0.0.1:4747/video"] and len(warned) == 2
+    del w.capture
