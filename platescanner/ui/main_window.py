@@ -1001,16 +1001,32 @@ class MainWindow(QMainWindow):
         """Use the fullest Live Feed header that fits the panel. It measures itself, so it fits
         whatever fonts and Windows scaling the laptop has (Windows' fonts are wider than they look
         in a screenshot taken elsewhere: fixed sizes left "Draw lane" cut off)."""
-        room = self._feed_frame.contentsRect().width() - 28  # (the panel's side margins)
-        for i, (lane, whole, caption, extras) in enumerate(self._FEED_HEADER_LEVELS):
-            self.lane_button.setText(lane)
-            self.lane_clear.setText(whole)
-            self._zoom_label.setVisible(caption)
-            self.zoom_value.setVisible(extras)
-            self._zoom_reset.setVisible(extras)
+        needs = self._feed_header_needs()
+        room = self._feed_header_room()
+        level = next((i for i, need in enumerate(needs) if need <= room), len(needs) - 1)
+        self._set_feed_header_level(level)
+        self._feed_header_level = level
+
+    def _feed_header_room(self) -> int:
+        return self._feed_frame.contentsRect().width() - 28  # (the panel's side margins)
+
+    def _feed_header_needs(self) -> list[int]:
+        """The width the Live Feed header needs at each of _FEED_HEADER_LEVELS."""
+        needs = []
+        for level in range(len(self._FEED_HEADER_LEVELS)):
+            self._set_feed_header_level(level)
             self._feed_header.invalidate()
-            if self._feed_header.minimumSize().width() <= room or i == len(self._FEED_HEADER_LEVELS) - 1:
-                return
+            needs.append(self._feed_header.minimumSize().width())
+        self._set_feed_header_level(getattr(self, "_feed_header_level", 0))
+        return needs
+
+    def _set_feed_header_level(self, level: int) -> None:
+        lane, whole, caption, extras = self._FEED_HEADER_LEVELS[level]
+        self.lane_button.setText(lane)
+        self.lane_clear.setText(whole)
+        self._zoom_label.setVisible(caption)
+        self.zoom_value.setVisible(extras)
+        self._zoom_reset.setVisible(extras)
 
     def _show_zoom(self) -> None:
         zoom = self.zoom_slider.value() / 10
