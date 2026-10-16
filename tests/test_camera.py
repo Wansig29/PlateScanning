@@ -429,3 +429,36 @@ def test_live_camera_that_stops_giving_pictures_is_reopened(monkeypatch):
     w.stop()
     t.join(5)
     assert "Camera signal lost, reconnecting…" in statuses and len(opened) >= 2
+
+
+def test_usb_phone_port_only_for_this_laptop():
+    assert camera.usb_phone_port("http://127.0.0.1:4747/video") == 4747
+    assert camera.usb_phone_port("http://localhost:8080/video") == 8080
+    assert camera.usb_phone_port("http://192.168.1.5:8080/video") is None   # phone on Wi-Fi
+    assert camera.usb_phone_port("0") is None
+    assert camera.is_stream("rtsp://cam/live") and not camera.is_stream("0")
+
+
+def test_phone_on_usb_cable_is_forwarded_before_opening(monkeypatch):
+    calls = []
+
+    class Done:
+        returncode, stdout, stderr = 0, "", ""
+
+    monkeypatch.setattr(camera, "find_adb", lambda: "adb")
+    monkeypatch.setattr(camera.subprocess, "run", lambda args, **_: calls.append(args) or Done())
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: calls.append(a[0]) or Webcam(True))
+    camera.open_stream("http://127.0.0.1:4747/video")
+    assert calls == [["adb", "forward", "tcp:4747", "tcp:4747"], "http://127.0.0.1:4747/video"]
+
+    calls.clear()
+    camera.open_stream("http://192.168.1.5:8080/video")          # Wi-Fi phone: no adb
+    assert calls == ["http://192.168.1.5:8080/video"]
+
+
+def test_missing_adb_does_not_stop_the_stream_from_being_tried(monkeypatch):
+    monkeypatch.setattr(camera, "find_adb", lambda: None)
+    opened = []
+    monkeypatch.setattr(camera.cv2, "VideoCapture", lambda *a: opened.append(a[0]) or Webcam(False))
+    camera.open_stream("http://127.0.0.1:4747/video")
+    assert opened == ["http://127.0.0.1:4747/video"]

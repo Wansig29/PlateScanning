@@ -240,7 +240,7 @@ class CaptureWorker(QThread):
                 return None, False
             log.info("Camera opened: %s", camera.describe(opened[1]))
             return opened[0], False
-        cap = cv2.VideoCapture(src)
+        cap = camera.open_stream(src) if camera.is_stream(src) else cv2.VideoCapture(src)
         is_file = Path(src).is_file()
         if not cap.isOpened():
             cap.release()
