@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import itertools
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -43,6 +44,12 @@ log = logging.getLogger(__name__)
 
 PREVIEW_MAX_WIDTH = 1280
 CAMERA_STALL_SECONDS = 5.0  # a live camera giving no picture this long is reopened
+# Live Feed pacing: a gap this long between two camera pictures reaching the scanner is a visible
+# stutter (the computer is too busy). Plate reading then slows down, to MIN_READ_SPEED at most, and
+# speeds up again step by step once the feed has been smooth for PACE_RECOVER_SECONDS.
+STUTTER_SECONDS = 0.2
+MIN_READ_SPEED = 0.25
+PACE_RECOVER_SECONDS = 2.0
 
 # A vehicle not reported after this many read attempts (e.g. parked in view, its plate never
 # clear) is then only re-read every SLOW_READ_EVERY frames: the others in view get the time.
@@ -211,9 +218,33 @@ class CaptureWorker(QThread):
         self._lock = threading.Lock()
         # The camera actually scanned, and why it isn't the configured one (when it isn't).
         self.in_use, self.note = cfg.camera.source.strip(), ""
+        # Share of max_scans_per_second plate reading may use (read by the recognizer): lowered
+        # when the Live Feed stutters, so a slow computer keeps a smooth picture.
+        self.read_speed = 1.0
+        self._calm_since = 0.0
+        self._pauses: list[float] = []      # stutters since the last log line
+        self._frames = 0                    # camera pictures since the last log line
+        self._next_report = time.monotonic() + 60.0
 
     def stop(self) -> None:
         self._stop.set()
+
+    def _pace(self, gap: float, now: float) -> None:
+        """Follow how smoothly pictures arrive; slow plate reading down while they don't."""
+        self._frames += 1
+        if gap > STUTTER_SECONDS:
+            self._pauses.append(gap)
+            self.read_speed = max(MIN_READ_SPEED, self.read_speed / 2)
+            self._calm_since = now
+        elif self.read_speed < 1.0 and now - self._calm_since >= PACE_RECOVER_SECONDS:
+            self.read_speed = min(1.0, self.read_speed + 0.1)
+            self._calm_since = now
+        if now >= self._next_report:  # once a minute, and only if something happened: for the log
+            if self._pauses:
+                log.warning("Live Feed: %d pauses over %.1f s in the last minute (longest %.0f ms); camera "
+                            "%.1f pictures/s; plate reading at %.0f%% speed", len(self._pauses), STUTTER_SECONDS,
+                            max(self._pauses) * 1000, self._frames / 60.0, self.read_speed * 100)
+            self._pauses, self._frames, self._next_report = [], 0, now + 60.0
 
     def refocus(self) -> None:
         """Focus again on the next vehicle in view, then lock there (focus lock only)."""
@@ -398,7 +429,10 @@ class CaptureWorker(QThread):
                             self.status.emit("Camera signal lost, reconnecting…")
                             break
                         continue  # no new picture yet: check for stop / camera switch, then wait again
-                    last_frame = t0 = time.monotonic()
+                    t0 = time.monotonic()
+                    if got_frame:  # (not the wait for the first picture after opening)
+                        self._pace(t0 - last_frame, t0)
+                    last_frame = t0
                     ok = True
                 else:
                     # Play in real time like a live camera: when behind, drop frames.
@@ -462,7 +496,9 @@ class CaptureWorker(QThread):
                         learning = False
                         reader.call(self._lock_focus)
 
-                if t0 - last_preview >= preview_interval:
+                # (A few ms early still counts: with 30 pictures/s and preview_fps 30, a picture
+                # arriving 32 ms after the last must not wait for the next one.)
+                if t0 - last_preview >= preview_interval - 0.005:
                     last_preview = t0
                     self._publish(frame, roi, window)
 
@@ -496,7 +532,10 @@ class RecognizerWorker(QThread):
         self._in_view: set[int] = set()
         self.frames_processed = 0
         # Plate reads and the classical finder run here, in parallel with the detector.
-        self._pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="plate-read")
+        # Plates read side by side; each read already uses 2 threads, so no more workers than
+        # half the computer's cores (a 4-thread laptop: 2), leaving the rest to the camera and UI.
+        workers = max(1, min(4, (os.cpu_count() or 4) // 2))
+        self._pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="plate-read")
         self._detector = ThreadPoolExecutor(max_workers=1, thread_name_prefix="plate-detect")
         self.video_name: str | None = None  # set when scanning a video file instead of the camera
         self._lexicon: PlateLexicon | None = None
@@ -632,6 +671,8 @@ class RecognizerWorker(QThread):
                 idle = not f.motion and not following and since < self.cfg.motion.idle_check_seconds
                 # Busy: leave the CPU some room for the camera and the Live Feed.
                 rate = self.cfg.motion.max_scans_per_second
+                if self.capture is not None:  # slower while the Live Feed stutters
+                    rate *= self.capture.read_speed
                 idle = idle or (rate > 0 and since < 1.0 / rate)
                 self._feed_health(f, not idle)
                 if idle:
