@@ -1027,6 +1027,11 @@ class MainWindow(QMainWindow):
         self._zoom_label.setVisible(caption)
         self.zoom_value.setVisible(extras)
         self._zoom_reset.setVisible(extras)
+        # Each button at least as wide as its label needs now. On Windows the layout otherwise kept an
+        # older, smaller size for the Camera button (77 px for a 129 px label with its menu arrow).
+        for b in (self.camera_btn, self.lane_button, self.lane_clear):
+            b.setMinimumWidth(0)
+            b.setMinimumWidth(b.sizeHint().width())
 
     def _show_zoom(self) -> None:
         zoom = self.zoom_slider.value() / 10
