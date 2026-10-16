@@ -258,6 +258,13 @@ class CaptureWorker(QThread):
         """Focus again on the next vehicle in view, then lock there (focus lock only)."""
         self._refocus.set()
 
+    def _wait(self, seconds: float) -> None:
+        """Pause before retrying, but stop waiting at once when the operator picks another camera
+        (or the scanner closes): the new camera opens now, not after the retry delay."""
+        end = time.monotonic() + seconds
+        while not self._stop.is_set() and not self._reopen.is_set() and time.monotonic() < end:
+            self._reopen.wait(0.1)
+
     def switch_source(self, source: str) -> None:
         """Use another camera (or stream) from now on: the current one is closed and the new one opened."""
         self.cfg.camera.source = source
@@ -407,7 +414,7 @@ class CaptureWorker(QThread):
             cap, is_file = self._open()
             if cap is None:
                 self.status.emit(f"Camera '{camera.safe_source(self.cfg.camera.source)}' unavailable, retrying…")
-                self._stop.wait(3.0)
+                self._wait(3.0)
                 continue
             self.status.emit(f"Camera running: {self.note}" if self.note else "Camera running")
             fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
@@ -453,7 +460,7 @@ class CaptureWorker(QThread):
                 if not ok or frame is None:
                     if is_file and not got_frame:
                         self.status.emit("Video has no readable frames, retrying…")
-                        self._stop.wait(3.0)
+                        self._wait(3.0)
                         break
                     if is_file:
                         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # loop test videos
