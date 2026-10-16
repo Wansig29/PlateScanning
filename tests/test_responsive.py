@@ -303,16 +303,29 @@ def test_a_shown_photo_does_not_stop_its_slot_from_shrinking(window):
     assert slot.minimumSizeHint() == QSize(120, 90)           # but it still asks for its minimum only
 
 
-def test_small_laptop_screen_nothing_is_cut_off(window):
+@pytest.mark.parametrize("font_pt", [None, 11, 13])   # 11 / 13 pt: wider fonts, like Windows' or Windows scaling
+def test_small_laptop_screen_nothing_is_cut_off(window, font_pt):
     from PySide6.QtWidgets import QToolButton
 
     from platescanner.ui.widgets import IdentityCard
     w, app = window
-    w.resize(1024, 600)
-    app.processEvents()
-    for card in w.identity.findChildren(IdentityCard):       # each card fits its panel
-        assert card.minimumSizeHint().width() <= w.identity.scroll.viewport().width()
-    header = [b for b in w.findChildren(QToolButton) if b.isVisible() and b.parent() is w.camera_btn.parent()]
-    assert w.camera_btn in header
-    for b in (w.camera_btn, w.lane_button):                   # the Live Feed controls are not squeezed
-        assert b.width() >= b.sizeHint().width()
+    font = app.font()
+    if font_pt:
+        bigger = app.font()
+        bigger.setPointSize(font_pt)
+        app.setFont(bigger)
+    try:
+        w.resize(1366, 728)                                   # wide first, then small: it must adapt both ways
+        app.processEvents()
+        w.resize(1024, 600)
+        app.processEvents()
+        for card in w.identity.findChildren(IdentityCard):   # each card fits its panel
+            assert card.minimumSizeHint().width() <= w.identity.scroll.viewport().width()
+        for b in (w.camera_btn, w.lane_button, w.lane_clear):    # the Live Feed controls are not squeezed
+            assert b.width() >= b.sizeHint().width(), b.text()
+        w.resize(1366, 728)
+        app.processEvents()
+        if not font_pt:
+            assert w.lane_button.text() == "Draw lane"        # full labels again where there is room
+    finally:
+        app.setFont(font)
