@@ -170,6 +170,10 @@ class OcrConfig:
     # shadows the detector mistakes for plates are skipped instead of read, and are not logged
     # as "no plate read".
     require_characters: bool = True
+    # Plates are wider than tall (car 390x140 mm, motorcycle 235x135 mm, ~1.2 even turned 45
+    # degrees). A detection narrower than this many times its height (a label, a sign, a phone
+    # held up to the camera) is not read. 0 = not checked.
+    min_plate_aspect: float = 1.2
     # Undo sideways motion blur on plates of moving vehicles before reading them.
     deblur: bool = True
     # Straighten tilted/sheared plate text before reading (see tools/bench_conditions.py).
