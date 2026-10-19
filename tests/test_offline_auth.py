@@ -110,3 +110,21 @@ def test_refusal_says_why(tmp_path):
     assert "days ago" in offline_auth.why_refused(p, "a@b.c", "pw", 14)
     offline_auth.remember(p, "a@b.c", "pw", {"email": "a@b.c"})
     assert "Wrong password" in offline_auth.why_refused(p, "a@b.c", "nope", 14)
+
+
+def test_sign_out_goes_back_to_the_sign_in_window(cfg, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from platescanner.ui import main_window as mw
+    for name in ("_start_workers", "_start_archiving", "_start_update_check"):
+        monkeypatch.setattr(mw.MainWindow, name, lambda self: None)
+    monkeypatch.setattr(mw.MainWindow, "_start_sync", lambda self: None)
+    monkeypatch.setattr(mw.MainWindow, "_refresh_sync_label", lambda self, error=None: None)
+    monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
+    w = mw.MainWindow(cfg, None)
+    attempts = []
+    monkeypatch.setattr(w, "_sign_in", lambda: attempts.append(1))
+    w.offline_user = {"name": "Guard Juan"}
+    w._account_clicked()
+    assert not w._signed_in()
+    QApplication.processEvents()
+    assert attempts == [1]

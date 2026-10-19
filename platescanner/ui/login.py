@@ -163,6 +163,8 @@ class LoginDialog(QDialog):
             self.token, self.user = token, payload
             self.accept()
         else:
+            if str(payload).startswith("Cannot reach server") and self.offline_btn.isVisibleTo(self):
+                payload += "\nOr use \u201cContinue offline\u201d below."
             self._show_error(payload)
             self.password.selectAll()
             self.password.setFocus()

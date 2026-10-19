@@ -18,6 +18,17 @@ log = logging.getLogger(__name__)
 MAX_PAGES = 1000
 
 
+def _unreachable(e: requests.RequestException) -> str:
+    """A guard-readable reason the server couldn't be reached (not the raw urllib3 text)."""
+    if isinstance(e, requests.Timeout):
+        return "Cannot reach server: it took too long to answer. Check the internet connection and try again."
+    if isinstance(e, requests.exceptions.SSLError):
+        return "Cannot reach server: the secure connection failed. Check the laptop's date and time."
+    if isinstance(e, requests.ConnectionError):
+        return "Cannot reach server: no internet connection. Check the Wi-Fi and try again."
+    return "Cannot reach server. Check the internet connection and try again."
+
+
 class ApiError(Exception):
     pass
 
@@ -158,7 +169,7 @@ class ApiClient:
                 timeout=self.cfg.timeout_seconds, verify=self._verify,
             )
         except requests.RequestException as e:
-            raise ApiError(f"Cannot reach server: {e}") from e
+            raise ApiError(_unreachable(e)) from e
         if r.status_code in (401, 403, 422):
             msg = None
             try:
@@ -223,7 +234,7 @@ class ApiClient:
                 r = self.session.get(self._url(path), params=params, headers=self._auth_headers(),
                                      timeout=self.cfg.timeout_seconds, verify=self._verify)
             except requests.RequestException as e:
-                raise ApiError(f"Cannot reach server: {e}") from e
+                raise ApiError(_unreachable(e)) from e
             if r.status_code == 401:
                 raise AuthError("Session expired, sign in again")
             if not r.ok:

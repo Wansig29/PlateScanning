@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import pytest
+import requests
 
 from platescanner import api, db, mapping, plates, sync
 from platescanner.config import Config
@@ -365,3 +366,17 @@ def test_one_character_over_and_over_is_a_pattern_not_a_plate(text):
 @pytest.mark.parametrize("text", ["AAA 1111", "ABC 1234", "NBC 1111", "IIA 111"])
 def test_real_plates_are_not_patterns(text):
     assert not plates.is_repeated_pattern(text)
+
+
+@pytest.mark.parametrize("exc, phrase", [
+    (requests.ConnectionError("NameResolutionError ... getaddrinfo failed"), "no internet connection"),
+    (requests.Timeout("read timed out"), "too long"),
+    (requests.exceptions.SSLError("cert"), "date and time"),
+])
+def test_offline_login_message_is_plain(exc, phrase):
+    client = api.ApiClient(Config().api)
+    client.session.post = lambda *a, **k: (_ for _ in ()).throw(exc)
+    with pytest.raises(api.ApiError) as info:
+        client.login("guard@psau.edu.ph", "pw")
+    assert phrase in str(info.value)
+    assert "HTTPSConnectionPool" not in str(info.value) and "getaddrinfo" not in str(info.value)

@@ -1445,6 +1445,8 @@ class MainWindow(QMainWindow):
                     w.hide()
             self._update_account_btn()
             self._refresh_sync_label()
+            # Back to the sign-in window for the next guard; Cancel leaves the scanner signed out.
+            QTimer.singleShot(0, self._sign_in)
         else:
             self._sign_in()
 
