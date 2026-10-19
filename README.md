@@ -88,6 +88,7 @@ On first run, the app writes `config.json` to `%LOCALAPPDATA%\PlateScanner\`. Yo
 | `ocr.classical_only_confidence` | A candidate that only the classical finder proposed must read at least this well (default 0.75) before it is reported |
 | `ocr.classical_proposals` | Also try plate candidates from the classical finder (catches plates the neural detector misses, ~20 ms per frame) |
 | `ocr.min_plate_aspect` | Plates are wider than tall (car 390x140 mm, motorcycle 235x135 mm, about 1.2 even turned 45 degrees). A detection narrower than this many times its height (a label, a sign, a phone held up to the camera) is not read (default 1.2; 0 = not checked) |
+| `ocr.max_plate_aspect` | ...and no more than this many times wider than tall (default 5; a car plate is 2.8, about 3.9 seen from a camera tilted 45 degrees down). A thinner strip (a shelf's price tape, a sign's line of print) is not read; 0 = not checked |
 | `ocr.require_characters` | Character check before OCR (default on): a plate candidate is read only if it shows a row of at least three character-shaped strokes. Walls, grilles, windows and shadows that look plate-shaped are skipped, and are not logged as *no plate read* |
 | `scan.archive_after_days` | Pictures older than this many days are **moved** (never deleted) from `captures\` to the archive folder; the Logs still open them. Default 30; 0 keeps everything in `captures\` |
 | `scan.archive_dir` | Where the old pictures go. Empty = `archive\` next to `captures\`; can be another drive, e.g. `D:\\PlateScannerArchive` |

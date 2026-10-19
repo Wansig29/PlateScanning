@@ -808,6 +808,8 @@ class RecognizerWorker(QThread):
                 continue  # read many times and still not clear (parked?): only now and then
             if box[2] < ocr.min_plate_aspect * box[3]:
                 continue  # about as tall as wide, or taller: not a plate (a label, a sign)
+            if ocr.max_plate_aspect and box[2] > ocr.max_plate_aspect * box[3]:
+                continue  # a thin strip (a shelf's price tape, a line of print): not a plate
             # A plate cut off by the edge of the picture: wait until it's fully in. Also the bottom
             # edge, where a vehicle driving away from the camera (rear plate) first appears.
             cut = (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2

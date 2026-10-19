@@ -174,6 +174,10 @@ class OcrConfig:
     # degrees). A detection narrower than this many times its height (a label, a sign, a phone
     # held up to the camera) is not read. 0 = not checked.
     min_plate_aspect: float = 1.2
+    # ...and never more than about 4 times wider than tall (a car plate is 2.8, 3.9 seen from a camera
+    # tilted 45 degrees down). A thinner strip (a shelf's price tape, a sign's line of print) is not
+    # read. 0 = not checked.
+    max_plate_aspect: float = 5.0
     # Undo sideways motion blur on plates of moving vehicles before reading them.
     deblur: bool = True
     # Straighten tilted/sheared plate text before reading (see tools/bench_conditions.py).
