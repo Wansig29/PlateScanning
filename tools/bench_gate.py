@@ -36,7 +36,7 @@ from platescanner.pipeline import FrameSlot, RecognizerWorker, _Frame  # noqa: E
 from platescanner.vision.alpr import PlateBox, PlateEngine  # noqa: E402
 
 LETTERS = "ABCDEFGHJKLMNPRSTUVWXYZ"
-MC_LAYOUTS = ["LLDDDDD", "LLDDDD", "DDDLLL", "DDDDLL"]
+MC_LAYOUTS = ["LLDDDDD", "LLDDDD", "DDDLLL", "DDDDLL", "LDDDLL"]
 
 
 def car_plate(rng: random.Random) -> tuple[str, np.ndarray]:

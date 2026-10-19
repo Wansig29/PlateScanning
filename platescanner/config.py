@@ -265,6 +265,7 @@ class OcrConfig:
         "LLDDDDD",  # AB 12345  (current motorcycles)
         "DDDLLL",   # 123 ABC   (motorcycles)
         "DDDDLL",   # 1234 AB
+        "LDDDLL",   # A 123 BC  (motorcycles, e.g. C423DH)
     ])
 
 
@@ -362,7 +363,7 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     # Bumped when defaults change in a way an old config.json must pick up (see _migrate).
-    settings_version: int = 5
+    settings_version: int = 6
 
     home: Path = field(default_factory=app_home, repr=False)
     # Problems found in config.json when it was loaded (shown to the operator at start-up; not saved).
@@ -470,12 +471,17 @@ def _migrate(data: dict[str, Any]) -> None:
     installed app. Move only values still equal to the old default; a value someone chose stays.
     The file is then marked as up to date, so this runs once."""
     version = data.get("settings_version", 1)
-    if not isinstance(version, int) or version >= 5:
+    if not isinstance(version, int) or version >= 6:
         return
-    data["settings_version"] = 5
+    data["settings_version"] = 6
+    ocr = data.get("ocr")
+    # v5 -> v6: the motorcycle format A 123 BC (C423DH) was missing, so such plates were never read.
+    if isinstance(ocr, dict) and isinstance(ocr.get("plate_layouts"), list) and "LDDDLL" not in ocr["plate_layouts"]:
+        ocr["plate_layouts"].append("LDDDLL")
+    if version >= 5:
+        return
     # v4 -> v5: v1.2.1-v1.2.4 wrote require_characters on and min_plate_aspect 1.2 into the file;
     # both rejected real tilted plates and are off by default since v1.2.5.
-    ocr = data.get("ocr")
     if isinstance(ocr, dict):
         if ocr.get("require_characters") is True:
             ocr["require_characters"] = False
