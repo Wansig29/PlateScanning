@@ -823,12 +823,11 @@ class RecognizerWorker(QThread):
         reads = list(self._pool.map(lambda t: self.engine.read(t[-1]), todo))
         for (track, i, px, py, pw, ph, crop), read in zip(todo, reads):
             track.reads_tried += 1
-            if read is None:
-                continue  # no characters on it: not read
-            track.char_hits += 1
-            if not read.text:
-                continue
+            if read is None or not read.text:
+                continue  # nothing read (or, with ocr.require_characters, no characters on it)
             fixed = plates.best_layout_match(read.text, ocr.plate_layouts)
+            if fixed and read.confidence >= ocr.plate_evidence_confidence:
+                track.plate_hits += 1  # plate characters seen, even if not yet sure enough to report
             if not fixed or read.confidence < ocr.read_confidence or plates.is_repeated_pattern(fixed):
                 track.note_unmatched(f"{read.text}({read.confidence:.0%})")
                 continue
@@ -1085,7 +1084,7 @@ class RecognizerWorker(QThread):
         if track.emitted_key:
             self._remember_parked(track)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
-            if track.emitted_key or track.char_hits:  # (one that never showed characters was no plate)
+            if track.emitted_key or track.plate_hits >= 2:  # (one never read as plate text was no plate)
                 self._health.plate_seen(bool(track.emitted_key))
             self._health.plate_width(track.max_width)
         # Only for real plates (seen by the neural detector), not for the
@@ -1094,8 +1093,8 @@ class RecognizerWorker(QThread):
             return
         if not track.motion_hits:
             return  # nothing vehicle-like moved: a static or false detection, not a vehicle that passed
-        if not track.char_hits:
-            return  # plate-shaped, but never showed any characters: not a plate (a wall, grille, shadow)
+        if track.plate_hits < 2:
+            return  # never read as plate text with any confidence: not a plate (a label, sign, shelf)
         # Plate seen in several frames but never readable: log it with a picture.
         ts = datetime.now()
         snap = self._save_locator(track, ts, "noplate", db.RESULT_NO_PLATE, f"#{track.track_id} plate not readable", (150, 150, 150))

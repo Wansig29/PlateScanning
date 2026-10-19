@@ -165,15 +165,21 @@ class OcrConfig:
     # Also try plate candidates from the classical contrast/edge finder, in
     # case the neural detector misses an unusual plate (~20 ms per frame).
     classical_proposals: bool = True
-    # Character check before OCR: a plate candidate is only read if it shows a row of at least
-    # three character-shaped strokes (vision/plate.has_characters). Walls, grilles, windows and
-    # shadows the detector mistakes for plates are skipped instead of read, and are not logged
-    # as "no plate read".
-    require_characters: bool = True
-    # Plates are wider than tall (car 390x140 mm, motorcycle 235x135 mm, ~1.2 even turned 45
-    # degrees). A detection narrower than this many times its height (a label, a sign, a phone
-    # held up to the camera) is not read. 0 = not checked.
-    min_plate_aspect: float = 1.2
+    # Character check before OCR: a candidate is only read if it shows a row of at least three
+    # separate character-shaped strokes (vision/plate.has_characters). Off by default: on a real
+    # motorcycle plate tilted ~25 degrees the characters merged with the dark around the plate and
+    # the check rejected a plate the OCR reads at 99%. The OCR's own confidence is the judge
+    # instead (plate_evidence_confidence, read_confidence).
+    require_characters: bool = False
+    # A detection narrower than this many times its height is not read. Off (0) by default: the
+    # detector's box is the straight box around the plate, and a tilted plate's box is far squarer
+    # than the plate (a motorcycle plate turned 30 degrees: 1.16; 45 degrees: 1.0).
+    min_plate_aspect: float = 0.0
+    # OCR text in a plate format at least this sure counts as evidence that a plate is there,
+    # even when too unsure to report: a vehicle whose plate showed it twice but was never read
+    # is logged "no plate read". Labels, signs and shelving the detector mistook for plates
+    # read at 11-16% (coerced into a plate format); a real plate reads far higher.
+    plate_evidence_confidence: float = 0.30
     # ...and never more than about 4 times wider than tall (a car plate is 2.8, 3.9 seen from a camera
     # tilted 45 degrees down). A thinner strip (a shelf's price tape, a sign's line of print) is not
     # read. 0 = not checked.

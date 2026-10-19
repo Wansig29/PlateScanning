@@ -543,11 +543,20 @@ class NoCharactersEngine(FakeEngine):
 
 
 class UnreadableEngine(FakeEngine):
-    """Characters were there, but the OCR could not make a plate out of them."""
+    """A real plate too blurred or far to report: plate text, but only partly sure."""
 
     def read(self, crop):
         self.reads += 1
-        return OcrRead("", 0.0, [])
+        return OcrRead("ABC1234", 0.35, [0.35] * 7)
+
+
+class LabelEngine(FakeEngine):
+    """A label, sign or shelf the detector mistook for a plate: the OCR's text, coerced into a plate
+    format, is very unsure (tonight's real false boxes read at 11-16%)."""
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("AA3388", 0.15, [0.15] * 6)
 
 
 def _unreadable_logged(engine, frames=8):
@@ -565,15 +574,29 @@ def _unreadable_logged(engine, frames=8):
     return got
 
 
-def test_something_plate_shaped_without_characters_is_not_logged_as_no_plate_read():
-    assert _unreadable_logged(NoCharactersEngine()) == []
-    assert len(_unreadable_logged(UnreadableEngine())) == 1
+def test_only_a_real_unreadable_plate_is_logged_as_no_plate_read():
+    assert _unreadable_logged(NoCharactersEngine()) == []                 # nothing read at all
+    assert _unreadable_logged(LabelEngine()) == []                        # a label: plate text, 15% sure
+    assert len(_unreadable_logged(UnreadableEngine())) == 1               # a blurred plate: 35% sure
 
 
-def test_a_box_about_as_tall_as_wide_is_not_read():
-    # A label or sign held up to the camera: the detector may call it a plate, but plates are wider.
+def test_a_tilted_plates_near_square_box_is_read_by_default():
+    # A motorcycle plate tilted ~25 degrees: the detector's straight box around it is 1.13:1.
     engine = FakeEngine()
     w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((300, 400, 3), 128, np.uint8)
+    w._apply(conn, _Frame(0, image, (0, 0, 400, 300), True, 0.0), [PlateBox((120, 60, 147, 130), 0.95)])
+    assert engine.reads == 1
+    conn.close()
+
+
+def test_a_box_about_as_tall_as_wide_is_not_read_when_asked():
+    # ocr.min_plate_aspect (off by default): a site whose plates are never tilted can skip square boxes.
+    engine = FakeEngine()
+    w = worker(engine)
+    w.cfg.ocr.min_plate_aspect = 1.2
     conn = db.connect(w.cfg.db_path)
     db.init_schema(conn)
     image = np.full((300, 400, 3), 128, np.uint8)
