@@ -362,7 +362,7 @@ class Config:
     update: UpdateConfig = field(default_factory=UpdateConfig)
 
     # Bumped when defaults change in a way an old config.json must pick up (see _migrate).
-    settings_version: int = 4
+    settings_version: int = 5
 
     home: Path = field(default_factory=app_home, repr=False)
     # Problems found in config.json when it was loaded (shown to the operator at start-up; not saved).
@@ -470,9 +470,19 @@ def _migrate(data: dict[str, Any]) -> None:
     installed app. Move only values still equal to the old default; a value someone chose stays.
     The file is then marked as up to date, so this runs once."""
     version = data.get("settings_version", 1)
-    if not isinstance(version, int) or version >= 4:
+    if not isinstance(version, int) or version >= 5:
         return
-    data["settings_version"] = 4
+    data["settings_version"] = 5
+    # v4 -> v5: v1.2.1-v1.2.4 wrote require_characters on and min_plate_aspect 1.2 into the file;
+    # both rejected real tilted plates and are off by default since v1.2.5.
+    ocr = data.get("ocr")
+    if isinstance(ocr, dict):
+        if ocr.get("require_characters") is True:
+            ocr["require_characters"] = False
+        if ocr.get("min_plate_aspect") == 1.2:
+            ocr["min_plate_aspect"] = 0.0
+    if version >= 4:
+        return
     # v3 -> v4: the Live Feed shows every picture of a 30 fps webcam. 20 showed only every other
     # one (15 per second), which looked choppy.
     cam = data.get("camera")
