@@ -13,7 +13,7 @@ def test_old_default_thresholds_are_tightened(tmp_path, monkeypatch):
     cfg = _load(tmp_path, monkeypatch, {"ocr": {"detector_confidence": 0.35, "read_confidence": 0.3,
                                                  "report_confidence": 0.5}})
     assert (cfg.ocr.detector_confidence, cfg.ocr.read_confidence, cfg.ocr.report_confidence) == (0.5, 0.5, 0.65)
-    assert cfg.settings_version == 4
+    assert cfg.settings_version == 5
 
 
 def test_values_someone_chose_are_kept(tmp_path, monkeypatch):
@@ -72,7 +72,7 @@ def test_good_file_has_no_warnings_and_warnings_are_not_saved(tmp_path, monkeypa
 
 def test_v2_decoder_setting_is_tightened_once(tmp_path, monkeypatch):
     cfg = _load(tmp_path, monkeypatch, {"settings_version": 2, "ocr": {"decode_max_changes": 2}})
-    assert cfg.ocr.decode_max_changes == 1 and cfg.settings_version == 4
+    assert cfg.ocr.decode_max_changes == 1 and cfg.settings_version == 5
     saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     saved["ocr"]["decode_max_changes"] = 2                                     # chosen on purpose afterwards
     (tmp_path / "config.json").write_text(json.dumps(saved), encoding="utf-8")
@@ -86,10 +86,24 @@ def test_v2_chosen_decoder_value_is_kept(tmp_path, monkeypatch):
 
 def test_old_preview_rate_is_raised_to_every_camera_picture_once(tmp_path, monkeypatch):
     cfg = _load(tmp_path, monkeypatch, {"settings_version": 3, "camera": {"preview_fps": 20}})
-    assert cfg.camera.preview_fps == 30 and cfg.settings_version == 4
+    assert cfg.camera.preview_fps == 30 and cfg.settings_version == 5
     saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     saved["camera"]["preview_fps"] = 20                                         # chosen on purpose afterwards
     (tmp_path / "config.json").write_text(json.dumps(saved), encoding="utf-8")
     assert load_config().camera.preview_fps == 20
     cfg = _load(tmp_path, monkeypatch, {"settings_version": 3, "camera": {"preview_fps": 12}})
     assert cfg.camera.preview_fps == 12                                         # someone's own choice
+
+
+def test_the_v1_2_4_plate_filters_saved_in_the_file_are_turned_off_once(tmp_path, monkeypatch):
+    # v1.2.1-v1.2.4 wrote these defaults into config.json; they rejected real tilted plates.
+    cfg = _load(tmp_path, monkeypatch, {"settings_version": 4,
+                                        "ocr": {"require_characters": True, "min_plate_aspect": 1.2}})
+    assert (cfg.ocr.require_characters, cfg.ocr.min_plate_aspect, cfg.settings_version) == (False, 0.0, 5)
+    saved = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+    saved["ocr"]["require_characters"], saved["ocr"]["min_plate_aspect"] = True, 1.2   # chosen on purpose afterwards
+    (tmp_path / "config.json").write_text(json.dumps(saved), encoding="utf-8")
+    cfg = load_config()
+    assert (cfg.ocr.require_characters, cfg.ocr.min_plate_aspect) == (True, 1.2)
+    cfg = _load(tmp_path, monkeypatch, {"settings_version": 4, "ocr": {"min_plate_aspect": 1.5}})
+    assert cfg.ocr.min_plate_aspect == 1.5                                      # someone's own choice
