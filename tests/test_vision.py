@@ -164,7 +164,10 @@ def test_character_check_passes_plates_even_blurred_small_or_inverted():
     crop = _plate_crop()
     assert has_characters(crop)
     assert has_characters(255 - crop)                                 # light text on a dark plate
-    assert has_characters(cv2.blur(crop, (9, 1)))                     # motion blur
+    from platescanner.vision.alpr import deblur_horizontal, motion_blur_length
+    for k in (5, 9):                                                  # motion blur, deblurred first as the reader does
+        blurred = cv2.blur(crop, (k, 1))
+        assert has_characters(deblur_horizontal(blurred, motion_blur_length(blurred)))
     assert has_characters(cv2.resize(crop, (70, 27), interpolation=cv2.INTER_AREA))  # far plate
 
 
@@ -179,7 +182,15 @@ def test_character_check_rejects_plate_shaped_things_without_characters():
     shadow = np.full((60, 180, 3), 180, np.uint8)
     cv2.rectangle(shadow, (0, 30), (180, 60), (50, 50, 50), -1)
     noise = np.random.default_rng(3).integers(0, 255, (60, 180, 3), dtype=np.uint8)
-    for img in (blank, window, grille, shadow, noise):
+    rack = np.full((33, 113, 3), 70, np.uint8)                        # shelving: a row of compartment outlines
+    for i in range(4):
+        cv2.rectangle(rack, (i * 28 + 3, 4), (i * 28 + 25, 28), (210, 210, 210), 2)
+    boxes = np.full((110, 134, 3), 230, np.uint8)                     # a label with a row of printed boxes
+    for i in range(4):
+        cv2.rectangle(boxes, (6 + i * 31, 40), (32 + i * 31, 72), (40, 40, 40), 2)
+    smear = np.full((60, 180, 3), 225, np.uint8)                      # one wide dark block alone
+    cv2.rectangle(smear, (20, 15), (160, 45), (60, 60, 60), -1)
+    for img in (blank, window, grille, shadow, noise, rack, boxes, smear):
         assert not has_characters(img)
 
 
