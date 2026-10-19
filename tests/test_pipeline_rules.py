@@ -568,3 +568,41 @@ def _unreadable_logged(engine, frames=8):
 def test_something_plate_shaped_without_characters_is_not_logged_as_no_plate_read():
     assert _unreadable_logged(NoCharactersEngine()) == []
     assert len(_unreadable_logged(UnreadableEngine())) == 1
+
+
+def test_a_box_about_as_tall_as_wide_is_not_read():
+    # A label or sign held up to the camera: the detector may call it a plate, but plates are wider.
+    engine = FakeEngine()
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((300, 400, 3), 128, np.uint8)
+    for i in range(6):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 300), True, i * 0.05), [PlateBox((150, 60, 110, 115), 0.9)])
+    assert engine.reads == 0
+    w._apply(conn, _Frame(6, image, (0, 0, 400, 300), True, 0.3), [PlateBox((150, 60, 110, 40), 0.9)])
+    assert engine.reads == 1                                              # a plate-shaped one is
+    conn.close()
+
+
+class _Capture:
+    def __init__(self):
+        self.overlays = []
+
+    def set_overlays(self, out):
+        self.overlays = out
+
+
+def test_the_live_feed_does_not_box_what_never_showed_characters():
+    w = worker(NoCharactersEngine())
+    w.capture = _Capture()
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(4):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert w.capture.overlays == []                                       # no "reading..." box
+    w.engine = UnreadableEngine()                                         # characters, not yet readable
+    w._apply(conn, _Frame(4, image, (0, 0, 400, 200), True, 0.2), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert [o.label.split()[1] for o in w.capture.overlays] == ["reading..."]
+    conn.close()

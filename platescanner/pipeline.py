@@ -806,6 +806,8 @@ class RecognizerWorker(QThread):
                 continue  # a classical guess that never read as a plate: only recheck now and then
             if not track.emitted_key and track.reads_tried >= SLOW_READ_AFTER and track.hits % SLOW_READ_EVERY:
                 continue  # read many times and still not clear (parked?): only now and then
+            if box[2] < ocr.min_plate_aspect * box[3]:
+                continue  # about as tall as wide, or taller: not a plate (a label, a sign)
             # A plate cut off by the edge of the picture: wait until it's fully in. Also the bottom
             # edge, where a vehicle driving away from the camera (rear plate) first appears.
             cut = (box[0] <= 2 or box[0] + box[2] >= work.shape[1] - 2
@@ -1110,8 +1112,8 @@ class RecognizerWorker(QThread):
         rx, ry = (roi[0], roi[1]) if roi else (0, 0)
         out = []
         for t in self.tracker.tracks.values():
-            if not t.neural_hits and not t.reads:
-                continue  # an unconfirmed classical guess (window, sign...): don't show it
+            if not t.char_hits and not t.reads:
+                continue  # never showed a row of characters (a label, window, sign...): don't show it
             x, y, w, h = t.box
             lead = t.leader()
             if t.emitted_key and lead:
