@@ -104,9 +104,9 @@ def test_card_labels_history_and_shows_the_not_synced_notice(app):
                                              [v("2", "B", 1), v("3", "C", 0)]))
     assert c.banner.text().endswith("VIOLATION") and c.fields["type"].text() == "A"
     c._show_violation(1)
-    assert c.fields["type"].text() == "B (ended)"
+    assert c.fields["type"].text() == "B (former)"
     c._show_violation(2)
-    assert c.fields["type"].text() == "C (settled)"
+    assert c.fields["type"].text() == "C (former)"
     c.show_result("NBC1234", db.LookupResult(db.RESULT_CLEAR, veh, [], "NBC 1234", False, [],
                                              [{"id": "4", "suspension_end": "2026-10-11"}]))
     assert "not synced yet" in c.fields["suspension"].text()
@@ -173,3 +173,65 @@ def test_a_corrected_read_replaces_the_card_and_log_row_of_the_same_car(app):
     assert [logs.table.item(r, 1).text() for r in range(logs.table.rowCount())] == ["AAA 1111", "REY 207"]
     assert [c.scan_id for c in captured._cards] == [1, 2]
     assert captured.count.text() == "2 recent"
+
+
+def test_a_clear_vehicle_with_a_former_violation_says_when_it_was_cleared(app):
+    from platescanner.ui.widgets import IdentityCard
+    veh = {"id": "1", "plate": "554 WYC", "owner_name": "Juan", "contact": "0917", "owner_photo_path": None}
+    served = {"id": "9", "violation_type": "Illegal Parking", "evidence_paths": [], "is_active": False,
+              "suspension_end": "2026-10-17", "suspension_text": "Suspended for 1 day",
+              "occurred_at": "2026-10-16T14:00:00+08:00", "updated_at": "2026-10-18T00:05:00+08:00"}
+    c = IdentityCard()
+    c.show_result("554WYC", db.LookupResult(db.RESULT_CLEAR, veh, [], "554 WYC", False, [served]))
+    assert c.banner.text().endswith("NO VIOLATION  ·  CLEARED OCT 17, 2026")
+    assert c.fields["type"].text() == "Illegal Parking (former)"
+    assert c.fields["suspension"].text() == "Cleared Oct 17, 2026"
+    c.show_result("554WYC", db.LookupResult(db.RESULT_CLEAR, veh, [], "554 WYC"))
+    assert c.banner.text().endswith("NO VIOLATION") and c.fields["type"].text() == "None"
+
+
+def test_clearance_is_the_served_suspensions_end_or_when_it_was_lifted_online():
+    lifted = {"is_active": False, "suspension_end": "2999-12-31", "updated_at": "2026-10-18T09:30:00+08:00"}
+    assert db.cleared_on({"is_active": False, "suspension_end": "2026-10-17", "updated_at": "2026-10-18"}) == "2026-10-17"
+    assert db.cleared_on(lifted) == "2026-10-18T09:30:00+08:00"                     # revoked, then lifted on appeal
+    assert db.cleared_on({"is_active": True, "suspension_end": "2999-12-31"}) is None  # still in force
+    assert db.latest_clearance([lifted, {"is_active": False, "suspension_end": "2026-10-17"}]) == lifted["updated_at"]
+
+
+def test_database_window_shows_the_violation_history_by_school_year(app, tmp_path):
+    from PySide6.QtWidgets import QLabel, QToolButton
+    from platescanner import sync
+    from platescanner.config import Config
+    from platescanner.ui.database_view import DatabaseWindow
+
+    class Client:
+        def fetch_all(self, path, since=None):
+            v = lambda i, when, active: {"id": i, "vehicle_id": 1, "plate_number": "554 WYC", "violation_type": "Illegal Parking",
+                                         "is_active": active, "status": "Suspended", "suspension_end": "2026-10-17",
+                                         "occurred_at": when, "updated_at": when}
+            return {"/v": [{"id": 1, "plate_number": "554 WYC", "owner_name": "Juan"}],
+                    "/x": [v(10, "2026-10-16T14:42:00+08:00", False), v(12, "2025-11-20T07:30:00+08:00", False)],
+                    "/sy": [{"year_label": "2025-2026", "start_date": "2025-08-01", "end_date": "2026-06-30"},
+                            {"year_label": "2026-2027", "start_date": "2026-08-01", "end_date": "2027-06-30",
+                             "is_active": True}]}.get(path, [])
+
+    cfg = Config()
+    cfg.home = tmp_path
+    cfg.api.vehicles_path, cfg.api.violations_path, cfg.api.school_years_path = "/v", "/x", "/sy"
+    cfg.sync.download_photos = False
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    sync.run_sync(cfg, Client(), conn)
+    w = DatabaseWindow(conn, cfg)
+    w.refresh()
+    w.vehicle_table.selectRow(0)
+    page = w.detail.widget()
+    texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+    assert any(t.endswith("NO VIOLATION  ·  CLEARED OCT 17, 2026") for t in texts)
+    assert "2 violations on record  ·  0 in force  ·  2 cleared" in texts
+    years = page.findChildren(QToolButton)
+    assert [b.text() for b in years] == ["▾  School year 2026-2027  ·  1 violation",
+                                         "▸  School year 2025-2026  ·  1 violation"]   # the newest open
+    years[1].click()
+    assert years[1].text().startswith("▾")
+    conn.close()

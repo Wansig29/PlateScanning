@@ -328,3 +328,60 @@ def test_small_laptop_screen_nothing_is_cut_off(window, font_pt):
             assert w._feed_header_level == 0 or needs[0] > room   # full labels whenever they fit
     finally:
         app.setStyleSheet(sheet)
+
+
+def _changes(**extra):
+    return {"vehicles_before": 120, "vehicles_after": 123, "violations_before": 8, "violations_after": 9,
+            "vehicles_added": [], "vehicles_removed": [], "vehicles_updated": [],
+            "violations_added": [], "violations_cleared": [], "violations_updated": [], **extra}
+
+
+def test_sync_summary_pops_up_in_the_middle_until_closed(window):
+    w, app = window
+    w.resize(1280, 720)
+    w._sync_pressed = False
+    w._show_sync_summary({"changes": _changes(vehicles_added=["ABC 1234", "NBC 5678", "XYZ 1"],
+                                              violations_added=[("ABC 1234", "Illegal Parking")])})
+    app.processEvents()
+    toast = w.sync_popup
+    assert toast.isVisible()
+    assert toast.totals.text() == "Vehicles: 120 → 123\nActive violations: 8 → 9"
+    assert "1 new violation: ABC 1234 (Illegal Parking)" in toast.body.text()
+    g = toast.geometry()
+    assert abs(g.center().x() - w.width() // 2) <= 2 and abs(g.center().y() - w.height() // 2) <= 2
+    toast.close_btn.click()
+    assert not toast.isVisible()
+
+
+def test_a_violation_alert_closes_the_sync_summary(window):
+    w, app = window
+    w._sync_pressed = True
+    w._show_sync_summary({"changes": _changes()})
+    assert w.sync_popup.isVisible()
+    w._alert(sound=False)
+    assert not w.sync_popup.isVisible()
+
+
+def test_a_timed_sync_with_nothing_new_stays_quiet_but_sync_now_answers(window):
+    w, app = window
+    unchanged = {"changes": _changes(vehicles_after=120, violations_after=8)}
+    w._sync_pressed = False
+    w._show_sync_summary(unchanged)
+    assert not hasattr(w, "sync_popup") or not w.sync_popup.isVisible()
+    w._sync_pressed = True
+    w._show_sync_summary(unchanged)
+    assert w.sync_popup.isVisible()
+    assert "No changes since the last sync." in w.sync_popup.body.text()
+
+
+def test_a_past_scan_says_what_it_was_when_its_status_has_changed_since(window, monkeypatch):
+    # Flagged when scanned; the suspension has ended (or was settled) since, so the plate is clear now.
+    w, _ = window
+    sid = db.add_scan(w.conn, ts="2026-10-16T14:42:46", plate_read="554WYC",
+                      result=db.LookupResult(db.RESULT_VIOLATION), confidence=0.98, crop_path=None)
+    shown = []
+    monkeypatch.setattr(w, "_show", lambda plate, res, seen, **kw: shown.append((res.status, seen.when)))
+    w._show_scan_from_log(sid)
+    status, when = shown[0]
+    assert status != db.RESULT_VIOLATION
+    assert when.endswith("· was VIOLATION then")

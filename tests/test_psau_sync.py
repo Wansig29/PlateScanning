@@ -336,7 +336,8 @@ def test_school_year_history_follows_the_active_violation_but_never_alerts_alone
     assert [v["id"] for v in r.violations] == ["10"]        # the alert: one active sanction
     assert [v["id"] for v in r.history] == ["11"]           # this school year only, not last year's
     r = db.lookup(conn, "ABC1234")
-    assert r.status == db.RESULT_CLEAR and r.history == []  # history alone never alerts
+    assert r.status == db.RESULT_CLEAR                      # history alone never alerts...
+    assert [v["id"] for v in r.history] == ["13"]          # ...but the guard still sees it
 
 
 def test_ended_sanction_not_yet_synced_is_clear_with_a_notice(tmp_path):
@@ -517,3 +518,57 @@ def test_restore_refuses_files_that_are_not_backups(tmp_path):
         with pytest.raises(ValueError):
             db.restore(conn, bad, cfg.backups_dir, keep=5)
     assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_sync_reports_the_totals_before_and_after_and_what_changed(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "XYZ 9876", "Ana")],
+                       [violation(10, 1, "NBC 1234")])
+    online = [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "XYZ 9876", "Ana", owner_contact="0918 111 1111"),
+              vehicle(3, "ABC 5555", "Ben")]
+    changes = sync.run_sync(cfg, FakeClient(online, [violation(11, 3, "ABC 5555", violation_type="No Sticker")]),
+                            conn, force_full=True)["changes"]
+    assert (changes["vehicles_before"], changes["vehicles_after"]) == (2, 3)
+    assert (changes["violations_before"], changes["violations_after"]) == (1, 1)
+    assert changes["vehicles_added"] == ["ABC 5555"]
+    assert changes["vehicles_updated"] == ["XYZ 9876"]
+    assert changes["violations_added"] == [("ABC 5555", "No Sticker")]
+    assert changes["violations_cleared"] == [("NBC 1234", "Illegal Parking")]
+    lines = sync.summary_lines(changes)
+    assert lines[:2] == ["Vehicles: 2 → 3", "Active violations: 1 → 1"]
+    assert "1 new violation: ABC 5555 (No Sticker)" in lines
+    assert "1 violation cleared: NBC 1234 (Illegal Parking)" in lines
+
+
+def test_a_sync_with_nothing_new_reports_no_changes(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [violation(10, 1, "NBC 1234")])
+    summary = sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234")]), conn)
+    assert not summary["changed"]
+    assert not sync.has_changes(summary["changes"])
+    assert sync.summary_lines(summary["changes"]) == ["Vehicles: 1 → 1", "Active violations: 1 → 1"]
+
+
+def test_a_long_list_of_plates_is_shortened():
+    changes = {"vehicles_before": 0, "vehicles_after": 8, "violations_before": 0, "violations_after": 0,
+               "vehicles_added": [f"AAA {i}" for i in range(8)]}
+    assert sync.summary_lines(changes)[2] == "8 new vehicles: AAA 0, AAA 1, AAA 2, AAA 3, AAA 4 and 3 more"
+
+
+def test_a_vehicles_violation_history_is_grouped_by_school_year(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.api.school_years_path = "/sy"
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    cl = FakeClient([vehicle(1, "554 WYC", "Juan")], [
+        violation(10, 1, "554 WYC", is_active=False, occurred_at="2026-10-16T14:00:00+08:00"),
+        violation(11, 1, "554 WYC", occurred_at="2026-09-02T08:00:00+08:00"),
+        violation(12, 1, "554 WYC", is_active=False, occurred_at="2025-11-20T07:00:00+08:00"),
+        violation(13, 1, "554 WYC", is_active=False, occurred_at="2024-09-01T07:00:00+08:00")])  # before any synced year
+    cl.data["/sy"] = [{"year_label": "2025-2026", "start_date": "2025-08-01", "end_date": "2026-06-30"},
+                      {"year_label": "2026-2027", "start_date": "2026-08-01", "end_date": "2027-06-30", "is_active": True}]
+    sync.run_sync(cfg, cl, conn)
+    history = db.violation_history(conn, db.lookup(conn, "554WYC").vehicle)
+    assert [v["id"] for v in history] == ["10", "11", "12", "13"]             # newest first, in force or not
+    assert [bool(v["alerting"]) for v in history] == [False, True, False, False]
+    years = db.by_school_year(conn, history, start_month=8)
+    assert [(y, [v["id"] for v in vs]) for y, vs in years] == [
+        ("2026-2027", ["10", "11"]), ("2025-2026", ["12"]), ("2024-2025", ["13"])]  # (the last from the month)

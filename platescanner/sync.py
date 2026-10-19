@@ -41,6 +41,61 @@ def _is_removed(record: dict) -> bool:
     return bool(record.get("removed") or record.get("deleted_at"))
 
 
+def snapshot(conn) -> dict[str, dict]:
+    """What the gate knows now: every vehicle, and every violation that alerts, keyed by id."""
+    vcols = [c for c in db.VEHICLE_COLS if c != "owner_photo_path"]  # (a re-downloaded photo is no change)
+    vehicles = {str(r[0]): r for r in conn.execute(f"SELECT {','.join(vcols)} FROM vehicles")}
+    violations = {str(r[0]): r for r in conn.execute(
+        f"SELECT id, plate, violation_type, status, suspension_end, suspension_text, description "
+        f"FROM violations WHERE {db._ALERTING}")}
+    return {"vehicles": vehicles, "violations": violations}
+
+
+def compare(before: dict[str, dict], after: dict[str, dict]) -> dict[str, list]:
+    """What one sync changed: the totals before and after, plates of vehicles added, removed
+    or edited online, and violations (plate, type) that now alert, stopped alerting (settled, deleted, suspension
+    over) or were edited."""
+    bv, av = before["vehicles"], after["vehicles"]
+    bx, ax = before["violations"], after["violations"]
+    return {
+        "vehicles_before": len(bv), "vehicles_after": len(av),
+        "violations_before": len(bx), "violations_after": len(ax),
+        "vehicles_added": sorted(av[i][1] for i in av.keys() - bv.keys()),
+        "vehicles_removed": sorted(bv[i][1] for i in bv.keys() - av.keys()),
+        "vehicles_updated": sorted(av[i][1] for i in av.keys() & bv.keys() if av[i] != bv[i]),
+        "violations_added": sorted((ax[i][1] or "?", ax[i][2] or "Violation") for i in ax.keys() - bx.keys()),
+        "violations_cleared": sorted((bx[i][1] or "?", bx[i][2] or "Violation") for i in bx.keys() - ax.keys()),
+        "violations_updated": sorted((ax[i][1] or "?", ax[i][2] or "Violation")
+                                     for i in ax.keys() & bx.keys() if ax[i] != bx[i]),
+    }
+
+
+def summary_lines(changes: dict[str, list], max_plates: int = 5) -> list[str]:
+    """The sync summary for the guard: the before -> after totals, then one line per kind of
+    change, naming the plates (at most max_plates each)."""
+    def plates_of(items: list) -> str:
+        names = [f"{i[0]} ({i[1]})" if isinstance(i, tuple) else i for i in items]
+        more = len(names) - max_plates
+        return ", ".join(names[:max_plates]) + (f" and {more} more" if more > 0 else "")
+
+    out = [f"Vehicles: {changes['vehicles_before']:,} → {changes['vehicles_after']:,}",
+           f"Active violations: {changes['violations_before']:,} → {changes['violations_after']:,}"]
+    for key, one, many in (("violations_added", "new violation", "new violations"),
+                           ("violations_cleared", "violation cleared", "violations cleared"),
+                           ("violations_updated", "violation updated", "violations updated"),
+                           ("vehicles_added", "new vehicle", "new vehicles"),
+                           ("vehicles_removed", "vehicle removed", "vehicles removed"),
+                           ("vehicles_updated", "vehicle updated", "vehicles updated")):
+        items = changes.get(key) or []
+        if items:
+            out.append(f"{len(items)} {one if len(items) == 1 else many}: {plates_of(items)}")
+    return out
+
+
+def has_changes(changes: dict[str, list]) -> bool:
+    return any(v for k, v in changes.items() if not k.endswith(("_before", "_after")))
+
+
 def _photo_path(photos_dir: Path, url: str) -> Path:
     ext = Path(url.split("?")[0]).suffix.lower()
     if ext not in (".jpg", ".jpeg", ".png", ".webp", ".bmp"):
@@ -54,6 +109,7 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
     # Back up first, whether the sync is clicked or timed. The scan log exists only on this
     # laptop, so this copy is its only safety net. A failed backup must not stop the sync.
     progress("Backing up the local database…")
+    before = snapshot(conn)
     try:
         db.backup(conn, cfg.backups_dir, cfg.sync.backup_keep)
     except Exception:  # noqa: BLE001
@@ -138,7 +194,7 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
             db.replace_school_years(conn, school_years)
             db.set_state(conn, "last_sync_at", now.isoformat())
         return {"full": False, "changed": False, "vehicles": 0, "violations": 0,
-                "at": now.isoformat(), **{f"total_{k}": n for k, n in db.counts(conn).items()}}
+                "at": now.isoformat(), "changes": compare(before, snapshot(conn)), **{f"total_{k}": n for k, n in db.counts(conn).items()}}
 
     if full:
         have = db.counts(conn)["vehicles"]
@@ -161,4 +217,4 @@ def run_sync(cfg: Config, client: ApiClient, conn, *, force_full: bool = False,
         db.set_state(conn, "last_sync_at", now.isoformat())
 
     return {"full": full, "changed": True, "vehicles": len(vehicles), "violations": len(violations),
-            "at": now.isoformat(), **{f"total_{k}": n for k, n in db.counts(conn).items()}}
+            "at": now.isoformat(), "changes": compare(before, snapshot(conn)), **{f"total_{k}": n for k, n in db.counts(conn).items()}}

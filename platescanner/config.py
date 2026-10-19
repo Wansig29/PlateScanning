@@ -165,6 +165,11 @@ class OcrConfig:
     # Also try plate candidates from the classical contrast/edge finder, in
     # case the neural detector misses an unusual plate (~20 ms per frame).
     classical_proposals: bool = True
+    # Character check before OCR: a plate candidate is only read if it shows a row of at least
+    # three character-shaped strokes (vision/plate.has_characters). Walls, grilles, windows and
+    # shadows the detector mistakes for plates are skipped instead of read, and are not logged
+    # as "no plate read".
+    require_characters: bool = True
     # Undo sideways motion blur on plates of moving vehicles before reading them.
     deblur: bool = True
     # Straighten tilted/sheared plate text before reading (see tools/bench_conditions.py).

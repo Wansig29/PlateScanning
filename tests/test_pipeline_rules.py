@@ -532,3 +532,39 @@ def test_plates_are_looked_for_at_most_max_scans_per_second_while_moving(rate, m
     assert 2 <= len(looked) <= most
     if rate:
         assert all(b - a >= 1 / rate - 1e-9 for a, b in zip(looked, looked[1:]))
+
+
+class NoCharactersEngine(FakeEngine):
+    """The character check found nothing on the crop (a wall, grille or shadow)."""
+
+    def read(self, crop):
+        self.reads += 1
+        return None
+
+
+class UnreadableEngine(FakeEngine):
+    """Characters were there, but the OCR could not make a plate out of them."""
+
+    def read(self, crop):
+        self.reads += 1
+        return OcrRead("", 0.0, [])
+
+
+def _unreadable_logged(engine, frames=8):
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    got = []
+    w.unreadable.connect(got.append)
+    image = np.full((200, 400, 3), 128, np.uint8)
+    for i in range(frames):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
+    for t in w.tracker.flush():
+        w._finish(conn, t)
+    conn.close()
+    return got
+
+
+def test_something_plate_shaped_without_characters_is_not_logged_as_no_plate_read():
+    assert _unreadable_logged(NoCharactersEngine()) == []
+    assert len(_unreadable_logged(UnreadableEngine())) == 1

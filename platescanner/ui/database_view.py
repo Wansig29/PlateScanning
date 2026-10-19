@@ -12,13 +12,13 @@ from PySide6.QtGui import QColor, QDesktopServices, QFont
 from PySide6.QtWidgets import (
     QAbstractItemView, QDialog, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel,
     QLineEdit, QMessageBox, QPushButton, QScrollArea, QSplitter, QTableWidget, QTableWidgetItem,
-    QTabWidget, QVBoxLayout, QWidget,
+    QTabWidget, QToolButton, QVBoxLayout, QWidget,
 )
 
 from .. import db, plates, timefmt
 from ..config import Config
 from . import theme
-from .widgets import Avatar, ImageSlot, fit_to_screen, fmt_date, load_pixmap, panel, suspension_text
+from .widgets import Avatar, ImageSlot, fit_to_screen, fmt_date, fmt_when, load_pixmap, panel, suspension_text
 
 log = logging.getLogger(__name__)
 
@@ -313,7 +313,7 @@ class DatabaseWindow(QDialog):
     def _vehicle_selected(self) -> None:
         v = self._selected(self.vehicle_table, self._vehicles)
         if v:
-            self._show_details(v["plate"], v, db.vehicle_violations(self.conn, v))
+            self._show_details(v["plate"], v, db.violation_history(self.conn, v))
 
     def _violation_selected(self) -> None:
         x = self._selected(self.violation_table, self._violations)
@@ -322,9 +322,9 @@ class DatabaseWindow(QDialog):
         vehicle = next((v for v in self._vehicles if x.get("vehicle_id") and v["id"] == x["vehicle_id"]), None) \
             or next((v for v in self._vehicles if x.get("plate_key") and v["plate_key"] == x["plate_key"]), None)
         if vehicle:
-            violations = db.vehicle_violations(self.conn, vehicle)
-            if not x["alerting"]:
-                violations = [x] + violations  # a resolved one is shown too, since it was clicked
+            violations = db.violation_history(self.conn, vehicle)
+            if all(str(h["id"]) != str(x["id"]) for h in violations):
+                violations = [x] + violations  # (logged on a look-alike plate) shown too, since it was clicked
         else:
             violations = [x]
         self._show_details(x.get("plate") or "—", vehicle, violations)
@@ -365,6 +365,9 @@ class DatabaseWindow(QDialog):
 
         n = len(alerting)
         label = (f"{n} ACTIVE VIOLATION{'S' if n != 1 else ''}" if n else theme.RESULT_LABELS[status])
+        cleared = fmt_when(db.latest_clearance([x for x in violations if not x.get("alerting", 1)]))
+        if not n and vehicle and cleared:
+            label += f"  ·  CLEARED {cleared.upper()}"
         banner = QLabel(f"{theme.RESULT_ICONS[status]}  {label}")
         banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         banner.setStyleSheet(f"background: {theme.RESULT_TINTS[status]}; color: {color};"
@@ -380,8 +383,8 @@ class DatabaseWindow(QDialog):
                      ("Record updated", fmt_date(vehicle.get("updated_at")))]
             lay.addWidget(self._facts_card([(k, str(val)) for k, val in facts if val]))
 
-        for x in violations:
-            lay.addWidget(self._violation_card(x))
+        if violations:
+            lay.addWidget(self._history(violations))
         lay.addStretch(1)
         self.detail.setWidget(page)
 
@@ -399,6 +402,47 @@ class DatabaseWindow(QDialog):
         grid.setColumnStretch(1, 1)
         return card
 
+    def _history(self, violations: list[dict]) -> QWidget:
+        """The vehicle's violations: how many, then one collapsible section per school year (the
+        newest open), each violation with its timeline: logged, sanction, cleared."""
+        box = QWidget()
+        lay = QVBoxLayout(box)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(8)
+        n = len(violations)
+        in_force = sum(1 for x in violations if x.get("alerting", 1))
+        title = _label("VIOLATION HISTORY", "PanelTitle")
+        lay.addWidget(title)
+        lay.addWidget(_label(f"{n} violation{'s' if n != 1 else ''} on record  ·  {in_force} in force  ·  "
+                             f"{n - in_force} cleared", "Muted"))
+        start_month = self.cfg.scan.academic_year_start_month
+        for i, (year, vs) in enumerate(db.by_school_year(self.conn, violations, start_month)):
+            on = sum(1 for x in vs if x.get("alerting", 1))
+            toggle = QToolButton()
+            toggle.setCheckable(True)
+            toggle.setChecked(i == 0)
+            toggle.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
+            toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+            toggle.setStyleSheet("QToolButton { border: none; font-weight: 700; padding: 4px 0; }")
+            text = f"School year {year}  ·  {len(vs)} violation{'s' if len(vs) != 1 else ''}" + (
+                f" ({on} in force)" if on else "")
+            body = QWidget()
+            bl = QVBoxLayout(body)
+            bl.setContentsMargins(0, 0, 0, 0)
+            bl.setSpacing(8)
+            for x in vs:
+                bl.addWidget(self._violation_card(x))
+            body.setVisible(i == 0)
+
+            def flip(open_: bool, toggle=toggle, body=body, text=text) -> None:
+                toggle.setText(("▾  " if open_ else "▸  ") + text)
+                body.setVisible(open_)
+            flip(i == 0)
+            toggle.toggled.connect(flip)
+            lay.addWidget(toggle, 0, Qt.AlignmentFlag.AlignLeft)
+            lay.addWidget(body)
+        return box
+
     @staticmethod
     def _violation_card(x: dict[str, Any]) -> QFrame:
         on = bool(x.get("alerting", 1))
@@ -412,14 +456,21 @@ class DatabaseWindow(QDialog):
         title = _label(x.get("violation_type") or "Unspecified violation", wrap=True)
         title.setStyleSheet(f"color: {theme.RED if on else theme.MUTED}; font-weight: 700; font-size: 11pt;")
         cl.addWidget(title)
-        facts = [("Status", (x.get("status") or "Active") if on else f"{x.get('status') or 'Resolved'} (no alert)"),
-                 ("Suspension", suspension_text(x)), ("Date", fmt_date(x.get("occurred_at")) or "—")]
+        # Its timeline, as psau-security recorded it: logged, the sanction, and when it was cleared.
+        cleared = fmt_when(db.cleared_on(x)) if not on else None
+        facts = [("Logged", fmt_when(x.get("occurred_at")) or "—"),
+                 ("Sanction", f"{x.get('status') or 'Recorded'} · {suspension_text(x)}"
+                  if suspension_text(x) != "—" else (x.get("status") or "—")),
+                 ("Cleared", "In force" if on else cleared or "Yes (date not recorded)")]
         grid = QGridLayout()
         grid.setHorizontalSpacing(14)
         grid.setVerticalSpacing(4)
         for row, (name, value) in enumerate(facts):
             grid.addWidget(_label(name, "FieldName"), row, 0, Qt.AlignmentFlag.AlignTop)
-            grid.addWidget(_label(value, wrap=True), row, 1)
+            cell = _label(value, wrap=True)
+            if name == "Cleared":
+                cell.setStyleSheet(f"color: {theme.RED if on else theme.GREEN}; font-weight: 600;")
+            grid.addWidget(cell, row, 1)
         grid.setColumnStretch(1, 1)
         cl.addLayout(grid)
         if x.get("description"):

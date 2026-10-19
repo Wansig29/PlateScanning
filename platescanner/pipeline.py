@@ -656,7 +656,8 @@ class RecognizerWorker(QThread):
                 engine = PlateEngine(self.cfg.resolved_model_dir(), self.cfg.ocr.detector_model,
                                      self.cfg.ocr.ocr_model, self.cfg.ocr.detector_confidence,
                                      self.cfg.ocr.plate_layouts, self.cfg.ocr.deblur,
-                                     self.cfg.ocr.deskew, self.cfg.ocr.enhance, self.cfg.ocr.upscale_small)
+                                     self.cfg.ocr.deskew, self.cfg.ocr.enhance, self.cfg.ocr.upscale_small,
+                                     self.cfg.ocr.require_characters)
                 engine.load()
                 self.engine = engine
             except Exception as e:  # noqa: BLE001
@@ -818,7 +819,10 @@ class RecognizerWorker(QThread):
         reads = list(self._pool.map(lambda t: self.engine.read(t[-1]), todo))
         for (track, i, px, py, pw, ph, crop), read in zip(todo, reads):
             track.reads_tried += 1
-            if not read or not read.text:
+            if read is None:
+                continue  # no characters on it: not read
+            track.char_hits += 1
+            if not read.text:
                 continue
             fixed = plates.best_layout_match(read.text, ocr.plate_layouts)
             if not fixed or read.confidence < ocr.read_confidence or plates.is_repeated_pattern(fixed):
@@ -1077,7 +1081,8 @@ class RecognizerWorker(QThread):
         if track.emitted_key:
             self._remember_parked(track)
         if track.neural_hits >= self.cfg.scan.min_hits_for_unread:  # a real plate: was it read?
-            self._health.plate_seen(bool(track.emitted_key))
+            if track.emitted_key or track.char_hits:  # (one that never showed characters was no plate)
+                self._health.plate_seen(bool(track.emitted_key))
             self._health.plate_width(track.max_width)
         # Only for real plates (seen by the neural detector), not for the
         # classical finder's guesses at windows, signs or lane marks.
@@ -1085,6 +1090,8 @@ class RecognizerWorker(QThread):
             return
         if not track.motion_hits:
             return  # nothing vehicle-like moved: a static or false detection, not a vehicle that passed
+        if not track.char_hits:
+            return  # plate-shaped, but never showed any characters: not a plate (a wall, grille, shadow)
         # Plate seen in several frames but never readable: log it with a picture.
         ts = datetime.now()
         snap = self._save_locator(track, ts, "noplate", db.RESULT_NO_PLATE, f"#{track.track_id} plate not readable", (150, 150, 150))
