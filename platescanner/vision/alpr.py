@@ -19,6 +19,7 @@ import numpy as np
 
 from .. import decode, plates
 from . import enhance as enhance_mod
+from .plate import has_characters
 
 log = logging.getLogger(__name__)
 
@@ -65,8 +66,10 @@ class PlateEngine:
 
     def __init__(self, model_dir: Path | None, detector: str, ocr: str, det_conf: float,
                  layouts: list[str] | None = None, deblur: bool = True,
-                 deskew: bool = False, enhance: bool = False, upscale: bool = False):
+                 deskew: bool = False, enhance: bool = False, upscale: bool = False,
+                 require_characters: bool = False):
         self.layouts = layouts or []
+        self.require_characters = require_characters
         self.upscale = upscale
         self.deblur = deblur
         self.deskew = deskew
@@ -167,6 +170,7 @@ class PlateEngine:
             return None
 
     def read(self, crop: np.ndarray) -> OcrRead | None:
+        """Read a plate crop. None: nothing to read (empty crop, or no characters on it)."""
         assert self._ocrs, "call load() first"
         if crop.size == 0:
             return None
@@ -182,6 +186,8 @@ class PlateEngine:
             crop = enhance_mod.enhance_contrast(crop)
         if self.upscale:
             crop = upscale_small_plate(crop)
+        if self.require_characters and not has_characters(crop):
+            return None  # plate-shaped, but no row of characters on it: not a plate, OCR skipped
         reads = [self._read_one(rec, mode, crop) for rec, mode in self._ocrs]
         outs = [(t, p) for t, p, _ in reads if t]
         if not outs:

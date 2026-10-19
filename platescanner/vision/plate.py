@@ -127,3 +127,63 @@ def _text_blobs(gray: np.ndarray) -> list[tuple[float, Box]]:
             fill = cv2.contourArea(c) / (bw * bh)
             regions.append((fill, (x, y, bw, bh)))
     return regions
+
+
+# --- character check ----------------------------------------------------------
+
+CHECK_HEIGHT = 64  # crops are resized to this height before looking for characters
+MIN_CHARACTERS = 3  # a plate has at least this many characters of about the same size
+
+
+def _character_blobs(binary: np.ndarray) -> list[tuple[Box, int]]:
+    """Connected blobs (white on black) shaped like plate characters, with how many each holds."""
+    h, w = binary.shape
+    n, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    out = []
+    for x, y, bw, bh, area in stats[1:n]:
+        if not 0.25 * h <= bh <= 0.95 * h:
+            continue  # specks, or the plate's own frame / background
+        ratio, fill = bw / bh, area / (bw * bh)
+        if 0.08 <= ratio <= 1.2 and 0.15 <= fill <= 0.95:
+            # Taller than wide (a "1" is thin, an "M" nearly square) and made of strokes:
+            # a solid block (a light, a window) is not a character.
+            out.append(((int(x), int(y), int(bw), int(bh)), 1))
+        elif 1.2 < ratio <= 4.0 and 0.3 <= fill <= 0.8:
+            # Motion blur runs neighbouring characters together into one wide blob.
+            out.append(((int(x), int(y), int(bw), int(bh)), round(ratio / 0.7)))
+    return out
+
+
+def _largest_row(blobs: list[tuple[Box, int]]) -> int:
+    """How many characters line up as one row of text: about the same height, side by side."""
+    best = 0
+    for (_, ay, _, ah), _ in blobs:
+        acy = ay + ah / 2
+        best = max(best, sum(n for (_, y, _, bh), n in blobs
+                             if 0.7 * ah <= bh <= 1.4 * ah and abs(y + bh / 2 - acy) <= 0.35 * ah))
+    return best
+
+
+def has_characters(crop: np.ndarray, min_characters: int = MIN_CHARACTERS) -> bool:
+    """Does this plate candidate contain a row of character-shaped strokes?
+
+    The plate detector only says "this is shaped like a plate"; walls, grilles,
+    windows and shadows can look like that too. This check runs before OCR, so the
+    OCR only reads candidates that actually show characters: dark-on-light
+    (private, government plates) or light-on-dark. Two-row motorcycle plates pass on
+    their main row.
+    """
+    if crop is None or crop.size == 0:
+        return False
+    gray = crop if crop.ndim == 2 else cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape
+    if h < 6 or w < 12:
+        return False
+    work = cv2.resize(gray, (max(1, round(w * CHECK_HEIGHT / h)), CHECK_HEIGHT), interpolation=cv2.INTER_LINEAR)
+    if float(work.std()) < 8.0:
+        return False  # flat: no strokes at all
+    _, dark = cv2.threshold(work, 0, 255, cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU)  # dark text
+    for mask in (dark, cv2.bitwise_not(dark)):
+        if _largest_row(_character_blobs(mask)) >= min_characters:
+            return True
+    return False

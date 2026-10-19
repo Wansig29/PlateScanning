@@ -146,3 +146,51 @@ def test_upscaling_is_on_by_default():
     from platescanner.config import OcrConfig
 
     assert OcrConfig().upscale_small is True
+
+
+def _plate_crop():
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
+    from make_test_video import car
+    from platescanner.vision.alpr import pad_box
+    c = car("ABC1234", (40, 40, 160))
+    x, y, w, h = pad_box((120, 180, 180, 64), 0.06, 0.10, c.shape)  # as the scanner crops it
+    return c[y:y + h, x:x + w]
+
+
+def test_character_check_passes_plates_even_blurred_small_or_inverted():
+    from platescanner.vision.plate import has_characters
+    crop = _plate_crop()
+    assert has_characters(crop)
+    assert has_characters(255 - crop)                                 # light text on a dark plate
+    assert has_characters(cv2.blur(crop, (9, 1)))                     # motion blur
+    assert has_characters(cv2.resize(crop, (70, 27), interpolation=cv2.INTER_AREA))  # far plate
+
+
+def test_character_check_rejects_plate_shaped_things_without_characters():
+    from platescanner.vision.plate import has_characters
+    blank = np.full((60, 180, 3), 128, np.uint8)
+    window = np.full((60, 180, 3), 200, np.uint8)
+    cv2.rectangle(window, (20, 10), (160, 50), (40, 40, 40), -1)
+    grille = np.full((60, 180, 3), 90, np.uint8)
+    for x in range(5, 175, 14):
+        cv2.rectangle(grille, (x, 5), (x + 6, 55), (20, 20, 20), -1)
+    shadow = np.full((60, 180, 3), 180, np.uint8)
+    cv2.rectangle(shadow, (0, 30), (180, 60), (50, 50, 50), -1)
+    noise = np.random.default_rng(3).integers(0, 255, (60, 180, 3), dtype=np.uint8)
+    for img in (blank, window, grille, shadow, noise):
+        assert not has_characters(img)
+
+
+def test_plate_reader_skips_ocr_on_crops_without_characters(monkeypatch):
+    from platescanner.vision import alpr
+
+    seen = []
+    eng = alpr.PlateEngine(None, "d", "o", 0.5, deblur=False, upscale=False, require_characters=True)
+    eng._ocrs = [(object(), "bgr")]
+    monkeypatch.setattr(eng, "_read_one", lambda rec, mode, crop: (seen.append(1), ("", [], None))[1])
+    assert eng.read(np.full((40, 120, 3), 128, np.uint8)) is None
+    assert seen == []
+    assert eng.read(_plate_crop()) is not None
+    assert seen == [1]
