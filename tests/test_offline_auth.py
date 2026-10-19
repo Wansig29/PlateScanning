@@ -128,3 +128,40 @@ def test_sign_out_goes_back_to_the_sign_in_window(cfg, monkeypatch):
     assert not w._signed_in()
     QApplication.processEvents()
     assert attempts == [1]
+
+
+def test_days_left_counts_down_from_the_last_online_sign_in(tmp_path):
+    path = tmp_path / "g.bin"
+    assert offline_auth.days_left(path, "juan@psau.edu.ph", 14, now=NOW) is None
+    offline_auth.remember(path, "juan@psau.edu.ph", "s3cret!", USER, now=NOW)
+    assert offline_auth.days_left(path, "JUAN@psau.edu.ph", 14, now=NOW) == pytest.approx(14)
+    assert offline_auth.days_left(path, "juan@psau.edu.ph", 14, now=NOW + timedelta(days=12)) == pytest.approx(2)
+    assert offline_auth.days_left(path, "juan@psau.edu.ph", 14, now=NOW + timedelta(days=20)) == 0
+
+
+def test_offline_guard_near_the_end_is_asked_to_sign_in_online(cfg, monkeypatch):
+    from PySide6.QtWidgets import QMessageBox
+    from platescanner.ui import main_window as mw
+    for name in ("_start_workers", "_start_archiving", "_start_update_check"):
+        monkeypatch.setattr(mw.MainWindow, name, lambda self: None)
+    monkeypatch.setattr(mw.MainWindow, "_start_sync", lambda self: None)
+    monkeypatch.setattr(mw.MainWindow, "_refresh_sync_label", lambda self, error=None: None)
+    shown = []
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: shown.append(self.text()))
+    w = mw.MainWindow(cfg, None)
+    w.offline_user = {"name": "Guard Juan", "email": "juan@psau.edu.ph"}
+
+    offline_auth.remember(cfg.offline_guards_path, "juan@psau.edu.ph", "s3cret!", USER)
+    w._remind_renew()                      # 14 days left: no prompt
+    w._update_account_btn()
+    assert shown == [] and w.renew_action.text() == "Sign in online now"
+
+    old = datetime.now(timezone.utc) - timedelta(days=12, hours=1)
+    offline_auth.remember(cfg.offline_guards_path, "juan@psau.edu.ph", "s3cret!", USER, now=old)
+    w._remind_renew()
+    w._update_account_btn()
+    assert len(shown) == 1 and "ends tomorrow" in shown[0]
+    assert "ends tomorrow" in w.renew_action.text() and w.renew_action.isVisible()
+
+    w._paused_session, w.session = {"token": "t"}, None   # "Work offline" has a token: no expiry
+    assert w._offline_days_left() is None

@@ -20,7 +20,7 @@ from PySide6.QtWidgets import (
     QSizePolicy, QSlider, QSplitter, QStatusBar, QToolButton, QVBoxLayout, QWidget,
 )
 
-from .. import __version__, camera, db, purge, retention, timefmt, updates
+from .. import __version__, camera, db, offline_auth, purge, retention, timefmt, updates
 from ..alerts import DashboardQueue
 from ..api import ApiClient, ApiError, AuthError
 from ..config import Config, save_config
@@ -163,6 +163,15 @@ def _avatar_icon(text: str, size: int = 22) -> QIcon:
     return QIcon(pm)
 
 
+def _ends_in(days: float) -> str:
+    """'in 3 days', 'tomorrow', 'today': when a guard's offline access runs out."""
+    if days < 1:
+        return "today"
+    if days < 2:
+        return "tomorrow"
+    return f"in {int(days)} days"
+
+
 def _ago(iso: str | None) -> str:
     if not iso:
         return "never"
@@ -245,6 +254,7 @@ class MainWindow(QMainWindow):
         self._density_changed()
 
         QShortcut(QKeySequence("F11"), self, activated=self._toggle_fullscreen)
+        QTimer.singleShot(0, self._remind_renew)
 
     # --- layout ---------------------------------------------------------------
 
@@ -436,6 +446,8 @@ class MainWindow(QMainWindow):
         self.account_action.triggered.connect(self._account_clicked)
         self.offline_action = menu.addAction("Work offline")
         self.offline_action.triggered.connect(self._toggle_offline)
+        self.renew_action = menu.addAction("Sign in online now")
+        self.renew_action.triggered.connect(self._sign_in_online)
         menu.addSeparator()
         menu.addAction("Software updates").setEnabled(False)
         group = QActionGroup(menu)
@@ -1402,8 +1414,14 @@ class MainWindow(QMainWindow):
             self.account_action.setText("Sign out")
             self.offline_action.setVisible(bool(self.session or self._paused_session))
             self.offline_action.setText("Work offline (pause syncing)" if self.session else "Go back online")
+            left = self._offline_days_left()
+            self.renew_action.setVisible(left is not None)
+            if left is not None:
+                self.renew_action.setText("Sign in online now" if left > self.cfg.api.offline_renew_days
+                                          else f"Sign in online now (offline access ends {_ends_in(left)})")
         else:
             self.offline_action.setVisible(False)
+            self.renew_action.setVisible(False)
             self.account_btn.setIcon(_avatar_icon("?"))
             self.account_btn.setText(" Not signed in  ▾" if self._density < DENSITY_COMPACT else " ▾")
             self.account_action.setText("Sign in")
@@ -1450,8 +1468,37 @@ class MainWindow(QMainWindow):
         else:
             self._sign_in()
 
-    def _sign_in(self) -> None:
-        dlg = LoginDialog(self.cfg, self)
+    def _offline_days_left(self) -> float | None:
+        """Days of offline access left for a guard signed in offline (not for "Work offline")."""
+        if self.session or self._paused_session or not self.offline_user:
+            return None
+        email = self.offline_user.get("email")
+        if not email:
+            return None
+        return offline_auth.days_left(self.cfg.offline_guards_path, email, self.cfg.api.offline_login_days)
+
+    def _remind_renew(self) -> None:
+        """Offline access runs out N days after the last online sign-in: ask for one before it does."""
+        left = self._offline_days_left()
+        if left is None or left > self.cfg.api.offline_renew_days:
+            return
+        box = QMessageBox(QMessageBox.Icon.Information, "Sign in online soon",
+                          f"Offline access for {self.offline_user['email']} ends {_ends_in(left)}. "
+                          "Connect to the internet and sign in online to renew it for another "
+                          f"{int(self.cfg.api.offline_login_days)} days.", parent=self)
+        now = box.addButton("Sign in online now", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Later", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        if box.clickedButton() is now:
+            self._sign_in_online()
+
+    def _sign_in_online(self) -> None:
+        """Online sign-in only (it renews offline access); Cancel keeps the offline sign-in."""
+        email = (self.offline_user or {}).get("email", "")
+        self._sign_in(allow_offline=False, email=email)
+
+    def _sign_in(self, allow_offline: bool = True, email: str = "") -> None:
+        dlg = LoginDialog(self.cfg, self, allow_offline=allow_offline, email=email)
         if not dlg.exec():
             return
         if dlg.token:
@@ -1465,6 +1512,7 @@ class MainWindow(QMainWindow):
             self.offline_user = dlg.user
             self._update_account_btn()
             self._refresh_sync_label()
+            self._remind_renew()
 
     # --- scans ----------------------------------------------------------------
 

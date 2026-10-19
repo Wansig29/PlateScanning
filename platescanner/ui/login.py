@@ -28,7 +28,7 @@ class LoginDialog(QDialog):
     signed in with online on this laptop (offline_auth.py), and `.user` is set.
     """
 
-    def __init__(self, cfg: Config, parent=None, allow_offline: bool = True):
+    def __init__(self, cfg: Config, parent=None, allow_offline: bool = True, email: str = ""):
         super().__init__(parent)
         self.cfg = cfg
         self.token: str | None = None
@@ -65,6 +65,7 @@ class LoginDialog(QDialog):
 
         self.email = QLineEdit()
         self.email.setPlaceholderText("guard@psau.edu.ph")
+        self.email.setText(email)
         self.password = QLineEdit()
         self.password.setPlaceholderText("••••••••")
         self.password.setEchoMode(QLineEdit.EchoMode.Password)

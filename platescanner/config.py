@@ -51,6 +51,8 @@ class ApiConfig:
     # "Continue offline" accepts a guard's email and password only if they signed in
     # online on this laptop within this many days (see offline_auth.py).
     offline_login_days: float = 14.0
+    # A guard signed in offline is asked to sign in online once this few days remain.
+    offline_renew_days: float = 3.0
 
 
 @dataclass

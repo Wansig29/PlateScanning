@@ -69,7 +69,22 @@ def verify(path: Path, email: str, password: str, max_age_days: float,
         return None
     if not hmac.compare_digest(_hash(password, salt), str(entry.get("hash", ""))):
         return None
-    return dict(entry.get("user") or {"email": email.strip()})
+    user = dict(entry.get("user") or {})
+    user.setdefault("email", email.strip())
+    return user
+
+
+def days_left(path: Path, email: str, max_age_days: float, now: datetime | None = None) -> float | None:
+    """Days until this guard's offline access runs out (0 once it has), None if none is saved."""
+    entry = _load(path).get(_key(email))
+    if not isinstance(entry, dict):
+        return None
+    try:
+        signed_in_at = datetime.fromisoformat(entry["signed_in_at"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    left = timedelta(days=max_age_days) - ((now or datetime.now(timezone.utc)) - signed_in_at)
+    return max(left.total_seconds() / 86400, 0.0)
 
 
 def why_refused(path: Path, email: str, password: str, max_age_days: float,
