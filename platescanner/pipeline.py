@@ -1114,20 +1114,19 @@ class RecognizerWorker(QThread):
         rx, ry = (roi[0], roi[1]) if roi else (0, 0)
         out = []
         for t in self.tracker.tracks.values():
-            if not t.char_hits and not t.reads:
-                continue  # never showed a row of characters (a label, window, sign...): don't show it
-            x, y, w, h = t.box
+            # Only what the OCR has read as plate-format text gets a box: anything merely being
+            # examined (a sign, a shelf's label, printing that is plate-shaped) never does.
             lead = t.leader()
-            if t.emitted_key and lead:
+            if lead is None:
+                continue
+            x, y, w, h = t.box
+            if t.emitted_key:
                 label = f"#{t.track_id} {plates.display(t.emitted_text or lead.text)} {lead.score / lead.reads:.0%}"
                 if t.status == db.RESULT_VIOLATION:
                     label += " VIOLATION"
                 color = RESULT_BGR.get(t.status or "", READING_BGR)
-            elif lead:
-                label = f"#{t.track_id} {plates.display(lead.text)}?"
-                color = READING_BGR
             else:
-                label = f"#{t.track_id} reading..."
+                label = f"#{t.track_id} {plates.display(lead.text)}?"
                 color = READING_BGR
             label += plate_size_text(w, self.cfg.ocr.min_plate_width_px)
             trail = [(px + rx, py + ry) for px, py in t.trail]
