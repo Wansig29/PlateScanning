@@ -598,6 +598,17 @@ def fmt_date(value: str | None) -> str | None:
         return value
 
 
+def fmt_when(value: str | None) -> str | None:
+    """A date ("Oct 17, 2026"), or a date and time ("Oct 19, 2026 3:30 PM") when it has one."""
+    if not value or len(value) <= 10:
+        return fmt_date(value)
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return value
+    return f"{dt:%b %d, %Y} {timefmt.clock(dt, seconds=False)}"
+
+
 def suspension_text(v: dict[str, Any]) -> str:
     parts = []
     if v.get("suspension_text"):
@@ -922,6 +933,11 @@ class IdentityCard(QFrame):
         label = theme.RESULT_LABELS[result.status]
         if seen and seen.verify and result.status == db.RESULT_CLEAR:
             color = theme.AMBER  # registered only by a look-alike plate: not a green light
+        if result.status == db.RESULT_CLEAR:
+            # It had a violation this school year that is over now: say since when.
+            cleared = fmt_when(db.latest_clearance(result.history + result.lapsed))
+            if cleared:
+                label += f"  ·  CLEARED {cleared.upper()}"
         plate_txt = plates.display(result.matched_plate or plate_read)
         seen = seen or VehicleView()
         self.track_id = seen.track_id
@@ -967,6 +983,7 @@ class IdentityCard(QFrame):
         if not vs:
             self.fields["type"].setText("None")
             self.fields["type"].setStyleSheet(f"color: {theme.GREEN};")
+            self.fields["suspension"].setStyleSheet("")
             self.fields["suspension"].setToolTip(
                 "The sanction's end date has passed since the last sync, so the record may be out of date."
                 if getattr(self, "_lapsed", []) else "")
@@ -980,10 +997,12 @@ class IdentityCard(QFrame):
         self._vi = index % len(vs)
         v = vs[self._vi]
         past = self._vi >= getattr(self, "_in_force", len(vs))  # history: no longer in force
-        self.fields["type"].setText((v.get("violation_type") or "Unspecified") + (
-            (" (ended)" if v.get("is_active") else " (settled)") if past else ""))
+        self.fields["type"].setText((v.get("violation_type") or "Unspecified") + (" (former)" if past else ""))
         self.fields["type"].setStyleSheet(f"color: {theme.MUTED if past else theme.RED};")
-        self.fields["suspension"].setText(suspension_text(v))
+        cleared = fmt_when(db.cleared_on(v)) if past else None
+        self.fields["suspension"].setText(f"Cleared {cleared}" if cleared else suspension_text(v))
+        self.fields["suspension"].setStyleSheet(f"color: {theme.GREEN};" if cleared else "")
+        self.fields["suspension"].setToolTip(f"Was: {suspension_text(v)}" if cleared else "")
         # Only counted here; the photos are loaded when the guard opens them (see _open_evidence).
         self._evidence = [p for p in v.get("evidence_paths", []) if p and Path(p).exists()]
         n = len(self._evidence)

@@ -336,7 +336,8 @@ def test_school_year_history_follows_the_active_violation_but_never_alerts_alone
     assert [v["id"] for v in r.violations] == ["10"]        # the alert: one active sanction
     assert [v["id"] for v in r.history] == ["11"]           # this school year only, not last year's
     r = db.lookup(conn, "ABC1234")
-    assert r.status == db.RESULT_CLEAR and r.history == []  # history alone never alerts
+    assert r.status == db.RESULT_CLEAR                      # history alone never alerts...
+    assert [v["id"] for v in r.history] == ["13"]          # ...but the guard still sees it
 
 
 def test_ended_sanction_not_yet_synced_is_clear_with_a_notice(tmp_path):

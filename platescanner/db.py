@@ -450,6 +450,26 @@ def school_year_history(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> li
     return [_violation_dict(r) for r in rows]
 
 
+def cleared_on(v: dict[str, Any]) -> str | None:
+    """When a violation that no longer alerts was cleared: the day its suspension ended if it was
+    served in full, else when psau-security last changed it (the sanction lifted, an appeal
+    approved). None while it is still in force."""
+    end = str(v.get("suspension_end") or "")[:10] or None
+    try:
+        served = end is not None and int(end[:4]) < 2900 and end < datetime.now().date().isoformat()
+    except ValueError:
+        served = False
+    if served:
+        return end
+    return v.get("updated_at") if not v.get("is_active", True) else None
+
+
+def latest_clearance(violations: list[dict[str, Any]]) -> str | None:
+    """The most recent clearance among these former violations (None if none was cleared)."""
+    days = [c for c in (cleared_on(v) for v in violations) if c]
+    return max(days, key=lambda c: c[:19]) if days else None
+
+
 def list_vehicles(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """Every vehicle with its number of alerting violations; violators first."""
     rows = conn.execute(
@@ -553,7 +573,7 @@ def lookup(conn: sqlite3.Connection, plate_text: str, fuzzy: bool = True) -> Loo
         status = RESULT_NOT_REGISTERED
     # "Approximate" means the plate shown is not the plate read.
     approximate = approximate and matched is not None and plates.normalize(matched) != norm
-    history = school_year_history(conn, vehicle) if vehicle and violations else []
+    history = school_year_history(conn, vehicle) if vehicle else []
     lapsed = lapsed_sanctions(conn, vehicle) if vehicle and not violations else []
     return LookupResult(status, vehicle, violations, matched, approximate, history, lapsed)
 
