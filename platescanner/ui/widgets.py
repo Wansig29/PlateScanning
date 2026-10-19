@@ -1583,3 +1583,60 @@ class LogsPanel(QFrame):
             self.table.removeRow(0)
         self._update_count()
         self.follower.entry_added()
+
+
+class SyncSummaryPopup(QFrame):
+    """A pop-up in the middle of the window after a sync: the totals before and after, and what
+    changed (plates named). It stays until the guard closes it (✕); the scanner keeps running
+    under it, and a violation alert closes it (see MainWindow._alert)."""
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(f"QFrame#Panel {{ border: 2px solid {theme.ACCENT}; }}")
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(20, 14, 14, 20)
+        lay.setSpacing(10)
+        head = QHBoxLayout()
+        self.title = QLabel()
+        self.title.setObjectName("PanelTitle")
+        head.addWidget(self.title)
+        head.addStretch(1)
+        self.close_btn = QToolButton()
+        self.close_btn.setText("✕")
+        self.close_btn.setAutoRaise(True)
+        self.close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.close_btn.setToolTip("Close")
+        self.close_btn.setStyleSheet("padding: 2px 8px; font-size: 13pt;")
+        self.close_btn.clicked.connect(self.hide)
+        head.addWidget(self.close_btn)
+        lay.addLayout(head)
+        self.totals = QLabel()  # before -> after
+        self.totals.setTextFormat(Qt.TextFormat.PlainText)
+        self.totals.setStyleSheet("font-size: 13pt; font-weight: 700;")
+        lay.addWidget(self.totals)
+        self.body = QLabel()  # what changed
+        self.body.setTextFormat(Qt.TextFormat.PlainText)  # plates and types come from the server
+        self.body.setWordWrap(True)
+        lay.addWidget(self.body)
+        self.hide()
+
+    def show_summary(self, title: str, totals: list[str], lines: list[str]) -> None:
+        self.title.setText(title.upper())
+        self.totals.setText("\n".join(totals))
+        self.body.setText("\n".join(lines))
+        self.body.setVisible(bool(lines))
+        self.place()
+        self.show()
+        self.raise_()
+
+    def place(self) -> None:
+        """In the middle of the window."""
+        parent = self.parentWidget()
+        if parent is None:
+            return
+        width = min(520, max(260, parent.width() - 48))
+        self.setFixedWidth(width)
+        self.setFixedHeight(min(parent.height() - 24, self.layout().totalHeightForWidth(width)))
+        self.move((parent.width() - width) // 2, max(0, (parent.height() - self.height()) // 2))

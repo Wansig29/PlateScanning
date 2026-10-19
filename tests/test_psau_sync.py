@@ -517,3 +517,36 @@ def test_restore_refuses_files_that_are_not_backups(tmp_path):
         with pytest.raises(ValueError):
             db.restore(conn, bad, cfg.backups_dir, keep=5)
     assert db.lookup(conn, "NBC1234").status == db.RESULT_CLEAR
+
+
+def test_sync_reports_the_totals_before_and_after_and_what_changed(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "XYZ 9876", "Ana")],
+                       [violation(10, 1, "NBC 1234")])
+    online = [vehicle(1, "NBC 1234", "Juan"), vehicle(2, "XYZ 9876", "Ana", owner_contact="0918 111 1111"),
+              vehicle(3, "ABC 5555", "Ben")]
+    changes = sync.run_sync(cfg, FakeClient(online, [violation(11, 3, "ABC 5555", violation_type="No Sticker")]),
+                            conn, force_full=True)["changes"]
+    assert (changes["vehicles_before"], changes["vehicles_after"]) == (2, 3)
+    assert (changes["violations_before"], changes["violations_after"]) == (1, 1)
+    assert changes["vehicles_added"] == ["ABC 5555"]
+    assert changes["vehicles_updated"] == ["XYZ 9876"]
+    assert changes["violations_added"] == [("ABC 5555", "No Sticker")]
+    assert changes["violations_cleared"] == [("NBC 1234", "Illegal Parking")]
+    lines = sync.summary_lines(changes)
+    assert lines[:2] == ["Vehicles: 2 → 3", "Active violations: 1 → 1"]
+    assert "1 new violation: ABC 5555 (No Sticker)" in lines
+    assert "1 violation cleared: NBC 1234 (Illegal Parking)" in lines
+
+
+def test_a_sync_with_nothing_new_reports_no_changes(tmp_path):
+    cfg, conn = synced(tmp_path, [vehicle(1, "NBC 1234", "Juan")], [violation(10, 1, "NBC 1234")])
+    summary = sync.run_sync(cfg, FakeClient([], [violation(10, 1, "NBC 1234")]), conn)
+    assert not summary["changed"]
+    assert not sync.has_changes(summary["changes"])
+    assert sync.summary_lines(summary["changes"]) == ["Vehicles: 1 → 1", "Active violations: 1 → 1"]
+
+
+def test_a_long_list_of_plates_is_shortened():
+    changes = {"vehicles_before": 0, "vehicles_after": 8, "violations_before": 0, "violations_after": 0,
+               "vehicles_added": [f"AAA {i}" for i in range(8)]}
+    assert sync.summary_lines(changes)[2] == "8 new vehicles: AAA 0, AAA 1, AAA 2, AAA 3, AAA 4 and 3 more"

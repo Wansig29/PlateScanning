@@ -28,14 +28,14 @@ from ..pipeline import (
     CaptureWorker, FrameSlot, NoPlateEvent, RecognizerWorker, ScanResult, to_qimage,
 )
 from ..session import clear_session, save_session
-from ..sync import is_stale, run_sync
+from ..sync import has_changes, is_stale, run_sync, summary_lines
 from . import theme
 from .database_view import DatabaseWindow
 from .reports_window import ReportsWindow
 from .login import LoginDialog
 from .widgets import (
-    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, VehicleView, VideoView, format_ts, load_pixmap, open_snapshot,
-    panel,
+    AlertFrame, CapturedPlatePanel, IdentityPanel, LogsPanel, SyncSummaryPopup, VehicleView, VideoView, format_ts,
+    load_pixmap, open_snapshot, panel,
 )
 
 log = logging.getLogger(__name__)
@@ -1219,6 +1219,8 @@ class MainWindow(QMainWindow):
             else:
                 self._measure_density()      # first time: measure now, not on a timer that may not have fired
         self._elide_sync_error()
+        if hasattr(self, "sync_popup") and self.sync_popup.isVisible():
+            self.sync_popup.place()
 
     # --- sync -----------------------------------------------------------------
 
@@ -1229,6 +1231,7 @@ class MainWindow(QMainWindow):
             return
         self.sync_btn.setEnabled(False)
         self.sync_btn.setText("Syncing…")
+        self._sync_pressed = full  # (Sync Now asks for a full sync; the timed ones don't)
         self.request_sync.emit(full)
 
     def _sync_finished_ui(self) -> None:
@@ -1245,10 +1248,29 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage("Checked for updates: nothing new", 5000)
         self._refresh_sync_label()
+        self._show_sync_summary(summary)
         if not summary.get("changed", True):
             return
         if self.db_window is not None and self.db_window.isVisible():
             self.db_window.refresh()
+
+    def _show_sync_summary(self, summary: dict) -> None:
+        """Before -> after totals and what changed. A timed sync that changed nothing stays quiet;
+        Sync Now always answers."""
+        changes = summary.get("changes")
+        if not changes:
+            return
+        changed = has_changes(changes)
+        if not changed and not getattr(self, "_sync_pressed", False):
+            return
+        lines = summary_lines(changes)
+        if not changed:
+            lines.append("No changes since the last sync.")
+        log.info("Sync summary: %s", " | ".join(lines))
+        if not hasattr(self, "sync_popup"):
+            self.sync_popup = SyncSummaryPopup(self)
+        self.sync_popup.show_summary(f"Sync summary · {timefmt.clock(datetime.now(), seconds=False)}",
+                                     lines[:2], lines[2:])
 
     def _sync_failed(self, msg: str) -> None:
         self._sync_finished_ui()
@@ -1603,6 +1625,8 @@ class MainWindow(QMainWindow):
 
     def _alert(self, sound: bool = True) -> None:
         """sound: False when the alarm was already started (see _display)."""
+        if hasattr(self, "sync_popup"):
+            self.sync_popup.hide()  # a sync summary must never cover a violation
         self.identity.set_collapsed(False)
         self.identity.flash()
         QApplication.alert(self, 0)
@@ -1628,9 +1652,14 @@ class MainWindow(QMainWindow):
         res.approximate = bool(scan["approximate"])
         # Queued violators are kept; the dashboard then offers a way back to them.
         pending = self.dash.view_other()
+        when = self._when(format_ts(scan["ts"]), scan.get("source"))
+        if scan["result"] != res.status and scan["result"] in theme.RESULT_LABELS:
+            # The banner shows the vehicle's status now (a suspension may have ended, a violation been
+            # settled or added since); say what it was when scanned, as its Captured Plates card does.
+            when += f" · was {theme.RESULT_LABELS[scan['result']]} then"
         seen = VehicleView(load_pixmap(scan.get("vehicle_path")), load_pixmap(scan["snapshot_path"]),
                            scan.get("vehicle_color"), scan.get("position"),
-                           when=self._when(format_ts(scan["ts"]), scan.get("source")), scan_id=scan_id,
+                           when=when, scan_id=scan_id,
                            verify=bool(scan.get("verify")))
         self._show(scan["plate_read"], res, seen, back=pending)
         self._update_pending()
