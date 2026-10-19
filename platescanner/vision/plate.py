@@ -135,14 +135,28 @@ CHECK_HEIGHT = 64  # crops are resized to this height before looking for charact
 MIN_CHARACTERS = 3  # a plate has at least this many characters of about the same size
 
 
+MAX_HOLE = 0.5  # a character's holes (in 0, D, 8...) take well under half its box
+
+
+def _hole_fraction(blob: np.ndarray) -> float:
+    """How much of a blob's box is background it fully encloses (its holes)."""
+    padded = cv2.copyMakeBorder(blob.astype(np.uint8) * 255, 1, 1, 1, 1, cv2.BORDER_CONSTANT, value=0)
+    outside = padded.copy()
+    cv2.floodFill(outside, None, (0, 0), 255)  # everything reachable from outside the blob
+    holes = int((outside == 0).sum())
+    return holes / blob.size
+
+
 def _character_blobs(binary: np.ndarray) -> list[tuple[Box, int]]:
     """Connected blobs (white on black) shaped like plate characters, with how many each holds."""
     h, w = binary.shape
-    n, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    n, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
     out = []
-    for x, y, bw, bh, area in stats[1:n]:
+    for i, (x, y, bw, bh, area) in enumerate(stats[1:n], start=1):
         if not 0.25 * h <= bh <= 0.95 * h:
             continue  # specks, or the plate's own frame / background
+        if _hole_fraction(labels[y:y + bh, x:x + bw] == i) > MAX_HOLE:
+            continue  # an outline (a shelf's compartment, a box printed on a label), not a character
         ratio, fill = bw / bh, area / (bw * bh)
         if 0.08 <= ratio <= 1.2 and 0.15 <= fill <= 0.95:
             # Taller than wide (a "1" is thin, an "M" nearly square) and made of strokes:
@@ -155,12 +169,14 @@ def _character_blobs(binary: np.ndarray) -> list[tuple[Box, int]]:
 
 
 def _largest_row(blobs: list[tuple[Box, int]]) -> int:
-    """How many characters line up as one row of text: about the same height, side by side."""
+    """How many characters line up as one row of text: about the same height, side by side.
+    A row is at least two separate blobs: one smeared blob alone is not a plate."""
     best = 0
     for (_, ay, _, ah), _ in blobs:
         acy = ay + ah / 2
-        best = max(best, sum(n for (_, y, _, bh), n in blobs
-                             if 0.7 * ah <= bh <= 1.4 * ah and abs(y + bh / 2 - acy) <= 0.35 * ah))
+        row = [n for (_, y, _, bh), n in blobs if 0.7 * ah <= bh <= 1.4 * ah and abs(y + bh / 2 - acy) <= 0.35 * ah]
+        if len(row) >= 2:
+            best = max(best, sum(row))
     return best
 
 
