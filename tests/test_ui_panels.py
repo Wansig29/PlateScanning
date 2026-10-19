@@ -196,3 +196,42 @@ def test_clearance_is_the_served_suspensions_end_or_when_it_was_lifted_online():
     assert db.cleared_on(lifted) == "2026-10-18T09:30:00+08:00"                     # revoked, then lifted on appeal
     assert db.cleared_on({"is_active": True, "suspension_end": "2999-12-31"}) is None  # still in force
     assert db.latest_clearance([lifted, {"is_active": False, "suspension_end": "2026-10-17"}]) == lifted["updated_at"]
+
+
+def test_database_window_shows_the_violation_history_by_school_year(app, tmp_path):
+    from PySide6.QtWidgets import QLabel, QToolButton
+    from platescanner import sync
+    from platescanner.config import Config
+    from platescanner.ui.database_view import DatabaseWindow
+
+    class Client:
+        def fetch_all(self, path, since=None):
+            v = lambda i, when, active: {"id": i, "vehicle_id": 1, "plate_number": "554 WYC", "violation_type": "Illegal Parking",
+                                         "is_active": active, "status": "Suspended", "suspension_end": "2026-10-17",
+                                         "occurred_at": when, "updated_at": when}
+            return {"/v": [{"id": 1, "plate_number": "554 WYC", "owner_name": "Juan"}],
+                    "/x": [v(10, "2026-10-16T14:42:00+08:00", False), v(12, "2025-11-20T07:30:00+08:00", False)],
+                    "/sy": [{"year_label": "2025-2026", "start_date": "2025-08-01", "end_date": "2026-06-30"},
+                            {"year_label": "2026-2027", "start_date": "2026-08-01", "end_date": "2027-06-30",
+                             "is_active": True}]}.get(path, [])
+
+    cfg = Config()
+    cfg.home = tmp_path
+    cfg.api.vehicles_path, cfg.api.violations_path, cfg.api.school_years_path = "/v", "/x", "/sy"
+    cfg.sync.download_photos = False
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    sync.run_sync(cfg, Client(), conn)
+    w = DatabaseWindow(conn, cfg)
+    w.refresh()
+    w.vehicle_table.selectRow(0)
+    page = w.detail.widget()
+    texts = [lbl.text() for lbl in page.findChildren(QLabel)]
+    assert any(t.endswith("NO VIOLATION  ·  CLEARED OCT 17, 2026") for t in texts)
+    assert "2 violations on record  ·  0 in force  ·  2 cleared" in texts
+    years = page.findChildren(QToolButton)
+    assert [b.text() for b in years] == ["▾  School year 2026-2027  ·  1 violation",
+                                         "▸  School year 2025-2026  ·  1 violation"]   # the newest open
+    years[1].click()
+    assert years[1].text().startswith("▾")
+    conn.close()

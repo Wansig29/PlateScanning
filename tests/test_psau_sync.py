@@ -551,3 +551,24 @@ def test_a_long_list_of_plates_is_shortened():
     changes = {"vehicles_before": 0, "vehicles_after": 8, "violations_before": 0, "violations_after": 0,
                "vehicles_added": [f"AAA {i}" for i in range(8)]}
     assert sync.summary_lines(changes)[2] == "8 new vehicles: AAA 0, AAA 1, AAA 2, AAA 3, AAA 4 and 3 more"
+
+
+def test_a_vehicles_violation_history_is_grouped_by_school_year(tmp_path):
+    cfg = _cfg(tmp_path)
+    cfg.api.school_years_path = "/sy"
+    conn = db.connect(cfg.db_path)
+    db.init_schema(conn)
+    cl = FakeClient([vehicle(1, "554 WYC", "Juan")], [
+        violation(10, 1, "554 WYC", is_active=False, occurred_at="2026-10-16T14:00:00+08:00"),
+        violation(11, 1, "554 WYC", occurred_at="2026-09-02T08:00:00+08:00"),
+        violation(12, 1, "554 WYC", is_active=False, occurred_at="2025-11-20T07:00:00+08:00"),
+        violation(13, 1, "554 WYC", is_active=False, occurred_at="2024-09-01T07:00:00+08:00")])  # before any synced year
+    cl.data["/sy"] = [{"year_label": "2025-2026", "start_date": "2025-08-01", "end_date": "2026-06-30"},
+                      {"year_label": "2026-2027", "start_date": "2026-08-01", "end_date": "2027-06-30", "is_active": True}]
+    sync.run_sync(cfg, cl, conn)
+    history = db.violation_history(conn, db.lookup(conn, "554WYC").vehicle)
+    assert [v["id"] for v in history] == ["10", "11", "12", "13"]             # newest first, in force or not
+    assert [bool(v["alerting"]) for v in history] == [False, True, False, False]
+    years = db.by_school_year(conn, history, start_month=8)
+    assert [(y, [v["id"] for v in vs]) for y, vs in years] == [
+        ("2026-2027", ["10", "11"]), ("2025-2026", ["12"]), ("2024-2025", ["13"])]  # (the last from the month)

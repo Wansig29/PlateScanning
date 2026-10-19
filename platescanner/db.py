@@ -426,6 +426,40 @@ def vehicle_violations(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> lis
     return _active_violations(conn, "vehicle_id=? OR plate=?", (str(vehicle["id"]), vehicle["plate"]))
 
 
+def violation_history(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
+    """Every stored violation of this vehicle (by vehicle or exact plate), in force or not, newest
+    first; "alerting" tells which still raise an alert."""
+    rows = conn.execute(
+        f"SELECT *, ({_ALERTING}) AS alerting FROM violations WHERE vehicle_id=? OR plate=? "
+        "ORDER BY COALESCE(occurred_at, updated_at) DESC", (str(vehicle["id"]), vehicle["plate"])).fetchall()
+    return [_violation_dict(r) for r in rows]
+
+
+def by_school_year(conn: sqlite3.Connection, violations: list[dict[str, Any]],
+                   start_month: int) -> list[tuple[str, list[dict[str, Any]]]]:
+    """The violations grouped by the school year they were logged in, newest year first. Years
+    are psau-security's (synced); a date outside them falls back to an academic year starting
+    in start_month."""
+    years = school_years(conn)
+    groups: dict[tuple[str, str], list[dict[str, Any]]] = {}
+    for v in violations:
+        day = str(v.get("occurred_at") or v.get("updated_at") or "")[:10]
+        year = next((y for y in years if y["start_date"] <= day <= y["end_date"]), None) if day else None
+        if year:
+            key = (year["start_date"], year["year_label"])
+        else:
+            try:
+                d = datetime.strptime(day, "%Y-%m-%d").date()
+            except ValueError:
+                key = ("0000", "Date not recorded")
+            else:
+                first = d.year if d.month >= start_month else d.year - 1
+                key = (f"{first}-{start_month:02d}-01",
+                       str(first) if start_month == 1 else f"{first}-{first + 1}")
+        groups.setdefault(key, []).append(v)
+    return [(label, vs) for (_, label), vs in sorted(groups.items(), reverse=True)]
+
+
 def lapsed_sanctions(conn: sqlite3.Connection, vehicle: dict[str, Any]) -> list[dict[str, Any]]:
     """Active-on-the-server violations of this vehicle whose sanction ended, newest end first."""
     rows = conn.execute(
