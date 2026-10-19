@@ -608,7 +608,7 @@ class _Capture:
         self.overlays = out
 
 
-def test_the_live_feed_does_not_box_what_never_showed_characters():
+def test_the_live_feed_boxes_only_what_the_ocr_read_as_a_plate():
     w = worker(NoCharactersEngine())
     w.capture = _Capture()
     conn = db.connect(w.cfg.db_path)
@@ -616,8 +616,12 @@ def test_the_live_feed_does_not_box_what_never_showed_characters():
     image = np.full((200, 400, 3), 128, np.uint8)
     for i in range(4):
         w._apply(conn, _Frame(i, image, (0, 0, 400, 200), True, i * 0.05), [PlateBox((150, 80, 100, 30), 0.9)])
-    assert w.capture.overlays == []                                       # no "reading..." box
-    w.engine = UnreadableEngine()                                         # characters, not yet readable
+    assert w.capture.overlays == []                                       # no characters: no box
+    w.engine = UnreadableEngine()                                         # characters, but no plate read
     w._apply(conn, _Frame(4, image, (0, 0, 400, 200), True, 0.2), [PlateBox((150, 80, 100, 30), 0.9)])
-    assert [o.label.split()[1] for o in w.capture.overlays] == ["reading..."]
+    assert w.capture.overlays == []                                       # still no box
+    w.engine = FakeEngine()                                               # read as a plate: now it has one
+    w._apply(conn, _Frame(5, image, (0, 0, 400, 200), True, 0.25), [PlateBox((150, 80, 100, 30), 0.9)])
+    assert [o.label.split()[:3] for o in w.capture.overlays] == [["#1", "ABC", "1234?"]] or \
+        [o.label.split()[:3] for o in w.capture.overlays] == [["#1", "ABC", "1234"]]  # (decided at once if registered)
     conn.close()
