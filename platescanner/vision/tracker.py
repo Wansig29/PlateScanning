@@ -63,7 +63,7 @@ class Track:
     layouts: list[str] = field(default_factory=list)
     vote_reads: int = 0   # vote over this many most confident reads (0 = all)
     reads_tried: int = 0
-    char_hits: int = 0    # reads where the crop showed a row of characters (OCR actually ran)
+    plate_hits: int = 0   # OCR reads in a plate format at least ocr.plate_evidence_confidence sure
     unmatched: list[str] = field(default_factory=list)  # OCR text that fit no plate layout
     best_crop: np.ndarray | None = None
     best_crop_score: float = -1.0
