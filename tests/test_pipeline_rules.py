@@ -585,6 +585,21 @@ def test_a_box_about_as_tall_as_wide_is_not_read():
     conn.close()
 
 
+def test_a_thin_strip_is_not_read():
+    # A shelf's price tape or a line of print: real characters, but far thinner than any plate.
+    engine = FakeEngine()
+    w = worker(engine)
+    conn = db.connect(w.cfg.db_path)
+    db.init_schema(conn)
+    image = np.full((300, 400, 3), 128, np.uint8)
+    for i in range(6):
+        w._apply(conn, _Frame(i, image, (0, 0, 400, 300), True, i * 0.05), [PlateBox((100, 60, 120, 19), 0.9)])
+    assert engine.reads == 0
+    w._apply(conn, _Frame(6, image, (0, 0, 400, 300), True, 0.3), [PlateBox((100, 60, 120, 31), 0.9)])  # 3.9: tilted car plate
+    assert engine.reads == 1
+    conn.close()
+
+
 class _Capture:
     def __init__(self):
         self.overlays = []
